@@ -1,1 +1,1 @@
-python -m agent.llm.client
+python -m agent.agent
