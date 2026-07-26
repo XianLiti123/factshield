@@ -6,8 +6,25 @@ Gitee 是 OSCHINA 推出的基于 Git 的代码托管平台（同时支持 SVN�
 无论是个人、团队、或是企业，都能够用 Gitee 实现代码托管、项目管理、协作开发。企业项目请看 [https://gitee.com/enterprises](https://gitee.com/enterprises)}
 
 #### 软件架构
-软件架构说明
+##### agent层
+agent/
+├── core/           ← 引擎层（Agent 循环 / 图执行引擎）
+│   ├── loop.py     ← 主循环
+│   └── runner.py   ← 任务执行器
+├── state/          ← 状态管理
+│   ├── base.py     ← 状态基类
+│   └── reducer.py  ← 合并策略
+├── tools/          ← 工具层（扁平，每个文件一个工具）
+│   ├── web_search.py
+│   └── terminal.py
+├── llm/            ← LLM 调用层
+│   └── client.py   ← 封装 OpenAI / Anthropic 等
+├── memory/         ← 记忆层
+│   └── store.py
+├── agent.py        ← 对外入口（用户只 import 这个）
+└── config.py       ← 配置
 
+##### UI层
 
 #### 安装教程
 
