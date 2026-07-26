@@ -9,6 +9,7 @@ class Agent:
         self.graph = graph
         self.messages:list[BaseMessage] = [SystemMessage(content="你是一个有用的助手，可以用终端命令帮用户解决问题。")]#初始化系统提示词
 
+    #调用LLM的函数
     def run(self,user_input:str)->str:
         self.messages.append(HumanMessage(content=user_input))
         result = self.graph.invoke({
@@ -17,6 +18,7 @@ class Agent:
         self.messages = result["messages"]
         return result["messages"][-1].content
 
+    #带流式调用LLM的函数
     def run_stream(self,user_input:str)->Iterator[tuple[str,str]]:
         #流式运行，yield (事件类型, 文本)
         #事件类型: "token" 为LLM输出的文本片段, "tool" 为工具执行状态
