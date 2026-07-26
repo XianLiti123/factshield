@@ -140,3 +140,6 @@ cython_debug/
 
 # other
 notes
+
+# Frontend local artifacts
+.pnpm-store/
