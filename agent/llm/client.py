@@ -5,11 +5,11 @@ from ..config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL
 
 # llm调用类
 class ChatClient:
-    def __init__(self):
+    def __init__(self,model = DEEPSEEK_MODEL,base_url = DEEPSEEK_BASE_URL,api_key = DEEPSEEK_API_KEY):
         self.llm = ChatOpenAI(
-            model=DEEPSEEK_MODEL,
-            base_url=DEEPSEEK_BASE_URL,
-            api_key=DEEPSEEK_API_KEY # type:ignore
+            model=model,
+            base_url=base_url,
+            api_key=api_key # type:ignore
         )
 
     def chat(self,message:list):
@@ -19,5 +19,5 @@ class ChatClient:
 
 if __name__ == "__main__":
     testllm = ChatClient()
-    result = testllm.chat(["你好，介绍一下你自己"])
+    result = testllm.chat([HumanMessage(content = "你好，介绍一下你自己")]) #使用humanmessage对象以区分用户发的消息
     print(result)
