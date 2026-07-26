@@ -7,7 +7,7 @@ from .core.loop import graph
 class Agent:
     def __init__(self):
         self.graph = graph
-        self.messages:list[BaseMessage] = [SystemMessage(content="你是一个有用的助手，可以用终端命令帮用户解决问题。")]#初始化系统提示词
+        self.messages:list[BaseMessage] = [SystemMessage(content="你是一个有用的助手，可以用终端命令、联网搜索和读取网页帮用户解决问题。")]#初始化系统提示词
 
     #调用LLM的函数
     def run(self,user_input:str)->str:
@@ -40,23 +40,27 @@ class Agent:
             if node == "call_LLM" and chunk.content:
                 yield "token",chunk.content
             elif node == "tools" and isinstance(chunk,ToolMessage):
-                command = self._find_tool_command(collected,chunk.tool_call_id)
-                yield ("tool",f"{chunk.name}: {command}" if command else str(chunk.name))
+                args_text = self._find_tool_args(collected,chunk.tool_call_id)
+                yield ("tool",f"{chunk.name}: {args_text}" if args_text else str(chunk.name))
 
         self.messages.extend(collected[i] for i in order)
 
     @staticmethod
-    def _find_tool_command(collected:dict[str,BaseMessage],tool_call_id:str)->str:
+    def _find_tool_args(collected:dict[str,BaseMessage],tool_call_id:str)->str:
         #根据tool_call_id从已收集的AI消息中找回对应的工具调用参数，用于展示状态
         for msg in collected.values():
             for tc in getattr(msg,"tool_calls",None) or []:
                 if tc.get("id") == tool_call_id:
-                    return str(tc.get("args",{}).get("command",""))
+                    return ", ".join(f"{k}={v}" for k,v in tc.get("args",{}).items())
         return ""
 
 
 # 测试代码
 if __name__ == "__main__":
+    import time
+
+    CHAR_DELAY = 0.02#每个字之间的延时(秒)，调大打字更慢，调小更快
+
     agent = Agent()
     print("输入 exit 退出")
     while True:
@@ -66,7 +70,9 @@ if __name__ == "__main__":
         print("AI: ",end="",flush=True)
         for kind,text in agent.run_stream(input_message):
             if kind == "token":
-                print(text,end="",flush=True)#逐token打印，打字机效果
+                for char in text:
+                    print(char,end="",flush=True)#逐字打印，打字机效果
+                    time.sleep(CHAR_DELAY)
             else:
                 print(f"\n[执行工具] {text}\nAI: ",end="",flush=True)
         print()
