@@ -143,3 +143,5 @@ notes
 
 # JetBrains IDE (PyCharm) 项目配置
 .idea/
+# Frontend local artifacts
+.pnpm-store/
