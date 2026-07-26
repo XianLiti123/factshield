@@ -1,4 +1,5 @@
-from langchain_core.messages import HumanMessage,SystemMessage,BaseMessage
+from typing import Iterator
+from langchain_core.messages import HumanMessage,SystemMessage,BaseMessage,ToolMessage
 from .core.loop import graph
 
 #Agent的对外接口
@@ -16,12 +17,54 @@ class Agent:
         self.messages = result["messages"]
         return result["messages"][-1].content
 
+    def run_stream(self,user_input:str)->Iterator[tuple[str,str]]:
+        #流式运行，yield (事件类型, 文本)
+        #事件类型: "token" 为LLM输出的文本片段, "tool" 为工具执行状态
+        self.messages.append(HumanMessage(content=user_input))
+        collected:dict[str,BaseMessage] = {}#本轮产生的消息，按id累加
+        order:list[str] = []#消息出现顺序
+
+        for chunk,metadata in self.graph.stream(
+            {"messages":self.messages},stream_mode="messages"
+        ):#type:ignore
+            msg_id = chunk.id
+            if msg_id in collected:
+                collected[msg_id] = collected[msg_id] + chunk#type:ignore #同一条消息的分片累加
+            else:
+                collected[msg_id] = chunk
+                order.append(msg_id)
+
+            node = metadata.get("langgraph_node")
+            if node == "call_LLM" and chunk.content:
+                yield "token",chunk.content
+            elif node == "tools" and isinstance(chunk,ToolMessage):
+                command = self._find_tool_command(collected,chunk.tool_call_id)
+                yield ("tool",f"{chunk.name}: {command}" if command else str(chunk.name))
+
+        self.messages.extend(collected[i] for i in order)
+
+    @staticmethod
+    def _find_tool_command(collected:dict[str,BaseMessage],tool_call_id:str)->str:
+        #根据tool_call_id从已收集的AI消息中找回对应的工具调用参数，用于展示状态
+        for msg in collected.values():
+            for tc in getattr(msg,"tool_calls",None) or []:
+                if tc.get("id") == tool_call_id:
+                    return str(tc.get("args",{}).get("command",""))
+        return ""
+
 
 # 测试代码
 if __name__ == "__main__":
     agent = Agent()
+    print("输入 exit 退出")
     while True:
-        input_message = input()
+        input_message = input("你: ")
         if input_message == "exit":
             break
-        print(agent.run(input_message))
+        print("AI: ",end="",flush=True)
+        for kind,text in agent.run_stream(input_message):
+            if kind == "token":
+                print(text,end="",flush=True)#逐token打印，打字机效果
+            else:
+                print(f"\n[执行工具] {text}\nAI: ",end="",flush=True)
+        print()
