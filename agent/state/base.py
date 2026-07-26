@@ -1,4 +1,4 @@
 from langgraph.graph import MessagesState
 
-class Agentstate(MessagesState):
+class AgentState(MessagesState):
     pass

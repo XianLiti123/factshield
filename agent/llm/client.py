@@ -16,7 +16,6 @@ class ChatClient:
         response = self.llm.invoke(message)
         return response.content
 
-
 if __name__ == "__main__":
     testllm = ChatClient()
     result = testllm.chat([HumanMessage(content = "你好，介绍一下你自己")]) #使用humanmessage对象以区分用户发的消息
