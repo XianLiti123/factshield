@@ -28,7 +28,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           colorBgLayout: '#f4f6fa',
           colorBorderSecondary: '#e8ebf2',
           borderRadius: 8,
-          fontFamily: "Inter, 'PingFang SC', 'Microsoft YaHei', sans-serif",
+          fontFamily: "MiSans, sans-serif",
         },
         components: {
           Button: { controlHeight: 36 },

@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Button, Result, Skeleton } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
@@ -9,10 +9,12 @@ import { AgentTopology } from './components/AgentTopology'
 import { AnalyticsView } from './components/AnalyticsView'
 import { ReportsView } from './components/ReportsView'
 import { TaskCenter } from './components/TaskCenter'
+import { LoginView } from './components/LoginView'
 import { getResearchRun } from './services/mockApi'
 import { useWorkspaceStore } from './store'
 
 function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
   const activeView = useWorkspaceStore((state) => state.activeView)
   const demoStep = useWorkspaceStore((state) => state.demoStep)
   const isDemoRunning = useWorkspaceStore((state) => state.isDemoRunning)
@@ -33,6 +35,10 @@ function App() {
     const timer = window.setTimeout(advanceDemo, 850)
     return () => window.clearTimeout(timer)
   }, [advanceDemo, demoStep, isDemoRunning, stopDemo])
+
+  if (!isAuthenticated) {
+    return <LoginView onLogin={() => setIsAuthenticated(true)} />
+  }
 
   return (
     <AppShell>

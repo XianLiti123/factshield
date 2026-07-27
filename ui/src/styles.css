@@ -1,5 +1,85 @@
+@font-face {
+  font-family: "MiSans";
+  src: url("./assets/fonts/MiSans-Thin.woff2") format("woff2");
+  font-weight: 100;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("./assets/fonts/MiSans-ExtraLight.woff2") format("woff2");
+  font-weight: 200;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("./assets/fonts/MiSans-Light.woff2") format("woff2");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("./assets/fonts/MiSans-Normal.woff2") format("woff2");
+  font-weight: 350;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("./assets/fonts/MiSans-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("./assets/fonts/MiSans-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("./assets/fonts/MiSans-Demibold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("./assets/fonts/MiSans-Semibold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("./assets/fonts/MiSans-Bold.woff2") format("woff2");
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("./assets/fonts/MiSans-Heavy.woff2") format("woff2");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
-  font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: "MiSans", sans-serif;
   color: #172033;
   background: #f4f6fa;
   font-synthesis: none;
@@ -8,9 +88,90 @@
 
 * { box-sizing: border-box; }
 html, body, #root { min-width: 1180px; min-height: 100%; margin: 0; }
-body { margin: 0; background: #f4f6fa; }
-button, input { font: inherit; }
+body { margin: 0; background: #f4f6fa; font-family: "MiSans", sans-serif; }
+button, input, textarea, select { font: inherit; }
 button { color: inherit; }
+
+/* Login UI */
+.login-page { min-height: 100vh; padding: clamp(28px, 3vw, 48px); display: grid; place-items: center; background: #e7eaed; }
+.login-card { width: min(1440px, 100%); min-height: min(860px, calc(100vh - 80px)); display: grid; grid-template-columns: 1fr 1fr; overflow: hidden; background: #fff; box-shadow: 0 18px 55px rgba(25,42,55,.08); }
+.login-form-side { min-width: 0; padding: 70px 10%; display: grid; place-items: center; overflow: hidden; background: #fff; }
+.login-form-wrap { width: min(450px, 100%); }
+.auth-panel { transform: translateX(0); will-change: transform; }
+.auth-panel--exit-forward { animation: auth-panel-exit-left .28s cubic-bezier(.4,0,.8,.4) both; }
+.auth-panel--enter-forward { animation: auth-panel-enter-right .36s cubic-bezier(.2,.75,.25,1) both; }
+.auth-panel--exit-backward { animation: auth-panel-exit-right .28s cubic-bezier(.4,0,.8,.4) both; }
+.auth-panel--enter-backward { animation: auth-panel-enter-left .36s cubic-bezier(.2,.75,.25,1) both; }
+@keyframes auth-panel-exit-left { to { transform: translateX(-140%); } }
+@keyframes auth-panel-enter-right { from { transform: translateX(140%); } to { transform: translateX(0); } }
+@keyframes auth-panel-exit-right { to { transform: translateX(140%); } }
+@keyframes auth-panel-enter-left { from { transform: translateX(-140%); } to { transform: translateX(0); } }
+.login-heading { margin-bottom: 36px; }
+.login-heading h1 { margin: 0; color: #172126; font-size: 32px; font-weight: 700; line-height: 1.25; letter-spacing: -.5px; }
+.login-heading p { margin: 10px 0 0; color: #859097; font-size: 14px; }
+.login-form .ant-form-item { margin-bottom: 22px; }
+.login-form .ant-form-item-label { padding-bottom: 8px; }
+.login-form .ant-form-item-label > label { height: auto; color: #2f3a40; font-size: 14px; font-weight: 500; }
+.login-form .ant-input-affix-wrapper { height: 55px; padding: 0 17px; border: 1px solid transparent; border-radius: 8px; background: #f5f7f8; box-shadow: none; transition: border-color .18s ease, background .18s ease, box-shadow .18s ease; }
+.login-form .ant-input-affix-wrapper:hover { border-color: #b9d0d5; background: #fff; }
+.login-form .ant-input-affix-wrapper-focused { border-color: #286e7e; background: #fff; box-shadow: 0 0 0 3px rgba(40,110,126,.1); }
+.login-form .ant-input-prefix { margin-right: 11px; color: #91a0a6; }
+.login-form .ant-input { color: #263238; background: transparent; font-size: 14px; }
+.login-form .ant-input::placeholder { color: #a8b1b6; }
+.login-form .ant-input-password-icon { color: #86949a; }
+.login-options { min-height: 30px; margin: -3px 0 25px; display: flex; align-items: center; justify-content: space-between; }
+.register-agreement { min-height: 30px; margin: -3px 0 25px; display: flex; align-items: center; }
+.auth-check-control { display: inline-flex; align-items: center; gap: 7px; color: #66747a; font-size: 13px; }
+.auth-check-copy { color: #66747a; cursor: default; user-select: text; transition: none; }
+.login-form .ant-checkbox-wrapper { color: #66747a; font-size: 13px; }
+.login-form .ant-checkbox-inner { width: 13px; height: 13px; border-width: 1px; }
+.login-form .ant-checkbox-checked .ant-checkbox-inner::after { width: 3.5px; height: 6px; inset-inline-start: 50%; top: 45%; border-width: 0 1px 1px 0; transform: translate(-50%, -50%) rotate(45deg) scale(1); transform-origin: center; }
+.login-form .ant-checkbox-checked .ant-checkbox-inner { border-color: #084d5c; background: #084d5c; }
+.login-form .ant-checkbox-wrapper:not(.ant-checkbox-wrapper-disabled):hover .ant-checkbox-inner,
+.login-form .ant-checkbox:not(.ant-checkbox-disabled):hover .ant-checkbox-inner { border-color: #0d6575 !important; }
+.login-form .ant-checkbox-wrapper:not(.ant-checkbox-wrapper-disabled):hover .ant-checkbox-checked .ant-checkbox-inner { border-color: #0d6575 !important; background: #0d6575 !important; }
+.login-page .ant-checkbox-wrapper:not(.ant-checkbox-wrapper-disabled):hover .ant-checkbox-inner { border-color: #0d6575 !important; }
+.login-page .ant-checkbox-wrapper:not(.ant-checkbox-wrapper-disabled):hover .ant-checkbox-checked .ant-checkbox-inner { border-color: #0d6575 !important; background: #0d6575 !important; }
+.auth-link.ant-btn-link, .auth-inline-link { height: auto; padding: 0; color: #145d6d; font-size: 13px; transition: color .18s ease; }
+.auth-link.ant-btn-link:not(:disabled):hover,
+.auth-link.ant-btn-link:not(:disabled):focus,
+.auth-link.ant-btn-link:not(:disabled):active,
+.auth-inline-link:hover,
+.auth-inline-link:focus,
+.auth-inline-link:active { color: #0d6575 !important; background: transparent !important; }
+.login-page .ant-btn-link:not(:disabled):hover,
+.login-page .ant-btn-link:not(:disabled):focus,
+.login-page .ant-btn-link:not(:disabled):active { color: #0d6575 !important; background: transparent !important; }
+.auth-link.ant-btn:focus-visible, .auth-inline-link:focus-visible { outline: 2px solid rgba(13,101,117,.28); outline-offset: 2px; box-shadow: none; }
+.auth-inline-link { margin-left: 4px; border: 0; border-bottom: 1px solid currentColor; background: transparent; cursor: pointer; line-height: 1.35; }
+.login-submit.ant-btn { height: 56px; border-radius: 8px; border-color: #084d5c; background: #084d5c; font-size: 15px; font-weight: 500; box-shadow: 0 10px 24px rgba(8,77,92,.22), 0 3px 7px rgba(8,77,92,.14); transform: translateY(0); transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease, background .18s ease; }
+.login-submit.ant-btn:not(:disabled):hover { border-color: #0d6575; background: #0d6575; box-shadow: 0 14px 30px rgba(8,77,92,.28), 0 5px 10px rgba(8,77,92,.16); transform: translateY(-2px); }
+.login-submit.ant-btn:not(:disabled):active { box-shadow: 0 6px 14px rgba(8,77,92,.2), 0 2px 5px rgba(8,77,92,.12); transform: translateY(0); }
+.login-signup { margin-top: 29px; display: flex; align-items: center; justify-content: center; gap: 5px; color: #7b878d; font-size: 13px; }
+.login-visual-placeholder { background: #084d5c; }
+
+@media (max-width: 1240px) {
+  .login-page { padding: 28px; }
+  .login-card { min-height: calc(100vh - 56px); }
+  .login-form-side { padding-left: 11%; padding-right: 11%; }
+}
+
+@media (max-height: 800px) {
+  .login-page { padding-top: 20px; padding-bottom: 20px; }
+  .login-card { height: calc(100vh - 40px); min-height: 620px; }
+  .login-form-side { padding-top: 30px; padding-bottom: 30px; }
+  .login-heading { margin-bottom: 24px; }
+  .login-form .ant-form-item { margin-bottom: 16px; }
+  .login-options { margin-bottom: 18px; }
+  .login-signup { margin-top: 20px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-panel--exit-forward,
+  .auth-panel--enter-forward,
+  .auth-panel--exit-backward,
+  .auth-panel--enter-backward { animation-duration: 1ms; }
+}
 
 .app-layout { min-height: 100vh; display: flex; }
 .sidebar { width: 226px; min-height: 100vh; background: #0c1735; color: #c8d2ea; position: fixed; inset: 0 auto 0 0; display: flex; flex-direction: column; padding: 0 14px 16px; z-index: 20; }
