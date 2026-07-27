@@ -29,9 +29,22 @@ UI/
 
 #### 安装教程
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+1.  安装 Python 依赖：`pip install -r requirements.txt`
+2.  在项目根目录创建 `.env` 文件，配置以下环境变量：
+
+    **必填：**
+    ```
+    DEEPSEEK-API-KEY=sk-xxx        # DeepSeek 大模型的 API key（注意变量名中是连字符）
+    TAVILY_API_KEY=tvly-xxx        # Tavily 联网搜索的 API key
+    ```
+
+    **可选（配置后启用 AI 高精度识别图片/扫描版 PDF 功能）：**
+    ```
+    VISION_API_KEY=sk-xxx          # 视觉模型的 API key
+    VISION_BASE_URL=https://...    # 视觉模型的 OpenAI 兼容接口地址
+    VISION_MODEL=qwen-vl-max       # 视觉模型名称
+    ```
+    视觉模型可使用任意 OpenAI 兼容的多模态服务（如通义千问 qwen-vl、智谱 glm-4v、OpenAI gpt-4o 等）；不配置时其他功能不受影响。
 
 #### 使用说明
 
