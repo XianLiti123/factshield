@@ -7,7 +7,7 @@ from .core.loop import graph
 class Agent:
     def __init__(self):
         self.graph = graph
-        self.messages:list[BaseMessage] = [SystemMessage(content="你是一个有用的助手，可以用终端命令、联网搜索、读取网页和转换本地文档（PDF/Word/PPT/Excel 等转 Markdown）帮用户解决问题。")]#初始化系统提示词
+        self.messages:list[BaseMessage] = [SystemMessage(content="你是一个有用的助手，可以用终端命令、联网搜索、读取网页、转换本地文档（PDF/Word/PPT/Excel 等转 Markdown）和 AI 高精度识别图片或 PDF（含扫描件）帮用户解决问题。")]#初始化系统提示词
 
     #调用LLM的函数
     def run(self,user_input:str)->str:
