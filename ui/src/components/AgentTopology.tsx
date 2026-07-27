@@ -58,8 +58,8 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
       { id: 'reviewer', type: 'agent', position: { x: 625, y: 495 }, data: { ...find('reviewer'), kind: 'reviewer' } },
     ]
 
-    const normalStyle = { stroke: '#8fa8d8', strokeWidth: 1.6 }
-    const reviewStyle = { stroke: '#8c68c7', strokeWidth: 1.9 }
+    const normalStyle = { stroke: '#79aaa4', strokeWidth: 1.6 }
+    const reviewStyle = { stroke: '#d39a43', strokeWidth: 1.9 }
     const retryStyle = { stroke: '#dc6267', strokeWidth: 1.6, strokeDasharray: '5 4' }
     const workerIds = ['collector', 'parser', 'retriever', 'scorer', 'assembler', 'history']
     const topologyEdges: Edge[] = [
@@ -67,16 +67,16 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
         {
           id: `dispatch-${id}`, source: 'supervisor', target: id, type: 'smoothstep',
           label: id === 'assembler' ? '核验通过后下发' : '受控派发',
-          markerEnd: { type: MarkerType.ArrowClosed, color: '#8fa8d8' }, style: normalStyle,
+          markerEnd: { type: MarkerType.ArrowClosed, color: '#79aaa4' }, style: normalStyle,
         },
         {
           id: `return-${id}`, source: id, target: 'supervisor', type: 'smoothstep',
-          markerEnd: { type: MarkerType.ArrowClosed, color: '#8fa8d8' }, style: normalStyle,
+          markerEnd: { type: MarkerType.ArrowClosed, color: '#79aaa4' }, style: normalStyle,
         },
       ]),
       {
         id: 'supervisor-reviewer', source: 'supervisor', target: 'reviewer', type: 'smoothstep', label: '一级汇总后送审',
-        markerEnd: { type: MarkerType.ArrowClosed, color: '#8c68c7' }, style: reviewStyle, animated: true,
+        markerEnd: { type: MarkerType.ArrowClosed, color: '#d39a43' }, style: reviewStyle, animated: true,
       },
       {
         id: 'reviewer-supervisor', source: 'reviewer', target: 'supervisor', type: 'smoothstep', label: '复核结果回传',
@@ -98,9 +98,9 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
       </div>
       <div className="flow-canvas">
         <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: 0.12 }} minZoom={0.5} maxZoom={1.35}>
-          <Background color="#dfe5f1" gap={24} />
+          <Background color="#dce8e4" gap={24} />
           <Controls />
-          <MiniMap pannable zoomable nodeColor={(node) => node.id === 'reviewer' ? '#7c3aed' : node.id === 'supervisor' ? '#246bfd' : '#a9b8d4'} />
+          <MiniMap pannable zoomable nodeColor={(node) => node.id === 'reviewer' ? '#d39a43' : node.id === 'supervisor' ? '#0d6575' : '#9db9b3'} />
         </ReactFlow>
       </div>
     </div>

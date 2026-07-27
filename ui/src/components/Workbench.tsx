@@ -16,6 +16,7 @@ import { Button, Drawer, Empty, Input, Modal, Segmented, Select, Steps, Table, T
 import type { Claim, Evidence, ResearchRun } from '../types'
 import { useWorkspaceStore } from '../store'
 import { StatusBadge } from './StatusBadge'
+import { WorkbenchOverview } from './WorkbenchOverview'
 
 function ClaimList({ claims }: { claims: Claim[] }) {
   const [keyword, setKeyword] = useState('')
@@ -28,7 +29,7 @@ function ClaimList({ claims }: { claims: Claim[] }) {
   })
 
   return (
-    <section className="panel claim-panel">
+    <section className="claim-panel">
       <div className="panel-header">
         <div><h2>事实主张</h2><span>{filteredClaims.length} / {claims.length} 条</span></div>
         <Tooltip title="按状态筛选"><FilterOutlined /></Tooltip>
@@ -104,7 +105,7 @@ function EvidenceViewer({ evidenceList }: { evidenceList: Evidence[] }) {
   if (!selectedEvidence) return <Empty description="该主张暂无证据" />
 
   return (
-    <section className="panel evidence-panel">
+    <section className="evidence-panel">
       <div className="panel-header evidence-heading">
         <div><h2>原始证据</h2><span>{evidenceList.length} 条已引用</span></div>
         <Segmented size="small" options={[{ label: '原文', value: 'text' }, { label: '来源信息', value: 'source' }]} />
@@ -291,18 +292,41 @@ function VerdictPanel({ claim }: { claim: Claim }) {
 }
 
 export function Workbench({ run }: { run: ResearchRun }) {
+  const [viewMode, setViewMode] = useState<'overview' | 'detail'>('overview')
   const selectedClaimId = useWorkspaceStore((state) => state.selectedClaimId)
+  const selectClaim = useWorkspaceStore((state) => state.selectClaim)
   const selectedClaim = run.claims.find((claim) => claim.id === selectedClaimId) ?? run.claims[0]
   const evidenceList = useMemo(
     () => run.evidence.filter((evidence) => selectedClaim.evidenceIds.includes(evidence.id)),
     [run.evidence, selectedClaim.evidenceIds],
   )
 
+  const openClaim = (claimId: string) => {
+    selectClaim(claimId)
+    setViewMode('detail')
+  }
+
   return (
-    <div className="workbench-grid">
-      <ClaimList claims={run.claims} />
-      <EvidenceViewer key={selectedClaim.id} evidenceList={evidenceList} />
-      <VerdictPanel claim={selectedClaim} />
+    <div className="workbench-shell">
+      <div className="workbench-viewbar">
+        <Segmented
+          value={viewMode}
+          onChange={(value) => setViewMode(value as 'overview' | 'detail')}
+          options={[{ label: '研究概览', value: 'overview' }, { label: '证据核验', value: 'detail' }]}
+        />
+        <span><i /> 双层核验运行中</span>
+      </div>
+      {viewMode === 'overview' ? (
+        <WorkbenchOverview run={run} onOpenClaim={openClaim} />
+      ) : (
+        <div className="workbench-grid">
+          <section className="panel evidence-workspace">
+            <ClaimList claims={run.claims} />
+            <EvidenceViewer key={selectedClaim.id} evidenceList={evidenceList} />
+          </section>
+          <VerdictPanel claim={selectedClaim} />
+        </div>
+      )}
     </div>
   )
 }
