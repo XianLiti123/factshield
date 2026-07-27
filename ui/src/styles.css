@@ -95,8 +95,17 @@ button { color: inherit; }
 /* Login UI */
 .login-page { min-height: 100vh; padding: clamp(28px, 3vw, 48px); display: grid; place-items: center; background: #e7eaed; }
 .login-card { width: min(1440px, 100%); min-height: min(860px, calc(100vh - 80px)); display: grid; grid-template-columns: 1fr 1fr; overflow: hidden; background: #fff; box-shadow: 0 18px 55px rgba(25,42,55,.08); }
-.login-form-side { min-width: 0; padding: 70px 10%; display: grid; place-items: center; background: #fff; }
+.login-form-side { min-width: 0; padding: 70px 10%; display: grid; place-items: center; overflow: hidden; background: #fff; }
 .login-form-wrap { width: min(450px, 100%); }
+.auth-panel { transform: translateX(0); will-change: transform; }
+.auth-panel--exit-forward { animation: auth-panel-exit-left .28s cubic-bezier(.4,0,.8,.4) both; }
+.auth-panel--enter-forward { animation: auth-panel-enter-right .36s cubic-bezier(.2,.75,.25,1) both; }
+.auth-panel--exit-backward { animation: auth-panel-exit-right .28s cubic-bezier(.4,0,.8,.4) both; }
+.auth-panel--enter-backward { animation: auth-panel-enter-left .36s cubic-bezier(.2,.75,.25,1) both; }
+@keyframes auth-panel-exit-left { to { transform: translateX(-140%); } }
+@keyframes auth-panel-enter-right { from { transform: translateX(140%); } to { transform: translateX(0); } }
+@keyframes auth-panel-exit-right { to { transform: translateX(140%); } }
+@keyframes auth-panel-enter-left { from { transform: translateX(-140%); } to { transform: translateX(0); } }
 .login-heading { margin-bottom: 36px; }
 .login-heading h1 { margin: 0; color: #172126; font-size: 32px; font-weight: 700; line-height: 1.25; letter-spacing: -.5px; }
 .login-heading p { margin: 10px 0 0; color: #859097; font-size: 14px; }
@@ -135,11 +144,10 @@ button { color: inherit; }
 .login-page .ant-btn-link:not(:disabled):active { color: #0d6575 !important; background: transparent !important; }
 .auth-link.ant-btn:focus-visible, .auth-inline-link:focus-visible { outline: 2px solid rgba(13,101,117,.28); outline-offset: 2px; box-shadow: none; }
 .auth-inline-link { margin-left: 4px; border: 0; border-bottom: 1px solid currentColor; background: transparent; cursor: pointer; line-height: 1.35; }
-.login-submit.ant-btn { height: 56px; border-radius: 8px; border-color: #084d5c; background: #084d5c; font-size: 15px; font-weight: 500; box-shadow: none; }
-.login-submit.ant-btn:not(:disabled):hover { border-color: #0d6575; background: #0d6575; }
+.login-submit.ant-btn { height: 56px; border-radius: 8px; border-color: #084d5c; background: #084d5c; font-size: 15px; font-weight: 500; box-shadow: 0 10px 24px rgba(8,77,92,.22), 0 3px 7px rgba(8,77,92,.14); transform: translateY(0); transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease, background .18s ease; }
+.login-submit.ant-btn:not(:disabled):hover { border-color: #0d6575; background: #0d6575; box-shadow: 0 14px 30px rgba(8,77,92,.28), 0 5px 10px rgba(8,77,92,.16); transform: translateY(-2px); }
+.login-submit.ant-btn:not(:disabled):active { box-shadow: 0 6px 14px rgba(8,77,92,.2), 0 2px 5px rgba(8,77,92,.12); transform: translateY(0); }
 .login-signup { margin-top: 29px; display: flex; align-items: center; justify-content: center; gap: 5px; color: #7b878d; font-size: 13px; }
-.login-security-note { margin-top: 70px; display: flex; align-items: center; justify-content: center; gap: 7px; color: #9aa4a9; font-size: 11px; }
-.login-security-note .anticon { color: #50828d; }
 .login-visual-placeholder { background: #084d5c; }
 
 @media (max-width: 1240px) {
@@ -156,7 +164,13 @@ button { color: inherit; }
   .login-form .ant-form-item { margin-bottom: 16px; }
   .login-options { margin-bottom: 18px; }
   .login-signup { margin-top: 20px; }
-  .login-security-note { margin-top: 32px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-panel--exit-forward,
+  .auth-panel--enter-forward,
+  .auth-panel--exit-backward,
+  .auth-panel--enter-backward { animation-duration: 1ms; }
 }
 
 .app-layout { min-height: 100vh; display: flex; }

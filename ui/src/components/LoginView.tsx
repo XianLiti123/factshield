@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { CheckOutlined, LockOutlined, MailOutlined, UserOutlined } from '@ant-design/icons'
+import { useState, type AnimationEvent } from 'react'
+import { LockOutlined, MailOutlined, UserOutlined } from '@ant-design/icons'
 import { Button, Checkbox, Form, Input, message } from 'antd'
 
 interface LoginValues {
@@ -10,9 +10,41 @@ interface LoginValues {
   agreement?: boolean
 }
 
+type AuthMode = 'login' | 'register'
+type TransitionPhase = 'idle' | 'exit' | 'enter'
+type TransitionDirection = 'forward' | 'backward'
+
 export function LoginView({ onLogin }: { onLogin: () => void }) {
-  const [mode, setMode] = useState<'login' | 'register'>('login')
+  const [mode, setMode] = useState<AuthMode>('login')
   const [submitting, setSubmitting] = useState(false)
+  const [transition, setTransition] = useState<{
+    phase: TransitionPhase
+    direction: TransitionDirection
+    target: AuthMode
+  }>({ phase: 'idle', direction: 'forward', target: 'login' })
+
+  const switchMode = (target: AuthMode) => {
+    if (target === mode || transition.phase !== 'idle' || submitting) return
+    setTransition({
+      phase: 'exit',
+      direction: target === 'register' ? 'forward' : 'backward',
+      target,
+    })
+  }
+
+  const handlePanelAnimationEnd = (event: AnimationEvent<HTMLDivElement>) => {
+    if (event.currentTarget !== event.target) return
+
+    if (transition.phase === 'exit') {
+      setMode(transition.target)
+      setTransition((current) => ({ ...current, phase: 'enter' }))
+      return
+    }
+
+    if (transition.phase === 'enter') {
+      setTransition((current) => ({ ...current, phase: 'idle' }))
+    }
+  }
 
   const submitLogin = () => {
     setSubmitting(true)
@@ -28,17 +60,24 @@ export function LoginView({ onLogin }: { onLogin: () => void }) {
     window.setTimeout(() => {
       setSubmitting(false)
       message.success('Mock 注册成功，请登录')
-      setMode('login')
+      switchMode('login')
     }, 700)
   }
 
   const isRegister = mode === 'register'
+  const panelMotionClass = transition.phase === 'idle'
+    ? ''
+    : `auth-panel--${transition.phase}-${transition.direction}`
 
   return (
     <main className="login-page">
       <section className="login-card">
         <div className="login-form-side">
-          <div className="login-form-wrap">
+          <div
+            key={mode}
+            className={`login-form-wrap auth-panel ${panelMotionClass}`}
+            onAnimationEnd={handlePanelAnimationEnd}
+          >
             <div className="login-heading">
               <h1>{isRegister ? '创建账号' : '欢迎回来'}</h1>
               <p>{isRegister ? '创建您的金融研究工作台账号' : '请输入您的工作台账号信息'}</p>
@@ -101,10 +140,8 @@ export function LoginView({ onLogin }: { onLogin: () => void }) {
 
             <div className="login-signup">
               <span>{isRegister ? '已有账号？' : '还没有账号？'}</span>
-              <Button className="auth-link" type="link" onClick={() => setMode(isRegister ? 'login' : 'register')}>{isRegister ? '返回登录' : '申请账号'}</Button>
+              <Button className="auth-link" type="link" onClick={() => switchMode(isRegister ? 'login' : 'register')}>{isRegister ? '返回登录' : '申请账号'}</Button>
             </div>
-
-            <div className="login-security-note"><CheckOutlined /> 研究数据传输与访问全程受控</div>
           </div>
         </div>
         <div className="login-visual-placeholder" aria-hidden="true" />
