@@ -3,12 +3,13 @@ from ..memory.reranker.rerank import precise_search
 
 
 @tool
-def advanced_research(query: str) -> str:
+def advanced_research(query: str, num: int = 3) -> str:
     """精确检索本地文档知识库：先用向量库语义检索出候选片段，再经 reranker 模型精排，
-    返回与问题最相关的 3 个文档片段。当需要查阅之前转换或识别过的本地文档内容时使用。
-    query 为要检索的问题。"""
+    返回与问题最相关的 num 个文档片段。当需要查阅之前转换或识别过的本地文档内容时使用。
+    query 为要检索的问题；num 为最多返回的片段数，默认 3，最大 20。"""
+    num = max(1,min(num,20))#钳制到 [1,20]
     try:
-        results = precise_search(query)
+        results = precise_search(query,num=num)
     except RuntimeError as e:
         return str(e)#未配置 embedding/reranker 等情况，把指引返回给 LLM
     if not results:

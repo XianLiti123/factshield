@@ -29,14 +29,15 @@ def rerank(query:str,documents:list[str],top_n:int=3)->list[tuple[str,float]]:
     return [(documents[r["index"]],r["relevance_score"]) for r in results]
 
 
-def precise_search(query:str)->list[str]:
-    #精确检索：先向量库语义检索 top 10，再 reranker 精排取 top 3
-    chunks = search(query,k=10)
+def precise_search(query:str,num:int=3)->list[str]:
+    #精确检索：先向量库语义检索 top 2*num，再 reranker 精排取 top num
+    #候选片段不足 num 个时直接返回，无需精排
+    chunks = search(query,k=2*num)
     if not chunks:
         return []
-    if len(chunks) <= 3:
-        return chunks#结果不足 3 个时无需精排
-    return [text for text,_ in rerank(query,chunks,top_n=3)]
+    if len(chunks) <= num:
+        return chunks
+    return [text for text,_ in rerank(query,chunks,top_n=num)]
 
 
 if __name__ == "__main__":
