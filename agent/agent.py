@@ -21,7 +21,7 @@ class Agent:
     #带流式调用LLM的函数
     def run_stream(self,user_input:str)->Iterator[tuple[str,str]]:
         #流式运行，yield (事件类型, 文本)
-        #事件类型: "token" 为LLM输出的文本片段, "tool" 为工具执行状态
+        #事件类型: "token" 为LLM输出的文本片段, "think" 为思考内容, "tool" 为工具执行状态
         self.messages.append(HumanMessage(content=user_input))
         collected:dict[str,BaseMessage] = {}#本轮产生的消息，按id累加
         order:list[str] = []#消息出现顺序
@@ -37,8 +37,12 @@ class Agent:
                 order.append(msg_id)
 
             node = metadata.get("langgraph_node")
-            if node == "call_LLM" and chunk.content:
-                yield "token",chunk.content
+            if node == "call_LLM":
+                reasoning = chunk.additional_kwargs.get("reasoning_content")
+                if reasoning:
+                    yield "think",reasoning
+                if chunk.content:
+                    yield "token",chunk.content
             elif node == "tools" and isinstance(chunk,ToolMessage):
                 args_text = self._find_tool_args(collected,chunk.tool_call_id)
                 yield ("tool",f"{chunk.name}: {args_text}" if args_text else str(chunk.name))
@@ -68,11 +72,19 @@ if __name__ == "__main__":
         if input_message == "exit":
             break
         print("AI: ",end="",flush=True)
+        thinking = False#是否正在输出思考内容
         for kind,text in agent.run_stream(input_message):
-            if kind == "token":
-                for char in text:
-                    print(char,end="",flush=True)#逐字打印，打字机效果
-                    time.sleep(CHAR_DELAY)
-            else:
+            if kind == "tool":
+                thinking = False
                 print(f"\n[执行工具] {text}\nAI: ",end="",flush=True)
+                continue
+            if kind == "think" and not thinking:
+                print("[思考] ",end="",flush=True)
+                thinking = True
+            elif kind == "token" and thinking:
+                print("\n[回答] ",end="",flush=True)
+                thinking = False
+            for char in text:
+                print(char,end="",flush=True)#逐字打印，打字机效果
+                time.sleep(CHAR_DELAY)
         print()
