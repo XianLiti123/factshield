@@ -2,7 +2,7 @@ from langchain_core.tools import tool
 import os
 import requests
 
-_DOWNLOAD_DIR = "downloads"
+_DOWNLOAD_DIR = "workspace/downloads"
 
 @tool
 def download_file(url: str, save_path: str = "") -> str:

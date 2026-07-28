@@ -14,6 +14,16 @@ VISION_API_KEY = os.getenv("VISION_API_KEY")
 VISION_BASE_URL = os.getenv("VISION_BASE_URL")
 VISION_MODEL = os.getenv("VISION_MODEL")
 
+# Embedding 模型（可选）：配置后文档会写入 Chroma 向量库
+EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY")
+EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL")
+
+# Reranker 模型（可选）：配置后向量检索结果会经 reranker 精排
+RERANKER_API_KEY = os.getenv("RERANKER_API_KEY")
+RERANKER_BASE_URL = os.getenv("RERANKER_BASE_URL")
+RERANKER_MODEL = os.getenv("RERANKER_MODEL")
+
 
 if not DEEPSEEK_API_KEY:
     raise ValueError("API key为空，请配置API key")
