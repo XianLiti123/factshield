@@ -22,9 +22,14 @@ def rerank(query:str,documents:list[str],top_n:int=3)->list[tuple[str,float]]:
         },
         timeout=30
     )
-    data = response.json()
-    if response.status_code != 200 or data.get("code"):
-        raise RuntimeError(f"reranker 调用失败: {data.get('message',response.text)} (request_id={data.get('request_id','无')})")
+    if response.status_code != 200:
+        raise RuntimeError(f"reranker 调用失败: HTTP {response.status_code}: {response.text[:200]}")
+    try:
+        data = response.json()
+    except ValueError:
+        raise RuntimeError(f"reranker 返回了非 JSON 响应，请检查 RERANKER_BASE_URL 是否指向 rerank 端点: {response.text[:200]}")
+    if data.get("code"):
+        raise RuntimeError(f"reranker 调用失败: {data.get('message')} (request_id={data.get('request_id','无')})")
     results = data["output"]["results"]#已按分数降序
     return [(documents[r["index"]],r["relevance_score"]) for r in results]
 

@@ -2,9 +2,13 @@ from langchain_core.tools import tool
 from markitdown import MarkItDown
 from openai import OpenAI
 import base64
+import logging
 import os
 from ..config import VISION_API_KEY,VISION_BASE_URL,VISION_MODEL
 from ..memory.SQLite.save import save_markdown
+
+#压住 pdfminer 对不规范 PDF 字体信息的刷屏警告（如 FontBBox 缺失），不影响解析结果
+logging.getLogger("pdfminer").setLevel(logging.ERROR)
 
 _md = MarkItDown()
 
@@ -37,10 +41,16 @@ def convert_document(file_path: str, max_length: int = 5000, safe: bool = True) 
     except Exception as e:
         return f"文档转换失败: {e}"
     content = result.text_content
+    save_error = None
     if safe:
-        save_markdown(content)#保存完整内容，不受截断影响
+        try:
+            save_markdown(content)#保存完整内容，不受截断影响
+        except Exception as e:
+            save_error = e#保存失败不影响转换结果返回
     if max_length > 0:
         content = content[:max_length]
+    if save_error:
+        content += f"\n\n[提示] 完整内容保存到知识库失败: {save_error}"
     return content or "文档内容为空"
 
 
@@ -69,8 +79,14 @@ def ai_recognize_document(file_path: str, max_length: int = 5000, safe: bool = T
             return f"该工具仅支持图片和 PDF 文件（收到 {ext or '未知类型'}），其他格式请使用 convert_document"
     except Exception as e:
         return f"AI 识别失败: {e}"
+    save_error = None
     if safe:
-        save_markdown(content)#保存完整内容，不受截断影响
+        try:
+            save_markdown(content)#保存完整内容，不受截断影响
+        except Exception as e:
+            save_error = e#保存失败不影响转换结果返回
     if max_length > 0:
         content = content[:max_length]
+    if save_error:
+        content += f"\n\n[提示] 完整内容保存到知识库失败: {save_error}"
     return content or "识别结果为空"

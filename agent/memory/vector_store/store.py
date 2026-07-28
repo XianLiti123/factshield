@@ -11,11 +11,13 @@ PERSIST_DIR = str(Path(__file__).parent / "chroma_db")
 #embedding 客户端，未配置时为 None
 #check_embedding_ctx_length=False：直接发送原文，不做 tiktoken 预分词
 #（部分云端兼容接口不支持 token 数组格式的 input）
+#chunk_size=20：部分云端兼容接口单批最多 20 条文本，按服务商上限分批
 _embeddings = OpenAIEmbeddings(
     model=EMBEDDING_MODEL,
     base_url=EMBEDDING_BASE_URL,
     api_key=EMBEDDING_API_KEY, #type:ignore
-    check_embedding_ctx_length=False
+    check_embedding_ctx_length=False,
+    chunk_size=20
 ) if EMBEDDING_API_KEY and EMBEDDING_BASE_URL and EMBEDDING_MODEL else None
 
 #文本切分器，按固定长度+重叠切分

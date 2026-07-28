@@ -10,8 +10,8 @@ def advanced_research(query: str, num: int = 3) -> str:
     num = max(1,min(num,20))#钳制到 [1,20]
     try:
         results = precise_search(query,num=num)
-    except RuntimeError as e:
-        return str(e)#未配置 embedding/reranker 等情况，把指引返回给 LLM
+    except Exception as e:
+        return f"精确检索失败: {e}"#未配置、接口报错等情况，把原因返回给 LLM，不中断对话
     if not results:
         return "知识库中没有找到相关内容"
     return "\n\n---\n\n".join(results)
