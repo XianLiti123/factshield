@@ -5,7 +5,6 @@ import {
   ClockCircleOutlined,
   DatabaseOutlined,
   HistoryOutlined,
-  LockOutlined,
   PaperClipOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
@@ -92,12 +91,6 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
           <div><strong>历史情景复盘 SubAgent</strong><span>{running ? '正在执行 Mock 统计' : '等待研究员手动触发'}</span></div>
         </div>
       </section>
-
-      <div className="history-restriction-banner">
-        <LockOutlined />
-        <div><strong>能力边界已锁定</strong><span>仅查询和整理已结束历史事件的客观数据，不解读规律、不推断未来、不产生任何投资建议。</span></div>
-        <Tag color="blue">必备模块</Tag>
-      </div>
 
       <section className="page-card history-config-card">
         <div className="history-config-field"><span>当前研究任务</span><strong>{run.title}</strong></div>

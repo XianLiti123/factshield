@@ -6,28 +6,28 @@ import {
   DownOutlined,
   FileSearchOutlined,
   FileTextOutlined,
-  PlusOutlined,
   SearchOutlined,
-  UnorderedListOutlined,
-  QuestionCircleOutlined,
+  RocketOutlined,
   SafetyCertificateFilled,
-  SettingOutlined,
 } from '@ant-design/icons'
 import { Avatar, Badge, Button, Input, Tooltip } from 'antd'
 import { useWorkspaceStore } from '../store'
 
 const navItems = [
-  { key: 'tasks' as const, label: '研究任务', icon: <UnorderedListOutlined /> },
-  { key: 'workbench' as const, label: '核验工作台', icon: <FileSearchOutlined /> },
-  { key: 'topology' as const, label: 'Agent 拓扑', icon: <ApartmentOutlined /> },
-  { key: 'analytics' as const, label: '历史情景复盘', icon: <BarChartOutlined /> },
+  { key: 'tasks' as const, label: '开始研究', icon: <RocketOutlined /> },
+  { key: 'workbench' as const, label: '待我复核', icon: <FileSearchOutlined /> },
   { key: 'reports' as const, label: '研究底稿', icon: <FileTextOutlined /> },
 ]
 
+const secondaryItems = [
+  { key: 'topology' as const, label: '执行监控', icon: <ApartmentOutlined /> },
+  { key: 'analytics' as const, label: '历史情景复盘', icon: <BarChartOutlined /> },
+]
+
 const pageMeta = {
-  tasks: { title: '研究任务', subtitle: '管理研究主题、公开材料与核验进度' },
-  workbench: { title: '核验工作台', subtitle: '审阅事实主张、原始证据与双层核验结论' },
-  topology: { title: 'Agent 拓扑', subtitle: '查看 Supervisor 与隔离 SubAgent 的受控执行状态' },
+  tasks: { title: '开始研究', subtitle: '输入问题，其余步骤交给系统' },
+  workbench: { title: '待我复核', subtitle: '只处理系统无法自动确认的疑点' },
+  topology: { title: '执行监控', subtitle: '查看各执行单元的进度、耗时、回传状态与异常' },
   analytics: { title: '历史情景复盘', subtitle: '对照已结束事件的公开时序数据与客观指标' },
   reports: { title: '研究底稿', subtitle: '汇总证据链、核验记录与可审计交付物' },
 }
@@ -35,7 +35,19 @@ const pageMeta = {
 export function AppShell({ children }: { children: ReactNode }) {
   const activeView = useWorkspaceStore((state) => state.activeView)
   const setActiveView = useWorkspaceStore((state) => state.setActiveView)
+  const taskPhase = useWorkspaceStore((state) => state.taskPhase)
+  const reviewedClaimIds = useWorkspaceStore((state) => state.reviewedClaimIds)
+  const openReviewQueue = useWorkspaceStore((state) => state.openReviewQueue)
   const activeMeta = pageMeta[activeView]
+  const pendingCount = taskPhase === 'ready' ? 0 : Math.max(0, 2 - reviewedClaimIds.length)
+
+  const navigate = (view: typeof navItems[number]['key'] | typeof secondaryItems[number]['key']) => {
+    if (view === 'workbench' && taskPhase === 'draft') {
+      openReviewQueue('claim-3')
+      return
+    }
+    setActiveView(view)
+  }
 
   return (
     <div className="app-layout">
@@ -56,17 +68,23 @@ export function AppShell({ children }: { children: ReactNode }) {
             <button
               className={activeView === item.key ? 'nav-item active' : 'nav-item'}
               key={item.key}
-              onClick={() => setActiveView(item.key)}
+              onClick={() => navigate(item.key)}
             >
               {item.icon}<span>{item.label}</span>
-              {item.key === 'workbench' && <em>5</em>}
+              {item.key === 'workbench' && pendingCount > 0 && <em>{pendingCount}</em>}
             </button>
           ))}
         </nav>
 
         <div className="sidebar-divider" />
-        <button className="nav-item"><SettingOutlined /><span>系统设置</span></button>
-        <button className="nav-item"><QuestionCircleOutlined /><span>使用帮助</span></button>
+        <div className="sidebar-section-label">辅助查看</div>
+        <nav className="sidebar-nav secondary" aria-label="辅助导航">
+          {secondaryItems.map((item) => (
+            <button className={activeView === item.key ? 'nav-item active' : 'nav-item'} key={item.key} onClick={() => navigate(item.key)}>
+              {item.icon}<span>{item.label}</span>
+            </button>
+          ))}
+        </nav>
 
         <div className="isolation-card">
           <div className="isolation-icon"><SafetyCertificateFilled /></div>
@@ -86,7 +104,6 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
           <div className="topbar-actions">
             <Input className="workspace-search" prefix={<SearchOutlined />} placeholder="搜索任务、主张或证据" allowClear />
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setActiveView('tasks')}>新建研究</Button>
             <Tooltip title="通知中心">
               <Badge dot><Button className="topbar-icon-button" icon={<BellOutlined />} /></Badge>
             </Tooltip>

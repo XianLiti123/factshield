@@ -10,6 +10,7 @@ import { AnalyticsView } from './components/AnalyticsView'
 import { ReportsView } from './components/ReportsView'
 import { TaskCenter } from './components/TaskCenter'
 import { LoginView } from './components/LoginView'
+import { SupervisorAssistant } from './components/SupervisorAssistant'
 import { getResearchRun } from './services/mockApi'
 import { useWorkspaceStore } from './store'
 
@@ -19,6 +20,7 @@ function App() {
   const demoStep = useWorkspaceStore((state) => state.demoStep)
   const isDemoRunning = useWorkspaceStore((state) => state.isDemoRunning)
   const advanceDemo = useWorkspaceStore((state) => state.advanceDemo)
+  const finishResearch = useWorkspaceStore((state) => state.finishResearch)
   const stopDemo = useWorkspaceStore((state) => state.stopDemo)
 
   const { data: run, isLoading, isError, refetch } = useQuery({
@@ -29,12 +31,13 @@ function App() {
   useEffect(() => {
     if (!isDemoRunning) return
     if (demoStep >= 8) {
+      finishResearch('claim-3')
       stopDemo()
       return
     }
-    const timer = window.setTimeout(advanceDemo, 850)
+    const timer = window.setTimeout(advanceDemo, 7200)
     return () => window.clearTimeout(timer)
-  }, [advanceDemo, demoStep, isDemoRunning, stopDemo])
+  }, [advanceDemo, demoStep, finishResearch, isDemoRunning, stopDemo])
 
   if (!isAuthenticated) {
     return <LoginView onLogin={() => setIsAuthenticated(true)} />
@@ -63,6 +66,7 @@ function App() {
           {activeView === 'topology' && <AgentTopology run={run} />}
           {activeView === 'analytics' && <AnalyticsView run={run} />}
           {activeView === 'reports' && <ReportsView run={run} />}
+          <SupervisorAssistant run={run} />
         </>
       )}
     </AppShell>
