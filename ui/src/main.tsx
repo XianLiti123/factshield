@@ -6,6 +6,7 @@ import zhCN from 'antd/locale/zh_CN'
 import App from './App'
 import './styles.css'
 import '@xyflow/react/dist/style.css'
+import './workspace-theme.css'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -22,18 +23,19 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       locale={zhCN}
       theme={{
         token: {
-          colorPrimary: '#246bfd',
-          colorText: '#172033',
-          colorTextSecondary: '#68738a',
-          colorBgLayout: '#f4f6fa',
-          colorBorderSecondary: '#e8ebf2',
+          colorPrimary: '#084d5c',
+          colorInfo: '#0d6575',
+          colorText: '#17302f',
+          colorTextSecondary: '#70817e',
+          colorBgLayout: '#edf3f0',
+          colorBorderSecondary: '#e1e9e6',
           borderRadius: 8,
           fontFamily: "MiSans, sans-serif",
         },
         components: {
           Button: { controlHeight: 36 },
-          Table: { headerBg: '#f7f8fb', headerColor: '#68738a' },
-          Tabs: { itemSelectedColor: '#172033', inkBarColor: '#246bfd' },
+          Table: { headerBg: '#eef6f3', headerColor: '#61736f' },
+          Tabs: { itemSelectedColor: '#17302f', inkBarColor: '#0d6575' },
         },
       }}
     >

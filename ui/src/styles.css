@@ -107,7 +107,7 @@ button { color: inherit; }
 @keyframes auth-panel-exit-right { to { transform: translateX(140%); } }
 @keyframes auth-panel-enter-left { from { transform: translateX(-140%); } to { transform: translateX(0); } }
 .login-heading { margin-bottom: 36px; }
-.login-heading h1 { margin: 0; color: #172126; font-size: 32px; font-weight: 700; line-height: 1.25; letter-spacing: -.5px; }
+.login-heading h1 { margin: 0; color: #172126; font-size: 32px; font-weight: 700; line-height: 1.25; letter-spacing: 0; }
 .login-heading p { margin: 10px 0 0; color: #859097; font-size: 14px; }
 .login-form .ant-form-item { margin-bottom: 22px; }
 .login-form .ant-form-item-label { padding-bottom: 8px; }

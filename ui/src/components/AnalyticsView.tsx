@@ -53,16 +53,17 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
   const current = indicatorSeries[indicator]
 
   const chartOption = useMemo(() => ({
-    color: ['#246bfd', '#7c54c8', '#1f9a70'],
-    tooltip: { trigger: 'axis', valueFormatter: (value: number) => `${value} ${current.unit}` },
-    legend: { top: 2, right: 8, icon: 'circle', textStyle: { color: '#66738a', fontSize: 10 } },
+    color: ['#0d6575', '#d39a43', '#3f86a2'],
+    textStyle: { fontFamily: 'MiSans, sans-serif', color: '#405651', fontSize: 12 },
+    tooltip: { trigger: 'axis', valueFormatter: (value: number) => `${value} ${current.unit}`, textStyle: { fontFamily: 'MiSans, sans-serif', fontSize: 12, color: '#263f39' } },
+    legend: { top: 2, right: 8, icon: 'circle', textStyle: { fontFamily: 'MiSans, sans-serif', color: '#405751', fontSize: 13 } },
     grid: { left: 48, right: 20, top: 44, bottom: 38 },
     xAxis: {
       type: 'category', boundaryGap: false,
       data: ['T-12', 'T-9', 'T-6', 'T-3', 'T0', 'T+3', 'T+6', 'T+9', 'T+12', 'T+15', 'T+18', 'T+21', 'T+24'],
-      axisTick: { show: false }, axisLine: { lineStyle: { color: '#dfe4ed' } }, axisLabel: { color: '#7c879b', fontSize: 9 },
+      axisTick: { show: false }, axisLine: { lineStyle: { color: '#dfe4ed' } }, axisLabel: { fontFamily: 'MiSans, sans-serif', color: '#405751', fontSize: 13 },
     },
-    yAxis: { type: 'value', name: current.unit, nameTextStyle: { color: '#8b96aa' }, axisLabel: { color: '#7c879b', fontSize: 9 }, splitLine: { lineStyle: { color: '#edf0f5' } } },
+    yAxis: { type: 'value', name: current.unit, nameTextStyle: { fontFamily: 'MiSans, sans-serif', color: '#405751', fontSize: 13 }, axisLabel: { fontFamily: 'MiSans, sans-serif', color: '#405751', fontSize: 13 }, splitLine: { lineStyle: { color: '#edf0f5' } } },
     series: [
       { name: '2014 样本', type: 'line', smooth: true, symbolSize: 5, data: current.values[0], lineStyle: { width: 2 } },
       { name: '2018 样本', type: 'line', smooth: true, symbolSize: 5, data: current.values[1], lineStyle: { width: 2 } },

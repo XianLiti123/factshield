@@ -3,7 +3,7 @@ import {
   CheckCircleFilled,
   ClockCircleOutlined,
   CloudUploadOutlined,
-  FilePdfOutlined,
+  DatabaseOutlined,
   FileSearchOutlined,
   PlusOutlined,
   SafetyCertificateOutlined,
@@ -35,24 +35,41 @@ export function TaskCenter({ run }: { run: ResearchRun }) {
 
   return (
     <div className="task-center">
-      <section className="task-hero page-card">
+      <section className="task-page-heading">
         <div>
-          <span className="eyebrow">金融研究辅助工作台</span>
-          <h1>从研究问题到可追溯证据底稿</h1>
-          <p>输入研究主题或上传公开材料，系统运行过程以 Mock 数据演示；最终研判始终由研究员完成。</p>
+          <span className="eyebrow">FactShield Research Space</span>
+          <h1>研究任务总览</h1>
+          <p>集中管理研究主题、公开信源、事实主张与双层核验进度。</p>
         </div>
-        <Button type="primary" size="large" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建研究任务</Button>
+        <div className="task-heading-actions">
+          <Button icon={<CloudUploadOutlined />} onClick={() => setCreateOpen(true)}>导入公开材料</Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建研究任务</Button>
+        </div>
       </section>
 
-      <section className="task-guide-grid">
-        <div className="guide-card"><span>01</span><FileSearchOutlined /><div><strong>提交研究需求</strong><p>输入宏观、行业、政策或风险研究主题，也可上传 PDF、Excel 公开材料。</p></div></div>
-        <div className="guide-card"><span>02</span><SafetyCertificateOutlined /><div><strong>观察隔离核验</strong><p>查看主控派发、原子 SubAgent 独立运行与双层核验状态。</p></div></div>
-        <div className="guide-card"><span>03</span><FilePdfOutlined /><div><strong>审阅证据底稿</strong><p>集中复核待复核、高度存疑内容，点击结论即可返回原文定位。</p></div></div>
+      <section className="task-kpi-grid">
+        <div className="metric-card"><div><span>进行中任务</span><strong>1</strong><small><i className="up" /> 当前核验任务</small></div><ClockCircleOutlined /></div>
+        <div className="metric-card"><div><span>待人工复核</span><strong>1</strong><small><i className="warn" /> 1 项归因冲突</small></div><SafetyCertificateOutlined /></div>
+        <div className="metric-card"><div><span>事实主张</span><strong>25</strong><small><i className="up" /> 跨 3 个研究任务</small></div><FileSearchOutlined /></div>
+        <div className="metric-card"><div><span>原始证据</span><strong>102</strong><small><i className="up" /> 全部保留原文定位</small></div><DatabaseOutlined /></div>
+      </section>
+
+      <section className="page-card task-process-card">
+        <div className="compact-section-header"><div><strong>受控核验链路</strong><span>当前任务 · {run.id}</span></div><span className="process-live"><i /> 运行中</span></div>
+        <div className="task-process">
+          <div className="process-step done"><span>01</span><div><strong>Supervisor 拆解</strong><small>形成原子核验任务</small></div></div>
+          <div className="process-line" />
+          <div className="process-step done"><span>02</span><div><strong>SubAgent 隔离执行</strong><small>彼此禁止直接通信</small></div></div>
+          <div className="process-line" />
+          <div className="process-step active"><span>03</span><div><strong>双层交叉核验</strong><small>独立幻觉审查复核</small></div></div>
+          <div className="process-line muted" />
+          <div className="process-step"><span>04</span><div><strong>研究底稿归档</strong><small>保留证据与审计记录</small></div></div>
+        </div>
       </section>
 
       <section className="page-card task-table-card">
         <div className="page-card-header">
-          <div><span className="eyebrow">Mock 历史数据</span><h2>研究任务</h2><p>查看运行状态、核验结果和可审计底稿。</p></div>
+          <div><span className="eyebrow">Research Queue</span><h2>研究任务</h2><p>查看运行状态、核验结果和可审计底稿。</p></div>
           <Button icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>创建任务</Button>
         </div>
         <Table
