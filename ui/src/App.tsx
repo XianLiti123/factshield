@@ -11,6 +11,7 @@ import { ReportsView } from './components/ReportsView'
 import { TaskCenter } from './components/TaskCenter'
 import { LoginView } from './components/LoginView'
 import { SupervisorAssistant } from './components/SupervisorAssistant'
+import { SettingsView } from './components/SettingsView'
 import { getResearchRun } from './services/mockApi'
 import { useWorkspaceStore } from './store'
 
@@ -60,13 +61,14 @@ function App() {
       )}
       {run && (
         <>
-          {activeView !== 'tasks' && <ResearchHeader run={run} />}
+          {!['tasks', 'settings'].includes(activeView) && <ResearchHeader run={run} />}
           {activeView === 'tasks' && <TaskCenter run={run} />}
           {activeView === 'workbench' && <Workbench run={run} />}
           {activeView === 'topology' && <AgentTopology run={run} />}
           {activeView === 'analytics' && <AnalyticsView run={run} />}
           {activeView === 'reports' && <ReportsView run={run} />}
-          <SupervisorAssistant run={run} />
+          {activeView === 'settings' && <SettingsView />}
+          {activeView !== 'settings' && <SupervisorAssistant run={run} />}
         </>
       )}
     </AppShell>

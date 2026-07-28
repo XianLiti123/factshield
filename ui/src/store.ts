@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type ViewName = 'tasks' | 'workbench' | 'topology' | 'analytics' | 'reports'
+export type ViewName = 'tasks' | 'workbench' | 'topology' | 'analytics' | 'reports' | 'settings'
 export type TaskPhase = 'draft' | 'running' | 'review' | 'ready'
 
 interface WorkspaceStore {

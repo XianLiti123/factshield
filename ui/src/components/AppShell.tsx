@@ -9,6 +9,7 @@ import {
   SearchOutlined,
   RocketOutlined,
   SafetyCertificateFilled,
+  SettingOutlined,
 } from '@ant-design/icons'
 import { Avatar, Badge, Button, Input, Tooltip } from 'antd'
 import { useWorkspaceStore } from '../store'
@@ -22,6 +23,7 @@ const navItems = [
 const secondaryItems = [
   { key: 'topology' as const, label: '执行监控', icon: <ApartmentOutlined /> },
   { key: 'analytics' as const, label: '历史情景复盘', icon: <BarChartOutlined /> },
+  { key: 'settings' as const, label: '系统设置', icon: <SettingOutlined /> },
 ]
 
 const pageMeta = {
@@ -30,6 +32,7 @@ const pageMeta = {
   topology: { title: '执行监控', subtitle: '查看各执行单元的进度、耗时、回传状态与异常' },
   analytics: { title: '历史情景复盘', subtitle: '对照已结束事件的公开时序数据与客观指标' },
   reports: { title: '研究底稿', subtitle: '汇总证据链、核验记录与可审计交付物' },
+  settings: { title: '系统设置', subtitle: '管理模型连接与研究偏好' },
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
