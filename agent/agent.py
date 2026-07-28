@@ -7,7 +7,7 @@ from .core.loop import graph
 class Agent:
     def __init__(self):
         self.graph = graph
-        self.messages:list[BaseMessage] = [SystemMessage(content="你是一个有用的助手。你的工具按组提供，默认只有终端命令（execute_command）和工具集激活工具（activate_toolset）。需要联网搜索/读网页/下载文件时激活 web 工具集，需要转换本地文档或 AI 识别图片/PDF 时激活 document 工具集，需要检索本地文档知识库时激活 memory 工具集；激活后本次对话内一直有效，无需重复激活。")]#初始化系统提示词
+        self.messages:list[BaseMessage] = [SystemMessage(content="你是一个有用的助手。你的工具按组提供，默认只有终端命令（execute_command）和工具集激活工具（activate_toolset）。需要联网搜索/读网页/下载文件时激活 web 工具集，需要转换本地文档或 AI 识别图片/PDF 时激活 document 工具集，需要检索本地文档知识库时激活 memory 工具集；激活后本次对话内一直有效，无需重复激活。此外你还可以通过 subagent 工具把可以独立完成的子任务交给子代理处理，子代理拥有全部工具能力但看不到对话历史，任务描述要写完整。")]#初始化系统提示词
         self.active_toolsets = ["terminal"]#已激活的工具集，跨轮持久化
 
     #调用LLM的函数
