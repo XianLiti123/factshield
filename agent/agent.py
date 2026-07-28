@@ -7,15 +7,17 @@ from .core.loop import graph
 class Agent:
     def __init__(self):
         self.graph = graph
-        self.messages:list[BaseMessage] = [SystemMessage(content="你是一个有用的助手，可以用终端命令、联网搜索、读取网页、下载网络文件、转换本地文档（PDF/Word/PPT/Excel 等转 Markdown）和 AI 高精度识别图片或 PDF（含扫描件）帮用户解决问题。")]#初始化系统提示词
+        self.messages:list[BaseMessage] = [SystemMessage(content="你是一个有用的助手。你的工具按组提供，默认只有终端命令（execute_command）和工具集激活工具（activate_toolset）。需要联网搜索/读网页/下载文件时激活 web 工具集，需要转换本地文档或 AI 识别图片/PDF 时激活 document 工具集，需要检索本地文档知识库时激活 memory 工具集；激活后本次对话内一直有效，无需重复激活。")]#初始化系统提示词
+        self.active_toolsets = ["terminal"]#已激活的工具集，跨轮持久化
 
     #调用LLM的函数
     def run(self,user_input:str)->str:
         self.messages.append(HumanMessage(content=user_input))
         result = self.graph.invoke({
-            "messages":self.messages
+            "messages":self.messages,"active_toolsets":self.active_toolsets
         })#type:ignore
         self.messages = result["messages"]
+        self.active_toolsets = result.get("active_toolsets",self.active_toolsets)
         return result["messages"][-1].content
 
     #带流式调用LLM的函数
@@ -26,9 +28,16 @@ class Agent:
         collected:dict[str,BaseMessage] = {}#本轮产生的消息，按id累加
         order:list[str] = []#消息出现顺序
 
-        for chunk,metadata in self.graph.stream(
-            {"messages":self.messages},stream_mode="messages"
+        for mode,payload in self.graph.stream(
+            {"messages":self.messages,"active_toolsets":self.active_toolsets},
+            stream_mode=["messages","updates"]
         ):#type:ignore
+            if mode == "updates":
+                toolsets_update = payload.get("tools",{}).get("active_toolsets")#工具节点可能更新了激活的工具集
+                if toolsets_update:
+                    self.active_toolsets = list(dict.fromkeys(self.active_toolsets+toolsets_update))#updates 里是本次新增，做并集
+                continue
+            chunk,metadata = payload
             msg_id = chunk.id
             if msg_id in collected:
                 collected[msg_id] = collected[msg_id] + chunk#type:ignore #同一条消息的分片累加

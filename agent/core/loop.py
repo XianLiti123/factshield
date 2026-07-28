@@ -1,20 +1,19 @@
 from langgraph.graph import StateGraph,END
 from ..state.base import AgentState
 from ..llm.client import ChatClient
-from ..tools.toolslist import full_tools
+from ..tools.toolslist import full_tools,toolsets
+from ..tools.activate import activate_toolset
 from langgraph.prebuilt import ToolNode
 
 # 创建LLM
 LLMclient = ChatClient()
 
 
-#为LLM绑定上工具
-LLM_with_tools = LLMclient.llm.bind_tools(full_tools)
-
-
 #创建调用LLM的函数
 def call_LLM(state:AgentState):
-    response = LLM_with_tools.invoke(state["messages"])
+    names = state.get("active_toolsets") or ["terminal"]#type:ignore #当前激活的工具集，默认终端
+    tools = [activate_toolset]+[t for n in names for t in toolsets.get(n,[])]#元工具常驻，其余按激活状态动态绑定
+    response = LLMclient.llm.bind_tools(tools).invoke(state["messages"])
     return {"messages":[response]}
 
 
@@ -31,7 +30,7 @@ agentloop = StateGraph(AgentState)#绑定state状态
 
 agentloop.add_node("call_LLM",call_LLM)#添加节点，此为调用LLM的节点
 
-agentloop.add_node("tools",ToolNode(full_tools))#设置工具节点
+agentloop.add_node("tools",ToolNode(full_tools+[activate_toolset]))#设置工具节点，执行端持全量工具（不耗上下文）
 
 agentloop.set_entry_point("call_LLM") #从call_LLM节点开始
 
