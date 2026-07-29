@@ -1,18 +1,23 @@
 import json
 import uuid
+from contextvars import ContextVar
 
 from ..memory.reranker.rerank import rerank
 from . import turns_store
 from .db import get_connection, init_db
+from .users import ensure_admin
 
-init_db()  #确保 sessions/turns 表存在
+init_db()  #确保各表存在
+
+#当前请求/会话的用户上下文：LLM 工具在图内执行时拿不到 user_id，靠它在 Agent 调图前注入
+current_user_id: ContextVar[int] = ContextVar("current_user_id", default=ensure_admin())
 
 
-def create_session(session_id: str | None = None) -> str:
-    #建会话行（已存在则复用），不传 id 时生成 uuid
+def create_session(session_id: str | None = None, user_id: int | None = None) -> str:
+    #建会话行（已存在则复用），不传 id 时生成 uuid；user_id 为归属用户
     sid = session_id or uuid.uuid4().hex
     with get_connection() as conn:
-        conn.execute("INSERT OR IGNORE INTO sessions (session_id) VALUES (?)", (sid,))
+        conn.execute("INSERT OR IGNORE INTO sessions (session_id, user_id) VALUES (?,?)", (sid, user_id))
     return sid
 
 
@@ -25,6 +30,15 @@ def load_session(session_id: str) -> dict | None:
     state = dict(row)
     state["active_toolsets"] = json.loads(state["active_toolsets"])
     return state
+
+
+def session_belongs_to(session_id: str, user_id: int) -> bool:
+    #校验会话是否属于指定用户（api 层归属校验用）
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM sessions WHERE session_id=? AND user_id=?", (session_id, user_id)
+        ).fetchone()
+    return row is not None
 
 
 def save_turn(session_id: str, seq: int, user_text: str, assistant_text: str,
@@ -70,17 +84,18 @@ def precise_search_turns(query: str, k: int = 3) -> list[str]:
     return [text for text, _ in rerank(query, chunks, top_n=k)]
 
 
-def list_sessions() -> list[dict]:
-    #列出全部会话，按最近更新倒序
+def list_sessions(user_id: int) -> list[dict]:
+    #列出指定用户的全部会话，按最近更新倒序
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT session_id, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
+            "SELECT session_id, created_at, updated_at FROM sessions WHERE user_id=? ORDER BY updated_at DESC",
+            (user_id,)
         ).fetchall()
     return [dict(row) for row in rows]
 
 
 def delete_session(session_id: str) -> bool:
-    #删除会话：Chroma 轮次切片 + SQLite 两表级联删除，不存在时返回 False
+    #删除会话：Chroma 轮次切片 + SQLite 两表级联删除，不存在时返回 False（归属校验由调用方负责）
     existed = load_session(session_id) is not None
     if not existed:
         return False
@@ -91,44 +106,51 @@ def delete_session(session_id: str) -> bool:
     return True
 
 
-# ---- 用户画像（全局一份，跨会话共享，不带 session_id）----
+# ---- 用户画像（按 user_id 隔离；user_id 缺省取当前用户上下文）----
 
-#画像条目软上限，超限时工具层提示 LLM 先合并/删除旧条目
+#画像条目软上限（单用户），超限时工具层提示 LLM 先合并/删除旧条目
 MAX_PROFILE_FACTS = 50
 
 
-def add_fact(content: str) -> int:
+def _uid(user_id: int | None) -> int:
+    return user_id if user_id is not None else current_user_id.get()
+
+
+def add_fact(content: str, user_id: int | None = None) -> int:
     #新增一条画像事实，返回条目 id
     with get_connection() as conn:
-        cursor = conn.execute("INSERT INTO profile_facts (content) VALUES (?)", (content,))
+        cursor = conn.execute("INSERT INTO profile_facts (user_id, content) VALUES (?,?)", (_uid(user_id), content))
         return cursor.lastrowid  # type: ignore
 
 
-def update_fact(fact_id: int, content: str) -> bool:
-    #更新一条画像事实，条目不存在时返回 False
+def update_fact(fact_id: int, content: str, user_id: int | None = None) -> bool:
+    #更新一条画像事实（仅限本人条目），条目不存在时返回 False
     with get_connection() as conn:
         cursor = conn.execute(
-            "UPDATE profile_facts SET content=?, updated_at=datetime('now','localtime') WHERE id=?",
-            (content, fact_id)
+            "UPDATE profile_facts SET content=?, updated_at=datetime('now','localtime') WHERE id=? AND user_id=?",
+            (content, fact_id, _uid(user_id))
         )
         return cursor.rowcount > 0
 
 
-def delete_fact(fact_id: int) -> bool:
-    #删除一条画像事实，条目不存在时返回 False
+def delete_fact(fact_id: int, user_id: int | None = None) -> bool:
+    #删除一条画像事实（仅限本人条目），条目不存在时返回 False
     with get_connection() as conn:
-        cursor = conn.execute("DELETE FROM profile_facts WHERE id=?", (fact_id,))
+        cursor = conn.execute("DELETE FROM profile_facts WHERE id=? AND user_id=?", (fact_id, _uid(user_id)))
         return cursor.rowcount > 0
 
 
-def list_facts() -> list[dict]:
-    #列出全部画像事实，按 id 升序
+def list_facts(user_id: int | None = None) -> list[dict]:
+    #列出指定用户的全部画像事实，按 id 升序
     with get_connection() as conn:
-        rows = conn.execute("SELECT id, content, created_at, updated_at FROM profile_facts ORDER BY id").fetchall()
+        rows = conn.execute(
+            "SELECT id, content, created_at, updated_at FROM profile_facts WHERE user_id=? ORDER BY id",
+            (_uid(user_id),)
+        ).fetchall()
     return [dict(row) for row in rows]
 
 
-def profile_text() -> str:
+def profile_text(user_id: int | None = None) -> str:
     #把画像事实拼成注入系统提示词的文本（"1. ...\n2. ..."），无事实时返回空串
-    facts = list_facts()
+    facts = list_facts(user_id)
     return "\n".join(f"{i}. {row['content']}" for i, row in enumerate(facts, 1))

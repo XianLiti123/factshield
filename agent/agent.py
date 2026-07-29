@@ -7,6 +7,8 @@ from .core.loop import graph
 from .core.context import estimate_tokens,needs_compaction,compact_messages
 from .core.prompt import build_system_prompt
 from .session import store as session_store
+from .session.store import current_user_id
+from .session.users import ensure_admin
 
 logger = logging.getLogger(__name__)
 
@@ -17,12 +19,13 @@ SYSTEM_PROMPT = build_system_prompt()
 #Agent的对外接口
 #agent类
 class Agent:
-    def __init__(self,session_id:str|None=None):
+    def __init__(self,session_id:str|None=None,user_id:int|None=None):
         self.graph = graph
-        self.session_id = session_store.create_session(session_id)#建行或复用
+        self.user_id = user_id if user_id is not None else ensure_admin()#缺省归 admin（CLI 直用免登录）
+        self.session_id = session_store.create_session(session_id,self.user_id)#建行或复用
         #画像只在会话建立时加载一次，会话生命周期内固定不变：
         #中途重建系统提示会打飞整段前缀缓存，因此本会话存入的画像要到下次新建对话才生效
-        self.messages:list[BaseMessage] = [SystemMessage(content=build_system_prompt(session_store.profile_text() or None))]#初始化系统提示词
+        self.messages:list[BaseMessage] = [SystemMessage(content=build_system_prompt(session_store.profile_text(self.user_id) or None))]#初始化系统提示词
         self.active_toolsets = ["terminal"]#已激活的工具集，跨轮持久化
         self.context_tokens = 0#当前上下文token数的运行值，随轮次增量维护，不再全量遍历历史；随会话持久化到 sessions.db
         self._turn_seq = 0#当前轮次序号，与 turns 表的 seq 对应
@@ -91,66 +94,74 @@ class Agent:
 
     #调用LLM的函数
     def run(self,user_input:str)->str:
-        self._maybe_compact()
-        self.messages.append(HumanMessage(content=user_input))
-        result = self.graph.invoke({
-            "messages":self.messages,"active_toolsets":self.active_toolsets
-        })#type:ignore
-        self.messages = result["messages"]
-        self.active_toolsets = result.get("active_toolsets",self.active_toolsets)
-        self._update_context_tokens(result["messages"])
-        answer = result["messages"][-1].content
-        self._save_turn(user_input,answer if isinstance(answer,str) else str(answer))
-        return answer
+        ctx = current_user_id.set(self.user_id)#注入用户上下文，图内的画像工具靠它感知归属
+        try:
+            self._maybe_compact()
+            self.messages.append(HumanMessage(content=user_input))
+            result = self.graph.invoke({
+                "messages":self.messages,"active_toolsets":self.active_toolsets
+            })#type:ignore
+            self.messages = result["messages"]
+            self.active_toolsets = result.get("active_toolsets",self.active_toolsets)
+            self._update_context_tokens(result["messages"])
+            answer = result["messages"][-1].content
+            self._save_turn(user_input,answer if isinstance(answer,str) else str(answer))
+            return answer
+        finally:
+            current_user_id.reset(ctx)
 
     #带流式调用LLM的函数
     def run_stream(self,user_input:str)->Iterator[tuple[str,str]]:
         #流式运行，yield (事件类型, 文本)
         #事件类型: "token" 为LLM输出的文本片段, "think" 为思考内容, "tool" 为工具执行状态, "context" 为上下文压缩提示
-        if self._maybe_compact():
-            yield "context","上下文已压缩"
-        self.messages.append(HumanMessage(content=user_input))
-        collected:dict[str,BaseMessage] = {}#本轮产生的消息，按id累加
-        order:list[str] = []#消息出现顺序
+        ctx = current_user_id.set(self.user_id)#注入用户上下文，图内的画像工具靠它感知归属
+        try:
+            if self._maybe_compact():
+                yield "context","上下文已压缩"
+            self.messages.append(HumanMessage(content=user_input))
+            collected:dict[str,BaseMessage] = {}#本轮产生的消息，按id累加
+            order:list[str] = []#消息出现顺序
 
-        for mode,payload in self.graph.stream(
-            {"messages":self.messages,"active_toolsets":self.active_toolsets},
-            stream_mode=["messages","updates"]
-        ):#type:ignore
-            if mode == "updates":
-                toolsets_update = payload.get("tools",{}).get("active_toolsets")#工具节点可能更新了激活的工具集
-                if toolsets_update:
-                    self.active_toolsets = list(dict.fromkeys(self.active_toolsets+toolsets_update))#updates 里是本次新增，做并集
-                continue
-            chunk,metadata = payload
-            msg_id = chunk.id
-            if msg_id in collected:
-                collected[msg_id] = collected[msg_id] + chunk#type:ignore #同一条消息的分片累加
-            else:
-                collected[msg_id] = chunk
-                order.append(msg_id)
+            for mode,payload in self.graph.stream(
+                {"messages":self.messages,"active_toolsets":self.active_toolsets},
+                stream_mode=["messages","updates"]
+            ):#type:ignore
+                if mode == "updates":
+                    toolsets_update = payload.get("tools",{}).get("active_toolsets")#工具节点可能更新了激活的工具集
+                    if toolsets_update:
+                        self.active_toolsets = list(dict.fromkeys(self.active_toolsets+toolsets_update))#updates 里是本次新增，做并集
+                    continue
+                chunk,metadata = payload
+                msg_id = chunk.id
+                if msg_id in collected:
+                    collected[msg_id] = collected[msg_id] + chunk#type:ignore #同一条消息的分片累加
+                else:
+                    collected[msg_id] = chunk
+                    order.append(msg_id)
 
-            node = metadata.get("langgraph_node")
-            if node == "call_LLM":
-                reasoning = chunk.additional_kwargs.get("reasoning_content")
-                if reasoning:
-                    yield "think",reasoning
-                if chunk.content:
-                    yield "token",chunk.content
-            elif node == "tools" and isinstance(chunk,ToolMessage):
-                args_text = self._find_tool_args(collected,chunk.tool_call_id)
-                yield ("tool",f"{chunk.name}: {args_text}" if args_text else str(chunk.name))
+                node = metadata.get("langgraph_node")
+                if node == "call_LLM":
+                    reasoning = chunk.additional_kwargs.get("reasoning_content")
+                    if reasoning:
+                        yield "think",reasoning
+                    if chunk.content:
+                        yield "token",chunk.content
+                elif node == "tools" and isinstance(chunk,ToolMessage):
+                    args_text = self._find_tool_args(collected,chunk.tool_call_id)
+                    yield ("tool",f"{chunk.name}: {args_text}" if args_text else str(chunk.name))
 
-        self.messages.extend(collected[i] for i in order)
-        self._update_context_tokens([collected[i] for i in order])
-        #取本轮最后一条有内容的AI消息作为最终回复入库
-        answer = ""
-        for msg_id in reversed(order):
-            msg = collected[msg_id]
-            if isinstance(msg,AIMessage) and isinstance(msg.content,str) and msg.content:
-                answer = msg.content
-                break
-        self._save_turn(user_input,answer)
+            self.messages.extend(collected[i] for i in order)
+            self._update_context_tokens([collected[i] for i in order])
+            #取本轮最后一条有内容的AI消息作为最终回复入库
+            answer = ""
+            for msg_id in reversed(order):
+                msg = collected[msg_id]
+                if isinstance(msg,AIMessage) and isinstance(msg.content,str) and msg.content:
+                    answer = msg.content
+                    break
+            self._save_turn(user_input,answer)
+        finally:
+            current_user_id.reset(ctx)
 
     @staticmethod
     def _find_tool_args(collected:dict[str,BaseMessage],tool_call_id:str)->str:

@@ -1,9 +1,12 @@
 from typing import Iterator
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from agent.session.store import load_session
+
+from ..core.security import get_current_user
 from ..core.session import get_or_create_session
 from ..utils.sse import sse_event
 
@@ -16,9 +19,12 @@ class ChatRequest(BaseModel):
 
 
 @router.post("/chat/stream")
-def chat_stream(request: ChatRequest) -> StreamingResponse:
+def chat_stream(request: ChatRequest, user_id: int = Depends(get_current_user)) -> StreamingResponse:
     #流式对话接口，SSE 返回 JSON 事件：token(正文)/think(思考)/tool(工具状态)/done/error
-    session_id, agent, lock = get_or_create_session(request.session_id)
+    existing = load_session(request.session_id) if request.session_id else None
+    if existing and existing["user_id"] != user_id:
+        raise HTTPException(status_code=404, detail="会话不存在")  #他人会话不暴露存在性
+    session_id, agent, lock = get_or_create_session(request.session_id, user_id)
 
     def event_stream() -> Iterator[str]:
         with lock:  #同一会话串行执行，防止并发写乱消息历史

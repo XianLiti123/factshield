@@ -2,11 +2,13 @@ import uuid
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Query, UploadFile
+from fastapi import APIRouter, Depends, Query, UploadFile
 
 from agent.tools.convert import ai_recognize_document, convert_document
 
-router = APIRouter(prefix="/documents", tags=["documents"])
+from ..core.security import get_current_user
+
+router = APIRouter(prefix="/documents", tags=["documents"], dependencies=[Depends(get_current_user)])
 
 #上传文件落盘目录（agent 工作区内，运行时自动创建）
 UPLOAD_DIR = Path(__file__).resolve().parent.parent.parent / "agent" / "workspace" / "uploads"

@@ -1,10 +1,12 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from agent.memory.SQLite.db import get_connection, init_db
 from agent.memory.SQLite.save import save_markdown
 
-router = APIRouter(prefix="/knowledge", tags=["knowledge"])
+from ..core.security import get_current_user
+
+router = APIRouter(prefix="/knowledge", tags=["knowledge"], dependencies=[Depends(get_current_user)])
 
 init_db()  #确保 documents 表存在
 

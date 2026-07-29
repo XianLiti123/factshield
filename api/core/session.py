@@ -10,13 +10,14 @@ _sessions: dict[str, tuple[Agent, threading.Lock]] = {}
 _registry_lock = threading.Lock()
 
 
-def get_or_create_session(session_id: str | None) -> tuple[str, Agent, threading.Lock]:
-    #按session_id取会话，不存在则新建（Agent 会从 sessions.db 恢复历史）；不传id时生成uuid
+def get_or_create_session(session_id: str | None, user_id: int) -> tuple[str, Agent, threading.Lock]:
+    #按session_id取会话，不存在则新建（Agent 会从 sessions.db 恢复历史）；不传id时生成uuid。
+    #user_id 为当前登录用户，新建会话归其所有
     if session_id is None:
         session_id = uuid.uuid4().hex
     with _registry_lock:
         if session_id not in _sessions:
-            _sessions[session_id] = (Agent(session_id), threading.Lock())
+            _sessions[session_id] = (Agent(session_id, user_id), threading.Lock())
         agent, lock = _sessions[session_id]
     return session_id, agent, lock
 
@@ -27,9 +28,9 @@ def get_session(session_id: str) -> tuple[Agent, threading.Lock] | None:
         return _sessions.get(session_id)
 
 
-def list_sessions() -> list[str]:
-    #列出全部持久化会话 id（按最近更新倒序），不只是本进程内存中活跃的
-    return [row["session_id"] for row in session_store.list_sessions()]
+def list_sessions(user_id: int) -> list[str]:
+    #列出当前用户的全部持久化会话 id（按最近更新倒序）
+    return [row["session_id"] for row in session_store.list_sessions(user_id)]
 
 
 def delete_session(session_id: str) -> bool:
