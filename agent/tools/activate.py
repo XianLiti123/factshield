@@ -9,7 +9,7 @@ from .toolslist import toolsets
 def activate_toolset(toolset_names:list[str],tool_call_id:Annotated[str,InjectedToolCallId])->Command:
     """激活指定的工具集，激活后本次对话内一直可用，无需重复激活。可选工具集：
     web（联网搜索/读取网页/下载文件）、document（转换本地文档为Markdown/AI高精度识别图片或PDF）、
-    memory（精确检索本地文档知识库）。需要哪类能力就先激活对应工具集，可一次激活多个。
+    memory（精确检索本地文档知识库/回忆历史对话）。需要哪类能力就先激活对应工具集，可一次激活多个。
     toolset_names 为要激活的工具集名称列表。"""
     valid = [n for n in toolset_names if n in toolsets]
     invalid = [n for n in toolset_names if n not in toolsets]

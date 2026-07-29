@@ -1,16 +1,47 @@
+import logging
 from typing import Iterator
-from langchain_core.messages import HumanMessage,SystemMessage,BaseMessage,ToolMessage
+
+from langchain_core.messages import HumanMessage,SystemMessage,BaseMessage,ToolMessage,AIMessage
+
 from .core.loop import graph
 from .core.context import estimate_tokens,needs_compaction,compact_messages
+from .session import store as session_store
+
+logger = logging.getLogger(__name__)
+
+#系统提示词，重建会话视图时复用同一常量
+SYSTEM_PROMPT = "你是一个有用的助手。你的工具按组提供，默认只有终端命令（execute_command）和工具集激活工具（activate_toolset）。需要联网搜索/读网页/下载文件时激活 web 工具集，需要转换本地文档或 AI 识别图片/PDF 时激活 document 工具集，需要检索本地文档知识库或回忆历史对话时激活 memory 工具集；激活后本次对话内一直有效，无需重复激活。此外你还可以通过 subagent 工具把可以独立完成的子任务交给子代理处理，子代理拥有全部工具能力但看不到对话历史，任务描述要写完整。"
+
 
 #Agent的对外接口
 #agent类
 class Agent:
-    def __init__(self):
+    def __init__(self,session_id:str|None=None):
         self.graph = graph
-        self.messages:list[BaseMessage] = [SystemMessage(content="你是一个有用的助手。你的工具按组提供，默认只有终端命令（execute_command）和工具集激活工具（activate_toolset）。需要联网搜索/读网页/下载文件时激活 web 工具集，需要转换本地文档或 AI 识别图片/PDF 时激活 document 工具集，需要检索本地文档知识库时激活 memory 工具集；激活后本次对话内一直有效，无需重复激活。此外你还可以通过 subagent 工具把可以独立完成的子任务交给子代理处理，子代理拥有全部工具能力但看不到对话历史，任务描述要写完整。")]#初始化系统提示词
+        self.session_id = session_store.create_session(session_id)#建行或复用
+        self.messages:list[BaseMessage] = [SystemMessage(content=SYSTEM_PROMPT)]#初始化系统提示词
         self.active_toolsets = ["terminal"]#已激活的工具集，跨轮持久化
-        self.context_tokens = 0#当前上下文token数的运行值，随轮次增量维护，不再全量遍历历史；将来随会话持久化到SQLite
+        self.context_tokens = 0#当前上下文token数的运行值，随轮次增量维护，不再全量遍历历史；随会话持久化到 sessions.db
+        self._turn_seq = 0#当前轮次序号，与 turns 表的 seq 对应
+        self._persist = True#embedding 不可用时降级为内存态
+
+        #尝试从 sessions.db 恢复会话状态（跨进程/重启续聊）
+        try:
+            state = session_store.load_session(self.session_id)
+            if state:
+                self.context_tokens = state["context_tokens"]
+                self.active_toolsets = state["active_toolsets"]
+                self._turn_seq = session_store.max_seq(self.session_id)
+                if state["summary"]:
+                    self.messages.append(SystemMessage(content=f"以下是此前对话的摘要：\n{state['summary']}"))
+                for seq,user_text,assistant_text in session_store.get_turns(self.session_id,after_seq=state["compacted_until_seq"]):
+                    self.messages.append(HumanMessage(content=user_text))
+                    if assistant_text:
+                        self.messages.append(AIMessage(content=assistant_text))
+        except RuntimeError as e:
+            #未配置 Embedding 模型：会话降级为内存态，不静默丢失
+            logger.warning("会话历史持久化不可用，本次会话仅内存态: %s",e)
+            self._persist = False
 
     #上下文压缩：达到窗口阈值时（或force手动触发）调一次LLM把历史压成摘要
     #只在每轮开始时检查，不每轮压缩，保证提示缓存命中率
@@ -20,6 +51,9 @@ class Agent:
         summary = compact_messages(self.messages[1:])#系统提示不参与压缩
         self.messages = [self.messages[0],SystemMessage(content=f"以下是此前对话的摘要：\n{summary}")]
         self.context_tokens = estimate_tokens(self.messages)#压缩后只剩2条消息，重算开销可忽略
+        if self._persist:
+            #摘要和覆盖位置落盘，原始轮次历史不动
+            session_store.save_summary(self.session_id,summary,self._turn_seq,self.context_tokens)
         return True
 
     #手动压缩上下文的公开入口（供CLI/api层调用）
@@ -40,6 +74,18 @@ class Agent:
         else:
             self.context_tokens += estimate_tokens(new_messages)
 
+    #每轮结束后持久化这一轮（用户输入+助手最终回复），工具中间消息不入库
+    def _save_turn(self,user_input:str,assistant_text:str)->None:
+        if not self._persist:
+            return
+        self._turn_seq += 1
+        try:
+            session_store.save_turn(self.session_id,self._turn_seq,user_input,assistant_text,
+                                    self.context_tokens,self.active_toolsets)
+        except RuntimeError as e:
+            logger.warning("会话历史写入失败，后续转为内存态: %s",e)
+            self._persist = False
+
     #调用LLM的函数
     def run(self,user_input:str)->str:
         self._maybe_compact()
@@ -50,7 +96,9 @@ class Agent:
         self.messages = result["messages"]
         self.active_toolsets = result.get("active_toolsets",self.active_toolsets)
         self._update_context_tokens(result["messages"])
-        return result["messages"][-1].content
+        answer = result["messages"][-1].content
+        self._save_turn(user_input,answer if isinstance(answer,str) else str(answer))
+        return answer
 
     #带流式调用LLM的函数
     def run_stream(self,user_input:str)->Iterator[tuple[str,str]]:
@@ -92,6 +140,14 @@ class Agent:
 
         self.messages.extend(collected[i] for i in order)
         self._update_context_tokens([collected[i] for i in order])
+        #取本轮最后一条有内容的AI消息作为最终回复入库
+        answer = ""
+        for msg_id in reversed(order):
+            msg = collected[msg_id]
+            if isinstance(msg,AIMessage) and isinstance(msg.content,str) and msg.content:
+                answer = msg.content
+                break
+        self._save_turn(user_input,answer)
 
     @staticmethod
     def _find_tool_args(collected:dict[str,BaseMessage],tool_call_id:str)->str:
@@ -110,6 +166,7 @@ if __name__ == "__main__":
     CHAR_DELAY = 0.02#每个字之间的延时(秒)，调大打字更慢，调小更快
 
     agent = Agent()
+    print(f"会话ID: {agent.session_id}（下次可用 Agent('{agent.session_id}') 恢复）")
     print("输入 exit 退出，输入 compact 手动压缩上下文")
     while True:
         input_message = input("你: ")
