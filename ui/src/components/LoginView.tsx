@@ -1,6 +1,7 @@
 import { useState, type AnimationEvent } from 'react'
 import { LockOutlined, MailOutlined, UserOutlined } from '@ant-design/icons'
 import { Button, Checkbox, Form, Input, message } from 'antd'
+import { login, register, setToken, type UserInfo } from '../services/api'
 
 interface LoginValues {
   username?: string
@@ -14,9 +15,11 @@ type AuthMode = 'login' | 'register'
 type TransitionPhase = 'idle' | 'exit' | 'enter'
 type TransitionDirection = 'forward' | 'backward'
 
-export function LoginView({ onLogin }: { onLogin: () => void }) {
+export function LoginView({ onLogin }: { onLogin: (user: UserInfo) => void }) {
   const [mode, setMode] = useState<AuthMode>('login')
   const [submitting, setSubmitting] = useState(false)
+  const [invalidFields, setInvalidFields] = useState<string[]>([])
+  const [shakeAttempt, setShakeAttempt] = useState(0)
   const [transition, setTransition] = useState<{
     phase: TransitionPhase
     direction: TransitionDirection
@@ -46,25 +49,42 @@ export function LoginView({ onLogin }: { onLogin: () => void }) {
     }
   }
 
-  const submitLogin = () => {
+  const submitLogin = async (values: LoginValues) => {
     setSubmitting(true)
-    window.setTimeout(() => {
+    try {
+      const response = await login(values.email, values.password)
+      setToken(response.token)
+      message.success('登录成功')
+      onLogin(response.user)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '登录失败')
+    } finally {
       setSubmitting(false)
-      message.success('Mock 登录成功')
-      onLogin()
-    }, 700)
+    }
   }
 
-  const submitRegistration = () => {
+  const submitRegistration = async (values: LoginValues) => {
     setSubmitting(true)
-    window.setTimeout(() => {
+    try {
+      const response = await register(values.email, values.password)
+      setToken(response.token)
+      message.success('账号已创建')
+      onLogin(response.user)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '注册失败')
+    } finally {
       setSubmitting(false)
-      message.success('Mock 注册成功，请登录')
-      switchMode('login')
-    }, 700)
+    }
   }
 
   const isRegister = mode === 'register'
+  const invalidFieldClass = (name: string) => invalidFields.includes(name)
+    ? `auth-field-shake auth-field-shake-${shakeAttempt % 2}`
+    : ''
+  const handleValidationFailed = ({ errorFields }: { errorFields: Array<{ name: Array<string | number> }> }) => {
+    setInvalidFields(errorFields.map((field) => String(field.name[0])))
+    setShakeAttempt((attempt) => attempt + 1)
+  }
   const panelMotionClass = transition.phase === 'idle'
     ? ''
     : `auth-panel--${transition.phase}-${transition.direction}`
@@ -90,25 +110,30 @@ export function LoginView({ onLogin }: { onLogin: () => void }) {
               initialValues={isRegister ? { agreement: true } : { remember: true }}
               requiredMark={false}
               onFinish={isRegister ? submitRegistration : submitLogin}
+              onFinishFailed={handleValidationFailed}
             >
               {isRegister && (
-                <Form.Item label="用户名" name="username">
+                <Form.Item className={invalidFieldClass('username')} label="用户名" name="username">
                   <Input prefix={<UserOutlined />} placeholder="请输入用户名" autoComplete="username" />
                 </Form.Item>
               )}
 
               <Form.Item
+                className={invalidFieldClass('email')}
                 label="邮箱"
                 name="email"
+                rules={[{ required: true, message: '请输入邮箱' }, { type: 'email', message: '请输入有效邮箱' }]}
               >
                 <Input prefix={<MailOutlined />} placeholder="请输入邮箱地址" autoComplete="email" />
               </Form.Item>
 
               <Form.Item
+                className={invalidFieldClass('password')}
                 label="密码"
                 name="password"
+                rules={[{ required: true, message: '请输入密码' }, { min: 6, message: '密码至少 6 位' }]}
               >
-                <Input.Password prefix={<LockOutlined />} placeholder="请输入密码" autoComplete="current-password" />
+                <Input.Password prefix={<LockOutlined />} placeholder="请输入密码" autoComplete={isRegister ? 'new-password' : 'current-password'} />
               </Form.Item>
 
               {isRegister ? (

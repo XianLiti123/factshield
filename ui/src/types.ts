@@ -24,6 +24,8 @@ export interface Claim {
   reviewerVerdict: string
   conflictReason?: string
   issueType?: string
+  humanAction?: string | null
+  humanNote?: string | null
   evidenceIds: string[]
 }
 
@@ -43,6 +45,7 @@ export interface ResearchRun {
   company: string
   createdAt: string
   progress: number
+  status?: 'running' | 'review' | 'ready' | 'stopped' | 'failed'
   claims: Claim[]
   evidence: Evidence[]
   agents: AgentInfo[]

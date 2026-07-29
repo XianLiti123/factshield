@@ -19,8 +19,10 @@ import {
   CloseOutlined,
 } from '@ant-design/icons'
 import { Button, Drawer, Empty, Input, Modal, Progress, Segmented, Steps, Table, Tag, message } from 'antd'
+import { useQueryClient } from '@tanstack/react-query'
 import type { Claim, Evidence, ResearchRun } from '../types'
 import { getActiveTask, useWorkspaceStore } from '../store'
+import { resolveClaim as resolvePersistedClaim, retryClaim as retryPersistedClaim } from '../services/api'
 import { StatusBadge } from './StatusBadge'
 
 type ClaimVisibility = 'issues' | 'all'
@@ -63,15 +65,16 @@ function ClaimList({
   pendingCount,
   visibility,
   onVisibilityChange,
+  selectedClaimId,
+  onSelectClaim,
 }: {
   claims: Claim[]
   pendingCount: number
   visibility: ClaimVisibility
   onVisibilityChange: (visibility: ClaimVisibility) => void
+  selectedClaimId: string
+  onSelectClaim: (claimId: string) => void
 }) {
-  const selectedClaimId = useWorkspaceStore(getActiveTask).selectedClaimId
-  const selectClaim = useWorkspaceStore((state) => state.selectClaim)
-
   return (
     <section className="claim-panel">
       <div className="panel-header">
@@ -94,7 +97,7 @@ function ClaimList({
           <button
             key={claim.id}
             className={selectedClaimId === claim.id ? `claim-item selected ${claim.status}` : 'claim-item'}
-            onClick={() => selectClaim(claim.id)}
+            onClick={() => onSelectClaim(claim.id)}
           >
             <div className="claim-item-top">
               <span className="claim-index">C{String(claim.index).padStart(2, '0')}</span>
@@ -187,17 +190,22 @@ function EvidenceViewer({ evidenceList }: { evidenceList: Evidence[] }) {
   )
 }
 
-function VerdictPanel({ claim, onResolve }: { claim: Claim; onResolve: (decision: string) => void }) {
+function VerdictPanel({ claim, onResolve, onRetry, persisted }: {
+  claim: Claim
+  onResolve: (action: 'reject' | 'keep' | 'remove' | 'rewrite', decision: string) => void
+  onRetry: () => Promise<void>
+  persisted: boolean
+}) {
   const [auditOpen, setAuditOpen] = useState(false)
   const [retryOpen, setRetryOpen] = useState(false)
   const decisions = claim.status === 'conflict'
     ? [
-        { label: '不采纳', result: '不采纳该主张' },
-        { label: '保留并注明', result: '保留并标注疑点' },
+        { label: '不采纳', action: 'reject' as const, result: '不采纳该主张' },
+        { label: '保留并注明', action: 'keep' as const, result: '保留并标注疑点' },
       ]
     : claim.status === 'review' ? [
-        { label: '删除该表述', result: '删除无法证实的表述' },
-        { label: '改为计划投产', result: '改写为计划投产' },
+        { label: '删除该表述', action: 'remove' as const, result: '删除无法证实的表述' },
+        { label: '改为计划投产', action: 'rewrite' as const, result: '改写为计划投产' },
       ] : []
 
   const comparisonRows = [
@@ -242,7 +250,7 @@ function VerdictPanel({ claim, onResolve }: { claim: Claim; onResolve: (decision
             <strong>{claim.status === 'conflict' ? '归因证据存在冲突' : '现有证据无法证实该表述'}</strong>
           </div>
           {decisions.map((decision) => (
-            <button key={decision.label} onClick={() => onResolve(decision.result)}>{decision.label}</button>
+            <button key={decision.label} onClick={() => onResolve(decision.action, decision.result)}>{decision.label}</button>
           ))}
           <button className="primary" onClick={() => setRetryOpen(true)}><RetweetOutlined /> 重新取证</button>
         </div>
@@ -329,8 +337,8 @@ function VerdictPanel({ claim, onResolve }: { claim: Claim; onResolve: (decision
         <div className="audit-seal"><SafetyCertificateOutlined /><div><strong>审计链完整</strong><span>各环节时间、来源与原文定位均已记录；后台核验任务彼此隔离。</span></div></div>
       </Drawer>
 
-      <Modal title="发起第二轮取证" open={retryOpen} onCancel={() => setRetryOpen(false)} onOk={() => { setRetryOpen(false); message.success('重新取证流程已加入 Mock 运行队列') }} okText="确认发起" cancelText="取消" width={660}>
-        <div className="mock-notice"><RetweetOutlined /><span>本操作只演示 UI 流程，不会实际启动后台任务或访问外部数据。</span></div>
+      <Modal title="发起第二轮取证" open={retryOpen} onCancel={() => setRetryOpen(false)} onOk={async () => { await onRetry(); setRetryOpen(false) }} okText="确认发起" cancelText="取消" width={660}>
+        <div className="mock-notice"><RetweetOutlined /><span>{persisted ? '确认后会调用 FastAPI，为当前主张启动真实重新取证。' : '本操作只演示 UI 流程，不会访问外部数据。'}</span></div>
         <div className="retry-summary"><strong>触发原因</strong><p>{claim.conflictReason}</p></div>
         <Steps
           direction="vertical"
@@ -348,8 +356,11 @@ function VerdictPanel({ claim, onResolve }: { claim: Claim; onResolve: (decision
   )
 }
 
-export function Workbench({ run }: { run: ResearchRun }) {
+export function Workbench({ run, preview = false }: { run: ResearchRun; preview?: boolean }) {
+  const queryClient = useQueryClient()
   const [claimVisibility, setClaimVisibility] = useState<ClaimVisibility>('issues')
+  const [previewSelectedClaimId, setPreviewSelectedClaimId] = useState('claim-3')
+  const [previewReviewedClaimIds, setPreviewReviewedClaimIds] = useState<string[]>([])
   const [guidance, setGuidance] = useState('')
   const [guidanceHistory, setGuidanceHistory] = useState<GuidanceRecord[]>([])
   const [guidanceAttachments, setGuidanceAttachments] = useState<File[]>([])
@@ -357,12 +368,12 @@ export function Workbench({ run }: { run: ResearchRun }) {
   const processListRef = useRef<HTMLDivElement>(null)
   const guidanceAttachmentInputRef = useRef<HTMLInputElement>(null)
   const activeTask = useWorkspaceStore(getActiveTask)
-  const taskPhase = activeTask.phase
-  const researchTopic = activeTask.researchTopic
-  const demoStep = activeTask.demoStep
-  const isDemoRunning = activeTask.isDemoRunning
-  const reviewedClaimIds = activeTask.reviewedClaimIds
-  const selectedClaimId = activeTask.selectedClaimId
+  const taskPhase = preview ? 'review' : activeTask.phase
+  const researchTopic = preview ? run.title : activeTask.researchTopic
+  const demoStep = preview ? 8 : activeTask.demoStep
+  const isDemoRunning = preview ? false : activeTask.isDemoRunning
+  const reviewedClaimIds = preview ? previewReviewedClaimIds : activeTask.reviewedClaimIds
+  const selectedClaimId = preview ? previewSelectedClaimId : activeTask.selectedClaimId
   const selectClaim = useWorkspaceStore((state) => state.selectClaim)
   const resolveClaim = useWorkspaceStore((state) => state.resolveClaim)
   const finishResearch = useWorkspaceStore((state) => state.finishResearch)
@@ -373,20 +384,50 @@ export function Workbench({ run }: { run: ResearchRun }) {
   const visibleClaims = claimVisibility === 'all' ? run.claims : pendingClaims
   const selectedClaim = visibleClaims.find((claim) => claim.id === selectedClaimId) ?? visibleClaims[0] ?? run.claims[0]
   const evidenceList = useMemo(
-    () => run.evidence.filter((evidence) => selectedClaim.evidenceIds.includes(evidence.id)),
-    [run.evidence, selectedClaim.evidenceIds],
+    () => selectedClaim ? run.evidence.filter((evidence) => selectedClaim.evidenceIds.includes(evidence.id)) : [],
+    [run.evidence, selectedClaim],
   )
 
-  const handleResolve = (decision: string) => {
+  const handleResolve = async (action: 'reject' | 'keep' | 'remove' | 'rewrite', decision: string) => {
+    if (!selectedClaim) return
     const nextClaim = pendingClaims.find((claim) => claim.id !== selectedClaim.id)
-    resolveClaim(selectedClaim.id, nextClaim?.id)
+    if (activeTask.persisted && !preview) {
+      try {
+        await resolvePersistedClaim(run.id, selectedClaim.id, action, decision)
+        await queryClient.invalidateQueries({ queryKey: ['research-run', run.id] })
+      } catch (error) {
+        message.error(error instanceof Error ? error.message : '裁决提交失败')
+        return
+      }
+    } else if (preview) {
+      setPreviewReviewedClaimIds((current) => current.includes(selectedClaim.id) ? current : [...current, selectedClaim.id])
+      if (nextClaim) setPreviewSelectedClaimId(nextClaim.id)
+    } else {
+      resolveClaim(selectedClaim.id, nextClaim?.id)
+    }
     message.success(nextClaim ? `${decision}，已自动进入下一条` : `${decision}，所有疑点已处理`)
+  }
+
+  const handleRetry = async () => {
+    if (!selectedClaim) return
+    if (!activeTask.persisted || preview) {
+      message.success('已加入演示取证队列')
+      return
+    }
+    try {
+      await retryPersistedClaim(run.id, selectedClaim.id)
+      message.success('已启动真实重新取证')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '重新取证失败')
+      throw error
+    }
   }
 
   const changeClaimVisibility = (visibility: ClaimVisibility) => {
     setClaimVisibility(visibility)
-    if (visibility === 'issues' && selectedClaim.status === 'verified' && pendingClaims[0]) {
-      selectClaim(pendingClaims[0].id)
+    if (visibility === 'issues' && selectedClaim?.status === 'verified' && pendingClaims[0]) {
+      if (preview) setPreviewSelectedClaimId(pendingClaims[0].id)
+      else selectClaim(pendingClaims[0].id)
     }
   }
 
@@ -397,6 +438,49 @@ export function Workbench({ run }: { run: ResearchRun }) {
     })
     return () => window.cancelAnimationFrame(frame)
   }, [demoStep, guidanceHistory.length, taskPhase])
+
+  if (taskPhase === 'running' && activeTask.persisted) {
+    const completedAgents = run.agents.filter((agent) => agent.status === 'done').length
+    const currentAgent = run.agents.find((agent) => agent.status === 'running')
+    return (
+      <div className="research-running-page">
+        <div className="running-two-column-layout">
+          <section className="running-progress-card">
+            <div className="running-card-heading">
+              <div>
+                <span className="start-kicker"><i /> FastAPI 正在执行真实研究</span>
+                <h2>{researchTopic || run.title}</h2>
+                <p>这里读取后端持久化进度；切换到其他任务不会中断当前流水线。</p>
+              </div>
+            </div>
+            <Progress percent={Math.round(run.progress)} showInfo={false} strokeColor="#0d6575" trailColor="#dfeae6" />
+            <div className="running-progress-meta"><strong>{Math.round(run.progress)}%</strong><span>{currentAgent ? `${currentAgent.name}正在处理` : '等待下一项进度回传'}</span></div>
+            <div className="running-progress-summary">
+              <div><span>执行单元</span><strong>{completedAgents} / {run.agents.length}</strong><small>已完成</small></div>
+              <div><span>已生成主张</span><strong>{run.claims.length}</strong><small>条事实主张</small></div>
+              <div><span>已绑定证据</span><strong>{run.evidence.length}</strong><small>条原文证据</small></div>
+            </div>
+            <div className="running-footer-actions"><Button onClick={() => setActiveView('topology')}>查看执行监控</Button><Button onClick={() => setActiveView('tasks')}>返回任务列表</Button></div>
+          </section>
+          <section className="research-process-panel running-process-card">
+            <div className="process-panel-heading"><div><strong>真实执行状态</strong><span>状态由后端任务详情定时同步</span></div><span className="process-recording"><i /> 实时刷新</span></div>
+            <div className="research-process-list">
+              {run.agents.map((agent) => (
+                <div className={`research-process-item ${agent.status === 'running' ? 'current' : ''}`} key={agent.id}>
+                  <span className="process-item-icon"><SafetyCertificateOutlined /></span>
+                  <div className="process-item-content">
+                    <div className="process-item-title"><strong>{agent.name}</strong><span>{agent.role}</span></div>
+                    <p className="process-agent-broadcast">{agent.detail || (agent.status === 'done' ? '该环节已完成并写入任务记录。' : agent.status === 'running' ? '当前环节正在执行。' : '等待前序环节完成。')}</p>
+                  </div>
+                  <div className="process-item-controls"><small>{agent.status === 'done' ? '已完成' : agent.status === 'running' ? '进行中' : agent.status === 'warning' ? '需处理' : '等待中'}</small></div>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+      </div>
+    )
+  }
 
   if (taskPhase === 'running') {
     const progress = Math.round((demoStep / 8) * 100)
@@ -714,10 +798,18 @@ export function Workbench({ run }: { run: ResearchRun }) {
           <div className="ready-summary"><span><strong>3</strong>可信结论</span><span><strong>2</strong>人工复核</span><span><strong>8</strong>原始证据</span></div>
           <div className="ready-actions">
             <Button type="primary" size="large" icon={<CloudDownloadOutlined />} onClick={() => setActiveView('reports')}>查看并导出底稿</Button>
-            <Button size="large" onClick={() => setActiveView('tasks')}>开始新研究</Button>
+            <Button size="large" onClick={() => setActiveView('tasks')}>返回任务列表</Button>
           </div>
         </section>
       </div>
+    )
+  }
+
+  if (!selectedClaim) {
+    return (
+      <section className="research-workbench page-card">
+        <Empty description={taskPhase === 'failed' ? '研究执行失败，尚未生成可复核主张' : '研究尚未生成可复核主张'} />
+      </section>
     )
   }
 
@@ -734,10 +826,12 @@ export function Workbench({ run }: { run: ResearchRun }) {
             pendingCount={pendingClaims.length}
             visibility={claimVisibility}
             onVisibilityChange={changeClaimVisibility}
+            selectedClaimId={selectedClaimId}
+            onSelectClaim={preview ? setPreviewSelectedClaimId : selectClaim}
           />
           <EvidenceViewer key={selectedClaim.id} evidenceList={evidenceList} />
         </section>
-        <VerdictPanel claim={selectedClaim} onResolve={handleResolve} />
+        <VerdictPanel claim={selectedClaim} onResolve={handleResolve} onRetry={handleRetry} persisted={Boolean(activeTask.persisted && !preview)} />
       </div>
     </div>
   )

@@ -1,25 +1,62 @@
 import { BarChartOutlined, CheckCircleFilled, DownloadOutlined, EyeOutlined, FilePdfOutlined, FileWordOutlined, HistoryOutlined, PaperClipOutlined } from '@ant-design/icons'
-import { Button, Tag, message } from 'antd'
+import { Button, Modal, Tag, message } from 'antd'
+import { useState } from 'react'
 import type { ResearchRun } from '../types'
 import { getActiveTask, useWorkspaceStore } from '../store'
 import { StatusBadge } from './StatusBadge'
+import { getAuditLog, getReport } from '../services/api'
 
 export function ReportsView({ run }: { run: ResearchRun }) {
   const setActiveView = useWorkspaceStore((state) => state.setActiveView)
-  const reviewedClaimIds = useWorkspaceStore(getActiveTask).reviewedClaimIds
+  const activeTask = useWorkspaceStore(getActiveTask)
+  const reviewedClaimIds = activeTask.reviewedClaimIds
+  const [reportContent, setReportContent] = useState('')
+  const [reportOpen, setReportOpen] = useState(false)
   const exportMock = (format: string) => message.success(`${format} 底稿已生成（UI 演示）`)
+  const previewReport = async () => {
+    if (!activeTask.persisted) {
+      message.info('当前是 UI 演示底稿')
+      return
+    }
+    try {
+      const report = await getReport(run.id)
+      setReportContent(report.content)
+      setReportOpen(true)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '底稿加载失败')
+    }
+  }
+  const downloadAudit = async () => {
+    if (!activeTask.persisted) {
+      message.success('审计日志已生成（UI 演示）')
+      return
+    }
+    try {
+      const audit = await getAuditLog(run.id)
+      const blob = new Blob([JSON.stringify(audit, null, 2)], { type: 'application/json;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `${run.id}-audit-log.json`
+      link.click()
+      URL.revokeObjectURL(url)
+      message.success('真实审计日志已下载')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '审计日志下载失败')
+    }
+  }
 
   return (
     <div className="reports-layout">
       <section className="page-card report-list-card">
-        <div className="page-card-header"><div><span className="eyebrow">可审计交付物</span><h2>研究底稿</h2><p>每条结论均附原始证据链和双层核验记录。</p></div></div>
+        <div className="page-card-header"><div><span className="eyebrow">可审计交付物</span><h2>当前交付版本</h2><p>每条结论均附原始证据链和双层核验记录。</p></div></div>
         <div className="report-summary">
           <div className="report-cover"><span>FACTSHIELD</span><SafetyLogo /><strong>金融研究事实核验底稿</strong><p>{run.title}</p><small>{run.id} · 2026-07-26</small></div>
           <div className="report-details">
             <h3>{run.title}</h3>
             <p>底稿已生成预览版本，当前包含 5 条事实主张、8 份原始证据、5 份一级核验记录、5 份独立复核记录与 1 份历史情景附件。</p>
             <div className="report-checks"><span><CheckCircleFilled /> 证据链接完整</span><span><CheckCircleFilled /> 引用定位有效</span><span><CheckCircleFilled /> 审计日志已封存</span></div>
-            <div className="report-actions"><Button type="primary" icon={<EyeOutlined />} onClick={() => message.info('底稿预览已打开（UI 演示）')}>预览底稿</Button><Button icon={<FilePdfOutlined />} onClick={() => exportMock('PDF')}>导出 PDF</Button><Button icon={<FileWordOutlined />} onClick={() => exportMock('Word')}>导出 Word</Button></div>
+            <div className="report-actions"><Button type="primary" icon={<EyeOutlined />} onClick={previewReport}>预览底稿</Button><Button icon={<FilePdfOutlined />} onClick={() => exportMock('PDF')}>导出 PDF</Button><Button icon={<FileWordOutlined />} onClick={() => exportMock('Word')}>导出 Word</Button></div>
             <div className="report-disclaimer">本底稿仅为金融研究辅助材料，不构成任何投资建议；高度存疑内容必须由研究员人工复核。</div>
           </div>
         </div>
@@ -50,8 +87,11 @@ export function ReportsView({ run }: { run: ResearchRun }) {
         <div className="version-item current"><i /><strong>v0.4 · 历史情景附件版</strong><span>刚刚生成</span><p>追加客观时序统计与来源记录</p></div>
         <div className="version-item"><i /><strong>v0.3 · 双层核验版</strong><span>14:42</span><p>加入独立审查结论与疑点说明</p></div>
         <div className="version-item"><i /><strong>v0.2 · 一级汇总版</strong><span>14:40</span><p>小盾完成证据汇总</p></div>
-        <Button block icon={<DownloadOutlined />} onClick={() => message.success('审计日志已生成（UI 演示）')}>下载审计日志</Button>
+        <Button block icon={<DownloadOutlined />} onClick={downloadAudit}>下载审计日志</Button>
       </aside>
+      <Modal title={`${run.id} · Markdown 底稿`} open={reportOpen} onCancel={() => setReportOpen(false)} footer={null} width={900}>
+        <pre style={{ whiteSpace: 'pre-wrap', maxHeight: '65vh', overflow: 'auto' }}>{reportContent}</pre>
+      </Modal>
     </div>
   )
 }

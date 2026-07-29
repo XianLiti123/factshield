@@ -119,6 +119,22 @@ button { color: inherit; }
 .login-form .ant-input { color: #263238; background: transparent; font-size: 14px; }
 .login-form .ant-input::placeholder { color: #a8b1b6; }
 .login-form .ant-input-password-icon { color: #86949a; }
+.login-form .auth-field-shake-0 .ant-input-affix-wrapper { animation: auth-field-shake-a .36s ease both; }
+.login-form .auth-field-shake-1 .ant-input-affix-wrapper { animation: auth-field-shake-b .36s ease both; }
+@keyframes auth-field-shake-a {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-7px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(3px); }
+}
+@keyframes auth-field-shake-b {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-7px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(3px); }
+}
 .login-options { min-height: 30px; margin: -3px 0 25px; display: flex; align-items: center; justify-content: space-between; }
 .register-agreement { min-height: 30px; margin: -3px 0 25px; display: flex; align-items: center; }
 .auth-check-control { display: inline-flex; align-items: center; gap: 7px; color: #66747a; font-size: 13px; }
@@ -170,7 +186,9 @@ button { color: inherit; }
   .auth-panel--exit-forward,
   .auth-panel--enter-forward,
   .auth-panel--exit-backward,
-  .auth-panel--enter-backward { animation-duration: 1ms; }
+  .auth-panel--enter-backward,
+  .login-form .auth-field-shake-0 .ant-input-affix-wrapper,
+  .login-form .auth-field-shake-1 .ant-input-affix-wrapper { animation-duration: 1ms; }
 }
 
 .app-layout { min-height: 100vh; display: flex; }
@@ -205,7 +223,6 @@ button { color: inherit; }
 .environment-pill { color: #68738a; font-size: 11px; display: flex; align-items: center; gap: 7px; background: #f6f8fb; border: 1px solid #e7eaf1; padding: 5px 9px; border-radius: 15px; }
 .environment-pill > span { width: 6px; height: 6px; border-radius: 50%; background: #2cac7c; }
 .topbar-actions { color: #8490a7; font-size: 10px; display: flex; align-items: center; gap: 12px; }
-.topbar-actions .ant-btn { color: #66738d; }
 .topbar-separator { height: 18px; width: 1px; background: #e5e8ee; }
 .content { padding: 0 22px 26px; max-width: 1780px; margin: 0 auto; }
 .loading-state { margin-top: 30px; background: #fff; padding: 28px; border: 1px solid #e7eaf1; border-radius: 10px; }

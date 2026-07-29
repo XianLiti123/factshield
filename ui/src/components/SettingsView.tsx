@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   ApiOutlined,
   CheckCircleFilled,
@@ -12,6 +12,7 @@ import {
   ThunderboltFilled,
 } from '@ant-design/icons'
 import { Button, Input, Modal, Select, Switch, Tag, message } from 'antd'
+import { getCapabilities, getSettings, saveModelConfig, type CapabilityStatus } from '../services/api'
 
 type ModelConfig = {
   id: string
@@ -103,6 +104,30 @@ export function SettingsView() {
   const [searchEngines, setSearchEngines] = useState<SearchEngine[]>(initialSearchEngines)
   const [activeSearchEngineId, setActiveSearchEngineId] = useState(initialSearchEngines[0].id)
   const [showSearchApiKey, setShowSearchApiKey] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [capabilities, setCapabilities] = useState<CapabilityStatus | null>(null)
+
+  useEffect(() => {
+    getSettings().then((settings) => {
+      setSlots((current) => current.map((slot) => {
+        const serverSlot = slot.id === 'primary' ? 'llm' : slot.id === 'vision' ? 'vision' : null
+        const config = serverSlot ? settings.configs[serverSlot] : undefined
+        if (!config) return slot
+        const selected = slot.models.find((model) => model.modelName === config.model_name) ?? slot.models[0]
+        return {
+          ...slot,
+          selectedModelId: selected.id,
+          models: slot.models.map((model) => model.id === selected.id ? {
+            ...model,
+            baseUrl: config.base_url,
+            apiKey: config.api_key,
+            modelName: config.model_name,
+          } : model),
+        }
+      }))
+    }).catch((error) => message.error(error instanceof Error ? error.message : '设置加载失败'))
+    getCapabilities().then(setCapabilities).catch(() => setCapabilities(null))
+  }, [])
 
   const activeSlot = useMemo(
     () => slots.find((slot) => slot.id === activeSlotId) ?? slots[0],
@@ -116,6 +141,7 @@ export function SettingsView() {
     () => searchEngines.find((engine) => engine.id === activeSearchEngineId) ?? searchEngines[0],
     [activeSearchEngineId, searchEngines],
   )
+  const isPersonalSlot = activeSlot.id === 'primary' || activeSlot.id === 'vision'
 
   const updateSelectedModel = (key: keyof ModelConfig, value: string) => {
     setSlots((current) => current.map((slot) => slot.id === activeSlotId
@@ -158,12 +184,36 @@ export function SettingsView() {
     setSearchEngines((current) => current.map((engine) => engine.id === activeSearchEngineId ? { ...engine, apiKey } : engine))
   }
 
-  const saveSettings = () => {
+  const saveSettings = async () => {
     if (!selectedModel.baseUrl.trim() || !selectedModel.modelName.trim()) {
       message.warning(`请补全${activeSlot.name}的 Base URL 和模型名称`)
       return
     }
-    message.success('系统设置已保存（UI 演示）')
+    if (activeSlot.id !== 'primary' && activeSlot.id !== 'vision') {
+      message.info(`${activeSlot.name}当前由服务端环境统一配置，页面只显示连接状态`)
+      return
+    }
+    const maskedKey = selectedModel.apiKey.includes('...') || selectedModel.apiKey === '***'
+    if (maskedKey || !selectedModel.apiKey.trim()) {
+      message.warning('请输入新的 API Key 后再保存；服务端不会回传已保存的明文密钥')
+      return
+    }
+    setSaving(true)
+    try {
+      await saveModelConfig(activeSlot.id === 'primary' ? 'llm' : 'vision', {
+        base_url: selectedModel.baseUrl.trim(),
+        model_name: selectedModel.modelName.trim(),
+        api_key: selectedModel.apiKey.trim(),
+      })
+      message.success(`${activeSlot.name}已加密保存`)
+      const settings = await getSettings()
+      const config = settings.configs[activeSlot.id === 'primary' ? 'llm' : 'vision']
+      if (config) updateSelectedModel('apiKey', config.api_key)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -171,7 +221,7 @@ export function SettingsView() {
       <section className="settings-model-panel page-card">
         <div className="settings-panel-heading">
           <div><span>独立模型分配</span><strong>模型用途</strong></div>
-          <Tag>4 个槽位</Tag>
+          <Tag>2 个个人配置 · 2 个全局能力</Tag>
         </div>
 
         <div className="settings-slot-list">
@@ -192,7 +242,7 @@ export function SettingsView() {
 
         <div className="settings-model-tip">
           <SafetyCertificateOutlined />
-          <span>四类模型配置彼此独立；切换或修改当前槽位不会覆盖其他槽位。</span>
+          <span>主 LLM 与视觉模型按账号加密保存；Embedding 和 Reranker 由服务端统一配置。</span>
         </div>
       </section>
 
@@ -215,27 +265,28 @@ export function SettingsView() {
                 onChange={selectModelForActiveSlot}
               />
             </label>
-            <Button icon={<PlusOutlined />} onClick={() => setAddModalOpen(true)}>添加候选模型</Button>
-            <Button danger type="text" icon={<DeleteOutlined />} onClick={removeSelectedModel}>删除当前</Button>
+            <Button icon={<PlusOutlined />} disabled={!isPersonalSlot} onClick={() => setAddModalOpen(true)}>添加候选模型</Button>
+            <Button danger type="text" disabled={!isPersonalSlot} icon={<DeleteOutlined />} onClick={removeSelectedModel}>删除当前</Button>
           </div>
 
           <div className="settings-form-grid compact">
             <label className="settings-field">
               <span className="settings-field-label">配置名称</span>
-              <Input value={selectedModel.name} onChange={(event) => updateSelectedModel('name', event.target.value)} placeholder="例如：DeepSeek Chat" />
+              <Input disabled={!isPersonalSlot} value={selectedModel.name} onChange={(event) => updateSelectedModel('name', event.target.value)} placeholder="例如：DeepSeek Chat" />
             </label>
             <label className="settings-field">
               <span className="settings-field-label">模型名称</span>
-              <Input value={selectedModel.modelName} onChange={(event) => updateSelectedModel('modelName', event.target.value)} placeholder="例如：deepseek-chat" />
+              <Input disabled={!isPersonalSlot} value={selectedModel.modelName} onChange={(event) => updateSelectedModel('modelName', event.target.value)} placeholder="例如：deepseek-chat" />
             </label>
             <label className="settings-field full">
               <span className="settings-field-label">Base URL</span>
-              <Input prefix={<ApiOutlined />} value={selectedModel.baseUrl} onChange={(event) => updateSelectedModel('baseUrl', event.target.value)} placeholder="https://api.example.com/v1" />
+              <Input disabled={!isPersonalSlot} prefix={<ApiOutlined />} value={selectedModel.baseUrl} onChange={(event) => updateSelectedModel('baseUrl', event.target.value)} placeholder="https://api.example.com/v1" />
             </label>
             <label className="settings-field full">
               <span className="settings-field-label">API Key</span>
               <Input
                 prefix={<SafetyCertificateOutlined />}
+                disabled={!isPersonalSlot}
                 suffix={<button className="settings-key-visibility" type="button" aria-label={showModelApiKey ? '隐藏模型 API Key' : '显示模型 API Key'} onClick={() => setShowModelApiKey((current) => !current)}>{showModelApiKey ? <EyeOutlined /> : <EyeInvisibleOutlined />}</button>}
                 type={showModelApiKey ? 'text' : 'password'}
                 value={selectedModel.apiKey}
@@ -246,8 +297,8 @@ export function SettingsView() {
           </div>
 
           <div className="settings-save-row">
-            <span><CheckCircleFilled /> 当前正在编辑：{activeSlot.name} · {selectedModel.name}</span>
-            <Button type="primary" onClick={saveSettings}>保存设置</Button>
+            <span><CheckCircleFilled /> {isPersonalSlot ? `当前正在编辑：${activeSlot.name} · ${selectedModel.name}` : `${activeSlot.name}由服务端环境统一管理`}</span>
+            <Button type="primary" disabled={!isPersonalSlot} loading={saving} onClick={saveSettings}>{isPersonalSlot ? '保存设置' : '服务端统一配置'}</Button>
           </div>
         </section>
 
@@ -272,12 +323,13 @@ export function SettingsView() {
               <label className="search-key-field">
                 <span>{activeSearchEngine.name} API Key</span>
                 <Input
+                  disabled
                   prefix={<SafetyCertificateOutlined />}
                   suffix={<button className="settings-key-visibility" type="button" aria-label={showSearchApiKey ? '隐藏搜索 API Key' : '显示搜索 API Key'} onClick={() => setShowSearchApiKey((current) => !current)}>{showSearchApiKey ? <EyeOutlined /> : <EyeInvisibleOutlined />}</button>}
                   type={showSearchApiKey ? 'text' : 'password'}
                   value={activeSearchEngine.apiKey}
                   onChange={(event) => updateSearchApiKey(event.target.value)}
-                  placeholder={`输入 ${activeSearchEngine.name} API Key`}
+                  placeholder={capabilities?.web_search ? '服务端已配置' : '请在服务端 .env 中配置'}
                 />
               </label>
             ) : (
@@ -286,7 +338,7 @@ export function SettingsView() {
                 <strong><CheckCircleFilled /> 本地 Python · 无需 API Key</strong>
               </div>
             )}
-            <small>{activeSearchEngine.description}</small>
+            <small>{activeSearchEngine.description} · {activeSearchEngine.requiresApiKey ? '由服务端环境统一配置' : '本地能力'}</small>
           </div>
         </section>
 

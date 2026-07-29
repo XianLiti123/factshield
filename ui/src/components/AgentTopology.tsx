@@ -69,14 +69,13 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
       { id: 'retriever', type: 'agent', position: { x: 600, y: 150 }, data: asNodeData(find('retriever')) },
       { id: 'scorer', type: 'agent', position: { x: 0, y: 300 }, data: asNodeData(find('scorer')) },
       { id: 'assembler', type: 'agent', position: { x: 300, y: 300 }, data: asNodeData(find('assembler')) },
-      { id: 'history', type: 'agent', position: { x: 600, y: 300 }, data: asNodeData(find('history')) },
       { id: 'reviewer', type: 'agent', position: { x: 300, y: 460 }, data: { ...find('reviewer'), kind: 'reviewer' } },
     ]
 
     const normalStyle = { stroke: '#79aaa4', strokeWidth: 1.6 }
     const reviewStyle = { stroke: '#d39a43', strokeWidth: 1.9 }
     const retryStyle = { stroke: '#dc6267', strokeWidth: 1.6, strokeDasharray: '5 4' }
-    const workerIds = ['collector', 'parser', 'retriever', 'scorer', 'assembler', 'history']
+    const workerIds = ['collector', 'parser', 'retriever', 'scorer', 'assembler']
     const topologyEdges: Edge[] = [
       ...workerIds.map((id) => ({
         id: `dispatch-${id}`,
@@ -101,7 +100,7 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
   return (
     <div className="page-card topology-page">
       <div className="page-card-header">
-        <div><span className="eyebrow">任务运行状态</span><h2>执行监控</h2><p>查看各执行单元的进度、耗时和异常，快速定位当前阻塞环节。</p></div>
+        <div><span className="eyebrow">任务运行状态</span><h2>当前执行链路</h2><p>查看各执行单元的进度、耗时和异常，快速定位当前阻塞环节。</p></div>
         <div className="topology-legend"><span><i className="running" />运行中</span><span><i className="done" />已完成</span><span><i className="warning" />需处理</span></div>
       </div>
       <div className="topology-status-strip">

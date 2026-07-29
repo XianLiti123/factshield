@@ -1,7 +1,8 @@
 import { create } from 'zustand'
+import type { ResearchRun } from './types'
 
 export type ViewName = 'tasks' | 'workbench' | 'topology' | 'analytics' | 'reports' | 'settings'
-export type TaskPhase = 'draft' | 'running' | 'review' | 'ready'
+export type TaskPhase = 'draft' | 'running' | 'review' | 'ready' | 'stopped' | 'failed'
 
 export interface ResearchTaskSession {
   id: string
@@ -17,6 +18,10 @@ export interface ResearchTaskSession {
   isDemoRunning: boolean
   createdAt: string
   updatedAt: string
+  progress?: number
+  claimCount?: number
+  persisted?: boolean
+  isDemo?: boolean
 }
 
 interface CreateTaskInput {
@@ -41,6 +46,9 @@ interface WorkspaceStore {
   resumeDemo: () => void
   toggleTaskRunning: (taskId: string) => void
   deleteTask: (taskId: string) => void
+  hydrateTasks: (tasks: ResearchTaskSession[], preserveLocalDemos?: boolean) => void
+  addTask: (task: ResearchTaskSession) => void
+  syncTaskRun: (run: ResearchRun) => void
 }
 
 const initialTasks: ResearchTaskSession[] = [
@@ -106,6 +114,23 @@ const initialTasks: ResearchTaskSession[] = [
   },
 ]
 
+const emptyTask: ResearchTaskSession = {
+  id: '',
+  title: '尚未创建研究任务',
+  company: '待选择研究对象',
+  category: '研究任务',
+  phase: 'draft',
+  researchTopic: '',
+  selectedClaimId: 'claim-1',
+  reviewClaimIds: [],
+  reviewedClaimIds: [],
+  demoStep: 0,
+  isDemoRunning: false,
+  createdAt: '',
+  updatedAt: '',
+  persisted: false,
+}
+
 const updateTask = (
   tasks: ResearchTaskSession[],
   taskId: string,
@@ -137,6 +162,8 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       isDemoRunning: true,
       createdAt: now,
       updatedAt: '刚刚',
+      persisted: false,
+      isDemo: true,
     }
     set((state) => ({ tasks: [task, ...state.tasks], activeTaskId: id, activeView: 'workbench' }))
     return id
@@ -210,21 +237,66 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       : task),
   })),
   deleteTask: (taskId) => set((state) => {
-    if (state.tasks.length <= 1) return state
     const tasks = state.tasks.filter((task) => task.id !== taskId)
     return {
       tasks,
-      activeTaskId: state.activeTaskId === taskId ? tasks[0].id : state.activeTaskId,
+      activeTaskId: state.activeTaskId === taskId ? (tasks[0]?.id ?? '') : state.activeTaskId,
       activeView: state.activeTaskId === taskId ? 'tasks' : state.activeView,
     }
   }),
+  hydrateTasks: (tasks, preserveLocalDemos = false) => set((state) => {
+    const localDemos = preserveLocalDemos
+      ? state.tasks.filter((task) => task.isDemo && !task.persisted)
+      : []
+    const hydratedTasks = [
+      ...localDemos,
+      ...tasks.filter((task) => !localDemos.some((demo) => demo.id === task.id)),
+    ]
+    return {
+      tasks: hydratedTasks,
+      activeTaskId: hydratedTasks.some((task) => task.id === state.activeTaskId) ? state.activeTaskId : (hydratedTasks[0]?.id ?? ''),
+      activeView: hydratedTasks.length > 0 ? state.activeView : 'tasks',
+    }
+  }),
+  addTask: (task) => set((state) => ({
+    tasks: [task, ...state.tasks.filter((item) => item.id !== task.id)],
+    activeTaskId: task.id,
+    activeView: 'tasks',
+  })),
+  syncTaskRun: (run) => set((state) => ({
+    tasks: updateTask(state.tasks, run.id, (task) => {
+      const reviewClaimIds = run.claims
+        .filter((claim) => claim.status !== 'verified')
+        .map((claim) => claim.id)
+      const reviewedClaimIds = run.claims
+        .filter((claim) => Boolean(claim.humanAction))
+        .map((claim) => claim.id)
+      const phase: TaskPhase = run.status === 'running' || run.status === 'review' || run.status === 'ready'
+        || run.status === 'stopped' || run.status === 'failed'
+        ? run.status
+        : task.phase
+      return {
+        ...task,
+        phase,
+        progress: run.progress,
+        claimCount: run.claims.length,
+        reviewClaimIds,
+        reviewedClaimIds,
+        selectedClaimId: run.claims.some((claim) => claim.id === task.selectedClaimId)
+          ? task.selectedClaimId
+          : (reviewClaimIds[0] ?? run.claims[0]?.id ?? ''),
+        isDemoRunning: phase === 'running',
+      }
+    }),
+  })),
 }))
 
 export const getActiveTask = (state: WorkspaceStore) => (
-  state.tasks.find((task) => task.id === state.activeTaskId) ?? state.tasks[0]
+  state.tasks.find((task) => task.id === state.activeTaskId) ?? state.tasks[0] ?? emptyTask
 )
 
 export const getTaskProgress = (task: ResearchTaskSession) => {
+  if (task.persisted && typeof task.progress === 'number') return Math.round(task.progress)
   if (task.phase === 'ready' || task.phase === 'review') return 100
   return Math.round((task.demoStep / 8) * 100)
 }

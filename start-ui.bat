@@ -2,6 +2,12 @@
 setlocal
 title FactShield UI
 
+cd /d "%~dp0"
+if errorlevel 1 goto :missing_ui
+
+set "API_PYTHON=%~dp0.venv\Scripts\python.exe"
+if not exist "%API_PYTHON%" goto :missing_python
+
 cd /d "%~dp0ui"
 if errorlevel 1 goto :missing_ui
 
@@ -22,11 +28,19 @@ call %PNPM_CMD% install --frozen-lockfile
 if errorlevel 1 goto :install_failed
 
 if /i "%~1"=="--check" (
-  echo [OK] Frontend environment is ready.
+  cd /d "%~dp0"
+  "%API_PYTHON%" -c "import fastapi_app"
+  if errorlevel 1 goto :missing_api_dependencies
+  echo [OK] FastAPI and frontend environment are ready.
   exit /b 0
 )
 
-echo [2/2] Starting FactShield UI...
+echo [2/3] Starting FastAPI on http://127.0.0.1:8000 ...
+cd /d "%~dp0"
+start "FactShield API" /min "%API_PYTHON%" -m uvicorn fastapi_app:app --host 127.0.0.1 --port 8000
+cd /d "%~dp0ui"
+
+echo [3/3] Starting FactShield UI...
 echo The browser will open automatically. Keep this window open while using the UI.
 echo.
 call %PNPM_CMD% run dev --open
@@ -40,6 +54,16 @@ goto :failed
 :missing_node
 echo [ERROR] Node.js is not installed or is not available in PATH.
 echo Install Node.js 20.19 or newer, then run this file again.
+goto :failed
+
+:missing_python
+echo [ERROR] The project virtual environment was not found.
+echo Create .venv and run: .venv\Scripts\python.exe -m pip install -r requirements.txt
+goto :failed
+
+:missing_api_dependencies
+echo [ERROR] FastAPI could not be imported from the project environment.
+echo Run: .venv\Scripts\python.exe -m pip install -r requirements.txt
 goto :failed
 
 :missing_package_manager
