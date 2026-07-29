@@ -18,8 +18,13 @@ _PROFILE_GUIDE = "当用户透露关于自身的稳定信息（称呼、偏好�
 
 
 def build_system_prompt(profile_text: str | None = None) -> str:
-    #组装系统提示词：角色设定 + 规定约束 + 能力指南 + 画像指引 +（有画像时）画像段，无画像时整段省略
-    parts = [_ROLE_PROMPT, _RULES_PROMPT, _BASE_PROMPT, _PROFILE_GUIDE]
+    #组装系统提示词：角色设定 + 规定约束 + 能力指南 + 画像指引 + 当前日期 +（有画像时）画像段，无画像时整段省略
+    from datetime import datetime
+    _weekdays = "一二三四五六日"
+    now = datetime.now()
+    date_line = (f"当前日期：{now.strftime('%Y-%m-%d')}（星期{_weekdays[now.weekday()]}）。"
+                 "涉及时间敏感的问题（如「今天」「最近」「最新」）以此日期为准。")
+    parts = [_ROLE_PROMPT, _RULES_PROMPT, _BASE_PROMPT, _PROFILE_GUIDE, date_line]
     if profile_text:
         parts.append(f"当前用户画像：\n{profile_text}")
     return "\n\n".join(parts)

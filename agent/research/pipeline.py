@@ -375,6 +375,11 @@ def assemble_node(state: ResearchState, config: RunnableConfig) -> dict:
     return {}
 
 
+def _clean(text: object) -> str:
+    #LLM 产出的文本可能含换行/竖线，会破坏 Markdown 行结构与表格；压成单行并转义竖线
+    return str(text).replace("\r", " ").replace("\n", " ").replace("|", "\\|").strip()
+
+
 def _build_report(task: dict) -> str:
     #组装 Markdown 研究底稿（幂等：完全由库中结构化数据重建，可在流水线外重新生成）
     from datetime import datetime
@@ -404,15 +409,15 @@ def _build_report(task: dict) -> str:
     for c in claims:
         lines += [
             "",
-            f"### [{c['id']}] {c['statement']}",
+            f"### [{c['id']}] {_clean(c['statement'])}",
             "",
             f"- 可信度标签：**{STATUS_LABEL.get(c['status'], c['status'])}**（置信度 {c['confidence']:.2f}）",
-            f"- 类别：{c['category']}",
-            f"- 主控一级核验：{c['supervisor_verdict'] or '（无）'}",
-            f"- 幻觉审查复核：{c['reviewer_verdict'] or '（无）'}",
+            f"- 类别：{_clean(c['category'])}",
+            f"- 主控一级核验：{_clean(c['supervisor_verdict']) or '（无）'}",
+            f"- 幻觉审查复核：{_clean(c['reviewer_verdict']) or '（无）'}",
         ]
         if c["conflict_reason"]:
-            lines.append(f"- 存疑原因：{c['conflict_reason']}")
+            lines.append(f"- 存疑原因：{_clean(c['conflict_reason'])}")
         eids = ce_map.get(c["id"], [])
         if eids:
             lines.append("- 证据：")
@@ -420,15 +425,15 @@ def _build_report(task: dict) -> str:
                 e = evidence[eid]
                 relation = "支持" if e["relation"] == "support" else "质疑"
                 lines.append(
-                    f"  - [{eid}]（{relation}，可信度 {e['credibility']:.2f}）「{e['quote']}」"
-                    f" —— {e['publisher']}，{e['locator']}")
+                    f"  - [{eid}]（{relation}，可信度 {e['credibility']:.2f}）「{_clean(e['quote'])}」"
+                    f" —— {_clean(e['publisher'])}，{_clean(e['locator'])}")
         else:
             lines.append("- 证据：（未检索到，需人工补充取证）")
     materials = store.list_materials(task_id)
     if materials:
         lines += ["", "## 参考信源", ""]
         for m in materials:
-            lines.append(f"- {m['title']}（{m['publisher']}，{m['source_type']}，"
+            lines.append(f"- {_clean(m['title'])}（{_clean(m['publisher'])}，{_clean(m['source_type'])}，"
                          f"可信度 {m['credibility']:.2f}）：{m['url']}")
     attachment = _attachment_section(task_id)
     if attachment:
@@ -453,9 +458,9 @@ def _attachment_section(task_id: str) -> str:
              "| 事件 | 时段 | 数据点数 | 客观描述 |",
              "| --- | --- | --- | --- |"]
     for e in payload["events"]:
-        lines.append(f"| {e['name']} | {e['period']} | {len(e['points'])} | {e['description']} |")
+        lines.append(f"| {_clean(e['name'])} | {_clean(e['period'])} | {len(e['points'])} | {_clean(e['description'])} |")
     for e in payload["events"]:
-        lines += ["", f"### {e['name']}（{e['period']}）", ""]
+        lines += ["", f"### {_clean(e['name'])}（{_clean(e['period'])}）", ""]
         lines.append("、".join(f"{p['t']}：{p['value']}{payload.get('unit', '')}" for p in e["points"]))
     lines += ["", f"数据完整度：{payload['completeness'] * 100:.0f}%"]
     return "\n".join(lines)

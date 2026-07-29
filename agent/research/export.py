@@ -51,6 +51,24 @@ def _parse(md: str) -> list[tuple[str, object]]:
     return blocks
 
 
+def _display_width(text: str) -> int:
+    #估算文本显示宽度：CJK 字符计 2，其余计 1（用于表格列宽分配）
+    return sum(2 if ord(ch) > 0x2E7F else 1 for ch in text)
+
+
+def _col_widths(rows: list[list[str]], avail: float) -> list[float]:
+    #按各列内容宽度占比分配表格列宽：长文本列自动换行，短列（时段/数字）不被挤压
+    cols = max(len(r) for r in rows)
+    weights = []
+    for c in range(cols):
+        w = max((_display_width(r[c]) for r in rows if c < len(r)), default=1)
+        weights.append(min(w, 40))  #封顶，避免个别超长单元格独占宽度
+    total = sum(weights) or 1
+    widths = [max(avail * 0.08, avail * w / total) for w in weights]  #每列保底 8%
+    scale = avail / sum(widths)  #保底后总和可能超出可用宽度，等比缩回
+    return [w * scale for w in widths]
+
+
 def report_to_docx(md: str) -> bytes:
     from docx import Document
     from docx.oxml.ns import qn
@@ -75,9 +93,13 @@ def report_to_docx(md: str) -> bytes:
             rows = content  # type: ignore[assignment]
             table = doc.add_table(rows=len(rows), cols=len(rows[0]))  # type: ignore[arg-type]
             table.style = "Table Grid"
+            table.autofit = False  #关闭自动布局，按内容占比固定列宽，防止长文本列挤压短列
+            from docx.shared import Cm
+            widths = _col_widths(rows, 15.9)  #A4 默认页边距下正文可用宽度约 15.9cm
             for r, row in enumerate(rows):  # type: ignore[union-attr]
                 for c, cell in enumerate(row):
                     table.cell(r, c).text = cell
+                    table.cell(r, c).width = Cm(widths[c])
         elif kind == "para":
             doc.add_paragraph(str(content))
         #hr 在 Word 中忽略
@@ -127,7 +149,8 @@ def report_to_pdf(md: str) -> bytes:
         elif kind == "table":
             rows = [[Paragraph(esc(cell), styles["body"]) for cell in row]
                     for row in content]  # type: ignore[union-attr]
-            table = Table(rows)
+            avail = A4[0] - 40 * mm  #页面可用宽度（左右各 20mm 边距）
+            table = Table(rows, colWidths=_col_widths(content, avail))  # type: ignore[arg-type]
             table.setStyle(TableStyle([
                 ("GRID", (0, 0), (-1, -1), 0.5, "#999999"),
                 ("BACKGROUND", (0, 0), (-1, 0), "#EEEEEE"),
