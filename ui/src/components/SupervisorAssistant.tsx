@@ -10,9 +10,10 @@ import {
   RetweetOutlined,
   SafetyCertificateOutlined,
 } from '@ant-design/icons'
-import { Button, Drawer, Input, Tag } from 'antd'
+import { Button, Drawer, Input, Tag, message } from 'antd'
 import type { ResearchRun } from '../types'
 import { getActiveTask, useWorkspaceStore } from '../store'
+import { streamChat, uploadDocument } from '../services/api'
 
 type AssistantMessage = {
   id: number
@@ -23,6 +24,7 @@ type AssistantMessage = {
     id: number
     content: string
   }
+  status?: string
 }
 
 type AttachmentInfo = {
@@ -44,29 +46,12 @@ function formatFileSize(size: number) {
 
 const quickRequests = ['解释当前结论', '补充取证', '调整研究范围', '修正当前表述']
 
-function createMockReply(request: string, claimStatement?: string) {
-  if (request.includes('解释')) {
-    return '当前结论的关键依据是：支持证据能够证明相关因素存在，但不足以排除其他因素的贡献，因此独立审查将其标记为需要人工研判。'
-  }
-  if (request.includes('取证')) {
-    return '记下了。我会保留已经找到的证据，再围绕当前疑点补一轮限定检索和独立复核。'
-  }
-  if (request.includes('范围')) {
-    return '可以调整。告诉我想新增或排除哪些公司、时间区间、指标或信源，我会按新的范围继续查。'
-  }
-  if (request.includes('修正')) {
-    return claimStatement
-      ? `建议将当前表述改为更审慎的可核验口径，并保留证据限定：${claimStatement}`
-      : '告诉我需要修正哪条事实主张，我会根据原始证据换成更审慎、可核验的说法。'
-  }
-  return '好，我记下了。我会结合当前任务、事实主张和已有证据继续处理，结果会回到对应的工作区。'
-}
-
 export function SupervisorAssistant({ run }: { run: ResearchRun }) {
   const [open, setOpen] = useState(false)
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<File[]>([])
   const [replyTarget, setReplyTarget] = useState<{ id: number; content: string } | null>(null)
+  const [sending, setSending] = useState(false)
   const attachmentInputRef = useRef<HTMLInputElement>(null)
   const [messages, setMessages] = useState<AssistantMessage[]>([
     {
@@ -83,20 +68,54 @@ export function SupervisorAssistant({ run }: { run: ResearchRun }) {
   )
   const hasClaimContext = activeView === 'workbench' && selectedClaim
 
-  const sendRequest = (request: string) => {
+  const sendRequest = async (request: string) => {
     const content = request.trim()
-    if (!content && attachments.length === 0) return
+    if ((!content && attachments.length === 0) || sending) return
     const timestamp = Date.now()
     const attachmentInfos = attachments.map((file) => ({ name: file.name, size: file.size, type: file.type }))
     const userContent = content || '请结合我补充的附件继续核验。'
+    const context = [
+      `当前任务：${run.title}（${run.id}）`,
+      hasClaimContext ? `当前查看的事实主张：${selectedClaim.statement}` : '',
+      replyTarget ? `追问上一条回复：${replyTarget.content}` : '',
+    ].filter(Boolean).join('\n')
     setMessages((current) => [
       ...current,
       { id: timestamp, role: 'user', content: userContent, attachments: attachmentInfos, replyTo: replyTarget ?? undefined },
-      { id: timestamp + 1, role: 'assistant', content: createMockReply(userContent, hasClaimContext ? selectedClaim.statement : undefined) },
+      { id: timestamp + 1, role: 'assistant', content: '', status: '小盾正在想…' },
     ])
     setInput('')
-    setAttachments([])
     setReplyTarget(null)
+    setSending(true)
+    try {
+      const converted = []
+      for (const file of attachments) converted.push(await uploadDocument(file, { save: false }))
+      const attachmentContext = converted.length > 0
+        ? `\n用户补充材料摘要：\n${converted.map((item) => `【${item.filename}】\n${item.content}`).join('\n\n')}`
+        : ''
+      await streamChat(`${context}\n\n用户要求：${userContent}${attachmentContext}`, run.id, (event) => {
+        if (event.type === 'error') throw new Error(event.content || '对话失败')
+        setMessages((current) => current.map((item) => item.id === timestamp + 1
+          ? event.type === 'token'
+            ? { ...item, content: item.content + event.content, status: undefined }
+            : event.type === 'tool' || event.type === 'think' || event.type === 'context'
+              ? { ...item, status: event.type === 'tool' ? `正在使用工具：${event.content}` : event.type === 'context' ? event.content : '小盾正在分析…' }
+              : item
+          : item))
+      })
+      setMessages((current) => current.map((item) => item.id === timestamp + 1 && !item.content
+        ? { ...item, content: '这次没有返回正文，请检查模型配置后重试。', status: undefined }
+        : item))
+      setAttachments([])
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : '对话失败'
+      setMessages((current) => current.map((item) => item.id === timestamp + 1
+        ? { ...item, content: `没能完成这次请求：${errorText}`, status: undefined }
+        : item))
+      message.error(errorText)
+    } finally {
+      setSending(false)
+    }
   }
 
   const addAttachments = (files: FileList | null) => {
@@ -158,6 +177,7 @@ export function SupervisorAssistant({ run }: { run: ResearchRun }) {
                   </div>
                 )}
                 <p>{message.content}</p>
+                {message.status && <small>{message.status}</small>}
                 {message.role === 'assistant' && (
                   <button
                     className={replyTarget?.id === message.id ? 'assistant-reply-button selected' : 'assistant-reply-button'}
@@ -224,10 +244,10 @@ export function SupervisorAssistant({ run }: { run: ResearchRun }) {
                 onChange={(event) => addAttachments(event.target.files)}
               />
               <Button type="text" icon={<PaperClipOutlined />} aria-label="添加附件" onClick={() => attachmentInputRef.current?.click()}>添加附件</Button>
-              <Button type="primary" icon={<ArrowUpOutlined />} aria-label="发送给小盾" onClick={() => sendRequest(input)} />
+              <Button type="primary" loading={sending} icon={<ArrowUpOutlined />} aria-label="发送给小盾" onClick={() => sendRequest(input)} />
             </div>
           </div>
-          <span>Enter 发送 · Shift + Enter 换行 · 当前为 UI Mock</span>
+          <span>Enter 发送 · Shift + Enter 换行 · 已连接 FastAPI 流式对话</span>
         </div>
       </Drawer>
     </>

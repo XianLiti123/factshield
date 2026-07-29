@@ -82,13 +82,13 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
     <div className="history-page">
       <section className="page-card history-header-card">
         <div>
-          <span className="eyebrow">工作台必备模块 · 手动触发</span>
-          <h2>历史情景复盘</h2>
+          <span className="eyebrow">手动触发 · 客观统计</span>
+          <h2>选择历史样本作对照</h2>
           <p>针对已经结束的历史事件查询公开时序数据，进行客观对照统计，并将结果作为当前研究底稿的辅助附件。</p>
         </div>
         <div className="history-agent-status">
           <span className={running ? 'agent-live-dot running' : 'agent-live-dot'} />
-          <div><strong>历史情景复盘</strong><span>{running ? '正在执行 Mock 统计' : '等待研究员手动触发'}</span></div>
+          <div><strong>本次对照统计</strong><span>{running ? '正在执行 Mock 统计' : '等待研究员手动触发'}</span></div>
         </div>
       </section>
 

@@ -120,7 +120,7 @@ export function WorkbenchOverview({ run, onOpenClaim }: { run: ResearchRun; onOp
       </aside>
 
       <section className="overview-claims-section">
-        <div className="overview-section-heading"><div><strong>重点事实主张</strong><span>按风险与可信度综合排序</span></div><button onClick={() => onOpenClaim(run.claims[0].id)}>查看全部</button></div>
+        <div className="overview-section-heading"><div><strong>重点事实主张</strong><span>按风险与可信度综合排序，点击卡片查看核验详情</span></div></div>
         <div className="overview-claim-grid">
           {run.claims.slice(0, 4).map((claim) => (
             <button className={`overview-claim-card ${claim.status}`} key={claim.id} onClick={() => onOpenClaim(claim.id)}>

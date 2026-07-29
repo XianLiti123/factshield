@@ -1,10 +1,7 @@
 import type { ReactNode } from 'react'
 import {
   ApartmentOutlined,
-  ArrowRightOutlined,
   BarChartOutlined,
-  BellOutlined,
-  CheckCircleFilled,
   DownOutlined,
   FileSearchOutlined,
   FileTextOutlined,
@@ -13,8 +10,9 @@ import {
   SafetyCertificateFilled,
   SettingOutlined,
 } from '@ant-design/icons'
-import { Avatar, Badge, Button, Input, Tooltip } from 'antd'
+import { Avatar, Input } from 'antd'
 import { useWorkspaceStore } from '../store'
+import type { UserInfo } from '../services/api'
 
 const navItems = [
   { key: 'tasks' as const, label: '研究任务', icon: <RocketOutlined /> },
@@ -37,12 +35,10 @@ const pageMeta = {
   settings: { title: '系统设置', subtitle: '管理模型连接与研究偏好' },
 }
 
-export function AppShell({ children }: { children: ReactNode }) {
+export function AppShell({ children, user, onLogout }: { children: ReactNode; user: UserInfo; onLogout: () => void }) {
   const activeView = useWorkspaceStore((state) => state.activeView)
   const setActiveView = useWorkspaceStore((state) => state.setActiveView)
   const tasks = useWorkspaceStore((state) => state.tasks)
-  const activeTaskId = useWorkspaceStore((state) => state.activeTaskId)
-  const selectTask = useWorkspaceStore((state) => state.selectTask)
   const openReviewQueue = useWorkspaceStore((state) => state.openReviewQueue)
   const activeMeta = pageMeta[activeView]
   const pendingItems = tasks.flatMap((task) => task.phase === 'review'
@@ -61,16 +57,6 @@ export function AppShell({ children }: { children: ReactNode }) {
     setActiveView(view)
   }
 
-  const openCurrentTodo = () => {
-    if (nextPendingItem) {
-      openReviewQueue(nextPendingItem.claimId, nextPendingItem.taskId)
-      return
-    }
-    const completedTask = tasks.find((task) => task.phase === 'ready')
-    if (completedTask && completedTask.id !== activeTaskId) selectTask(completedTask.id)
-    setActiveView('reports')
-  }
-
   return (
     <div className="app-layout">
       <aside className="sidebar">
@@ -82,7 +68,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </div>
 
-        <div className="environment-pill"><span /> 演示空间 · Mock 数据</div>
+        <div className="environment-pill"><span /> 已连接本地 FastAPI</div>
 
         <div className="sidebar-section-label">工作区</div>
         <nav className="sidebar-nav" aria-label="主要导航">
@@ -108,21 +94,14 @@ export function AppShell({ children }: { children: ReactNode }) {
           ))}
         </nav>
 
-        <button
-          className={pendingCount > 0 ? 'sidebar-task-card' : 'sidebar-task-card complete'}
-          onClick={openCurrentTodo}
-        >
-          <span className="sidebar-task-card-heading">
-            <span className="sidebar-task-card-icon">{pendingCount > 0 ? <FileSearchOutlined /> : <CheckCircleFilled />}</span>
-            <small>{pendingCount > 0 ? '当前待办' : '本轮完成'}</small>
-          </span>
-          <strong>{pendingCount > 0 ? `${pendingCount} 项疑点待复核` : '所有疑点已处理'}</strong>
-          <p>{pendingCount > 0 ? '直接进入下一条需要判断的主张' : '结论与证据已经整理进研究底稿'}</p>
-          <span className="sidebar-task-card-action">
-            {pendingCount > 0 ? '继续复核' : '查看研究底稿'}
-            <ArrowRightOutlined />
-          </span>
-        </button>
+        <section className="sidebar-principles-card" aria-label="研究底线">
+          <span className="sidebar-principles-icon"><SafetyCertificateFilled /></span>
+          <div className="sidebar-principles-copy">
+            <strong>核验原则</strong>
+            <span>原文优先 · 引用可回查</span>
+            <small>争议信息由你确认</small>
+          </div>
+        </section>
       </aside>
 
       <div className="main-column">
@@ -133,14 +112,11 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
           <div className="topbar-actions">
             <Input className="workspace-search" prefix={<SearchOutlined />} placeholder="搜索任务、主张或证据" allowClear />
-            <Tooltip title="通知中心">
-              <Badge dot><Button className="topbar-icon-button" icon={<BellOutlined />} /></Badge>
-            </Tooltip>
-            <div className="profile-chip">
+            <button className="profile-chip" onClick={onLogout} title="退出登录">
               <Avatar size={40} className="user-avatar">研</Avatar>
-              <div><strong>研究员</strong><span>金融研究一组</span></div>
+              <div><strong>研究员</strong><span>{user.email}</span></div>
               <DownOutlined />
-            </div>
+            </button>
           </div>
         </header>
         <main className="content">{children}</main>

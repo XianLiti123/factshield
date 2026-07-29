@@ -1,19 +1,27 @@
 import {
   ArrowLeftOutlined,
-  BarChartOutlined,
   ClockCircleOutlined,
-  CloudDownloadOutlined,
-  MoreOutlined,
-  ApartmentOutlined,
 } from '@ant-design/icons'
-import { Button, Dropdown, Space, Tag } from 'antd'
+import { Tag } from 'antd'
 import type { ResearchRun } from '../types'
 import { getActiveTask, useWorkspaceStore } from '../store'
 
-export function ResearchHeader({ run }: { run: ResearchRun }) {
-  const taskPhase = useWorkspaceStore(getActiveTask).phase
+export function ResearchHeader({ run, preview = false }: { run: ResearchRun; preview?: boolean }) {
+  const activeTask = useWorkspaceStore(getActiveTask)
   const setActiveView = useWorkspaceStore((state) => state.setActiveView)
-  const phaseCopy = taskPhase === 'running' ? '自动研究中' : taskPhase === 'ready' ? '底稿已就绪' : '待人工复核'
+  const phaseCopy = preview
+    ? 'UI 预览'
+    : activeTask.isDemo && activeTask.phase === 'running'
+      ? '演示处理中'
+      : activeTask.phase === 'running'
+        ? '自动研究中'
+        : activeTask.phase === 'ready'
+          ? '底稿已就绪'
+          : activeTask.phase === 'stopped'
+            ? '任务已终止'
+            : activeTask.phase === 'failed'
+              ? '执行失败'
+              : '待人工复核'
 
   return (
     <section className="research-header">
@@ -35,16 +43,6 @@ export function ResearchHeader({ run }: { run: ResearchRun }) {
             <span><ClockCircleOutlined /> 创建于 {run.createdAt}</span>
           </div>
         </div>
-        <Space className="research-actions" size={8}>
-          {taskPhase === 'ready' && <Button type="primary" icon={<CloudDownloadOutlined />} onClick={() => setActiveView('reports')}>导出底稿</Button>}
-          <Dropdown menu={{ items: [
-            { key: 'history', icon: <BarChartOutlined />, label: '历史情景复盘', onClick: () => setActiveView('analytics') },
-            { key: 'monitor', icon: <ApartmentOutlined />, label: '查看执行监控', onClick: () => setActiveView('topology') },
-            { key: 'copy', label: '复制任务链接' },
-          ] }}>
-            <Button icon={<MoreOutlined />} />
-          </Dropdown>
-        </Space>
       </div>
 
     </section>
