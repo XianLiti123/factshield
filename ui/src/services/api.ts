@@ -3,6 +3,7 @@ import type { ResearchRun } from '../types'
 
 const TOKEN_KEY = 'factshield.auth.token'
 const SESSION_KEY_PREFIX = 'factshield.chat.session.'
+const RESEARCH_PROGRESS_KEY_PREFIX = 'factshield.research.progress.'
 
 export type UserInfo = { id: number; email: string }
 export type AuthResponse = { token: string; user: UserInfo }
@@ -25,6 +26,22 @@ export type SettingsResponse = {
 }
 export type DocumentConversion = { filename: string; mode: string; content: string }
 export type StreamEvent = { type: 'token' | 'think' | 'tool' | 'context' | 'done' | 'error'; content: string }
+export type ResearchEvent = {
+  id: number
+  task_id: string
+  seq: number
+  actor: string
+  kind: 'progress' | 'warning' | 'done' | 'stopped' | 'error' | string
+  payload: {
+    title?: string
+    speech?: string
+    details?: Array<{ label: string; text: string }>
+    metrics?: Array<{ label: string; value: string }>
+    tone?: 'warning' | 'danger' | string | null
+    progress?: number | null
+  }
+  ts: string
+}
 
 type ApiTask = {
   id: string
@@ -51,6 +68,27 @@ export function getToken() {
 export function setToken(token: string | null) {
   if (token) window.localStorage.setItem(TOKEN_KEY, token)
   else window.localStorage.removeItem(TOKEN_KEY)
+}
+
+function rememberResearchProgress(taskId: string, progress: number | null | undefined) {
+  const nextProgress = Math.min(100, Math.max(0, Number(progress) || 0))
+  try {
+    const key = `${RESEARCH_PROGRESS_KEY_PREFIX}${taskId}`
+    const storedProgress = Number(window.localStorage.getItem(key)) || 0
+    const displayProgress = Math.max(storedProgress, nextProgress)
+    window.localStorage.setItem(key, String(displayProgress))
+    return displayProgress
+  } catch {
+    return nextProgress
+  }
+}
+
+function forgetResearchProgress(taskId: string) {
+  try {
+    window.localStorage.removeItem(`${RESEARCH_PROGRESS_KEY_PREFIX}${taskId}`)
+  } catch {
+    // Storage may be unavailable in private browsing; task deletion still succeeds.
+  }
 }
 
 async function parseError(response: Response) {
@@ -125,8 +163,13 @@ const taskTypeLabels: Record<string, string> = {
 }
 
 function toWorkspaceTask(task: ApiTask): ResearchTaskSession {
+  const displayProgress = rememberResearchProgress(task.id, task.progress)
   const supportedPhases: TaskPhase[] = ['running', 'review', 'ready', 'stopped', 'failed']
-  const phase: TaskPhase = supportedPhases.includes(task.status as TaskPhase) ? task.status as TaskPhase : 'draft'
+  const reportedPhase: TaskPhase = supportedPhases.includes(task.status as TaskPhase) ? task.status as TaskPhase : 'draft'
+  const phase: TaskPhase = (reportedPhase === 'review' || reportedPhase === 'ready')
+    && (displayProgress < 100 || (task.claimCount ?? 0) === 0)
+    ? 'running'
+    : reportedPhase
   return {
     id: task.id,
     title: task.title,
@@ -137,11 +180,11 @@ function toWorkspaceTask(task: ApiTask): ResearchTaskSession {
     selectedClaimId: '',
     reviewClaimIds: [],
     reviewedClaimIds: [],
-    demoStep: Math.min(8, Math.round((task.progress ?? 0) / 12.5)),
-    isDemoRunning: task.status === 'running',
+    demoStep: Math.min(8, Math.round(displayProgress / 12.5)),
+    isDemoRunning: phase === 'running',
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
-    progress: task.progress ?? 0,
+    progress: displayProgress,
     claimCount: task.claimCount ?? 0,
     persisted: true,
   }
@@ -166,9 +209,23 @@ export async function createTask(input: { topic: string; title?: string; company
   return toWorkspaceTask(task)
 }
 
-export const deleteTask = (taskId: string) => request<{ status: string; task_id: string }>(`/api/tasks/${taskId}`, { method: 'DELETE' })
-export const getTask = (taskId: string) => request<ResearchRun>(`/api/tasks/${taskId}`)
+export async function deleteTask(taskId: string) {
+  const result = await request<{ status: string; task_id: string }>(`/api/tasks/${taskId}`, { method: 'DELETE' })
+  forgetResearchProgress(taskId)
+  return result
+}
+
+export async function getTask(taskId: string) {
+  const run = await request<ResearchRun>(`/api/tasks/${taskId}`)
+  return { ...run, progress: rememberResearchProgress(taskId, run.progress) }
+}
 export const stopTask = (taskId: string) => request<{ status: string; task_id: string }>(`/api/tasks/${taskId}/stop`, { method: 'POST' })
+export const guideTask = (taskId: string, instruction: string) => request<{ status: string; task_id: string }>(
+  `/api/tasks/${taskId}/guidance`, {
+    method: 'POST',
+    body: JSON.stringify({ instruction }),
+  },
+)
 export const resolveClaim = (taskId: string, claimId: string, action: 'reject' | 'keep' | 'remove' | 'rewrite', comment?: string) => (
   request<{ status: string; claim_id: string; new_status: string }>(`/api/tasks/${taskId}/claims/${claimId}/resolve`, {
     method: 'POST', body: JSON.stringify({ action, comment }),
@@ -179,6 +236,38 @@ export const retryClaim = (taskId: string, claimId: string) => request<{ status:
 )
 export const getReport = (taskId: string) => request<{ format: string; content: string }>(`/api/tasks/${taskId}/report`)
 export const getAuditLog = (taskId: string) => request<{ task_id: string; events: unknown[]; resolutions: unknown[] }>(`/api/tasks/${taskId}/audit-log`)
+
+export async function streamTaskEvents(
+  taskId: string,
+  onEvent: (event: ResearchEvent) => void,
+  signal?: AbortSignal,
+) {
+  const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/events`, {
+    headers: { Authorization: `Bearer ${getToken() ?? ''}` },
+    signal,
+  })
+  if (!response.ok) throw new ApiError(await parseError(response), response.status)
+  if (!response.body) throw new ApiError('浏览器未返回任务事件流', 500)
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done })
+    const blocks = buffer.split(/\r?\n\r?\n/)
+    buffer = blocks.pop() ?? ''
+    for (const block of blocks) {
+      const data = block.split(/\r?\n/).find((line) => line.startsWith('data:'))?.slice(5).trim()
+      if (data) {
+        const event = JSON.parse(data) as ResearchEvent
+        rememberResearchProgress(taskId, event.payload.progress)
+        onEvent(event)
+      }
+    }
+    if (done) return
+  }
+}
 
 export async function streamChat(
   message: string,

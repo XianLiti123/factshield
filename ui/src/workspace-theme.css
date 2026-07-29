@@ -1038,6 +1038,42 @@
 .process-item-controls small { color: #71847e; font-size: 9px; }
 .research-process-item.current .process-item-controls { right: 10px; top: 15px; }
 .research-process-item.current .process-item-controls small { color: var(--fs-teal-700); }
+.research-process-item.backend-event { min-height: 0; }
+.research-process-item.backend-event.current { min-height: 142px; }
+.research-process-item.backend-event .process-item-content li { grid-template-columns: minmax(82px, 32%) minmax(0, 1fr); }
+.research-process-item.backend-event .process-item-content li b { overflow-wrap: anywhere; white-space: normal; }
+.research-process-item.backend-event .process-item-content li span,
+.research-process-item.backend-event .process-item-metrics span { max-width: 100%; overflow-wrap: anywhere; }
+.process-stream-empty { min-height: 100%; padding: 42px 28px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+.process-stream-empty > span { width: 42px; height: 42px; display: grid; place-items: center; color: var(--fs-teal-700); border-radius: 50%; background: #e8f3ef; font-size: 18px; box-shadow: 0 0 0 8px rgba(13,101,117,.05); }
+.process-stream-empty strong { margin-top: 19px; color: #29483f; font-size: 14px; }
+.process-stream-empty p { max-width: 380px; margin: 8px 0 0; color: #6c817a; font-size: 11px; line-height: 1.7; }
+.process-stream-empty.error > span { color: #aa555c; background: #fff0f1; box-shadow: 0 0 0 8px rgba(170,85,92,.05); }
+.real-guidance-modal .ant-modal-content { overflow: hidden; padding: 0; border-radius: 12px; }
+.real-guidance-modal .ant-modal-header { margin: 0; padding: 20px 22px 14px; border-bottom: 1px solid #e3ece9; }
+.real-guidance-modal .ant-modal-title { color: #24463d; font-size: 17px; }
+.real-guidance-modal .ant-modal-body { padding: 18px 22px 8px; }
+.real-guidance-modal .ant-modal-footer { margin: 0; padding: 14px 22px 18px; }
+.real-guidance-intro { padding: 13px 14px; display: flex; align-items: center; gap: 12px; border: 1px solid #d7e7e2; border-radius: 9px; background: #f3f8f6; }
+.real-guidance-intro > span { width: 34px; height: 34px; flex: none; display: grid; place-items: center; color: #fff; border-radius: 50%; background: var(--fs-teal-700); }
+.real-guidance-intro strong { color: #2b4c43; font-size: 13px; }
+.real-guidance-intro p { margin: 3px 0 0; color: #687d76; font-size: 11px; line-height: 1.55; }
+.real-guidance-section { margin-top: 17px; }
+.real-guidance-section-title { margin-bottom: 9px; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.real-guidance-section-title strong { color: #29483f; font-size: 12px; }
+.real-guidance-section-title span { color: #879790; font-size: 9px; }
+.real-guidance-stage-list { max-height: 190px; padding-right: 3px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; overflow-y: auto; }
+.real-guidance-stage-list button { min-width: 0; padding: 10px; display: grid; grid-template-columns: 28px minmax(0, 1fr) 18px; align-items: center; gap: 9px; text-align: left; color: #536c65; border: 1px solid #dce8e4; border-radius: 8px; background: #fff; cursor: pointer; }
+.real-guidance-stage-list button:hover { border-color: #9fc7bd; background: #f8fbfa; }
+.real-guidance-stage-list button.selected { color: var(--fs-teal-700); border-color: #75ad9f; background: #eef7f4; box-shadow: inset 0 0 0 1px rgba(13,101,117,.05); }
+.real-guidance-stage-list button > span { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; background: #edf4f2; }
+.real-guidance-stage-list button > div { min-width: 0; }
+.real-guidance-stage-list button strong, .real-guidance-stage-list button small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.real-guidance-stage-list button strong { color: #31534a; font-size: 11px; }
+.real-guidance-stage-list button small { margin-top: 3px; color: #899993; font-size: 9px; }
+.real-guidance-stage-list button > i { display: grid; place-items: center; font-style: normal; }
+.real-guidance-section .ant-input { border-color: #d5e3df; border-radius: 8px; color: #304d45; font-size: 12px; line-height: 1.7; resize: none; }
+.real-guidance-section .ant-input:focus { border-color: #70a99a; box-shadow: 0 0 0 2px rgba(13,101,117,.08); }
 .process-issue-button { height: 25px; padding: 0 8px; color: #85575b; border: 1px solid #dfc5c8; border-radius: 5px; background: #fff; font-size: 10px; line-height: 1; cursor: pointer; }
 .process-issue-button:hover { color: #a0444c; border-color: #c98f95; background: #fff7f7; }
 .process-issue-button.selected { color: #fff; border-color: #ac4f58; background: #ac4f58; }
