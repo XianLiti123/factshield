@@ -99,15 +99,103 @@ const mockResearchRun = {
     { id: 'ev-8', title: '2023—2025 合并现金流量表', publisher: '巨潮资讯网', publishedAt: '2026-03-10', locator: '财务报表 · 现金流量表', sourceType: '监管披露', relation: 'support', credibility: 0.99, quote: '经营活动产生的现金流量净额：2025 年 889.2 亿元；归属于上市公司股东的净利润：642.7 亿元。' },
   ],
   agents: [
-    { id: 'supervisor', name: 'Supervisor 主控', role: '任务拆解、一级汇总与调度', status: 'running', detail: '已完成一级汇总，等待复核结果回传', duration: '08:42', restriction: '唯一汇聚与判断中心' },
-    { id: 'collector', name: '公开信源采集 SubAgent', role: '定向抓取与原文归档', status: 'done', detail: '已归档 12 份公开披露材料', duration: '03:18', restriction: '禁止概括或评价内容' },
-    { id: 'parser', name: '文档解析提取 SubAgent', role: 'PDF/OCR 与指标结构化', status: 'done', detail: '已提取 18 条指标及原文坐标', duration: '04:06', restriction: '禁止判断指标合理性' },
-    { id: 'retriever', name: '向量证据检索 SubAgent', role: '原文片段与定位检索', status: 'done', detail: '已匹配 24 条可追溯证据', duration: '02:51', restriction: '禁止判断观点真伪' },
-    { id: 'scorer', name: '信源可信度打分 SubAgent', role: '来源类型与可信度标注', status: 'done', detail: '已完成 24 个来源分级', duration: '01:42', restriction: '禁止据此判定真假' },
-    { id: 'assembler', name: '底稿组装 SubAgent', role: '按模板拼接核验素材', status: 'waiting', detail: '等待双层核验完成后启动', restriction: '禁止增删或撰写观点' },
-    { id: 'history', name: '历史情景复盘 SubAgent', role: '历史事件时序查询与客观统计', status: 'waiting', detail: '必备模块，等待研究员手动触发', restriction: '禁止未来判断与观点解读' },
-    { id: 'reviewer', name: '独立幻觉审查单元', role: '二级事实复核闸门', status: 'warning', detail: '发现 1 项归因冲突，已回传主控', duration: '01:34', restriction: '独立于普通 SubAgent' },
+    { id: 'supervisor', name: '小盾', role: '负责拆题、汇总和协调', status: 'running', detail: '第一轮已经汇总好，正在等复核结果', duration: '08:42', restriction: '唯一汇聚与判断中心' },
+    { id: 'collector', name: '公开信源采集', role: '定向抓取与原文归档', status: 'done', detail: '已归档 12 份公开披露材料', duration: '03:18', restriction: '禁止概括或评价内容' },
+    { id: 'parser', name: '文档解析提取', role: 'PDF/OCR 与指标结构化', status: 'done', detail: '已提取 18 条指标及原文坐标', duration: '04:06', restriction: '禁止判断指标合理性' },
+    { id: 'retriever', name: '向量证据检索', role: '原文片段与定位检索', status: 'done', detail: '已匹配 24 条可追溯证据', duration: '02:51', restriction: '禁止判断观点真伪' },
+    { id: 'scorer', name: '信源可信度打分', role: '来源类型与可信度标注', status: 'done', detail: '已完成 24 个来源分级', duration: '01:42', restriction: '禁止据此判定真假' },
+    { id: 'assembler', name: '底稿组装', role: '按模板拼接核验素材', status: 'waiting', detail: '等待双层核验完成后启动', restriction: '禁止增删或撰写观点' },
+    { id: 'history', name: '历史情景复盘', role: '历史事件时序查询与客观统计', status: 'waiting', detail: '必备模块，等待研究员手动触发', restriction: '禁止未来判断与观点解读' },
+    { id: 'reviewer', name: '独立复核', role: '二次检查事实与证据', status: 'warning', detail: '发现 1 项归因冲突，已告诉小盾', duration: '01:34', restriction: '独立于其他核验任务' },
   ],
 } satisfies ResearchRun
 
 export const researchRun = researchRunSchema.parse(mockResearchRun) as ResearchRun
+
+interface VariantRunConfig {
+  id: string
+  title: string
+  company: string
+  createdAt: string
+  statements: string[]
+  evidenceTitle: string
+  publisher: string
+}
+
+const createVariantRun = (config: VariantRunConfig): ResearchRun => researchRunSchema.parse({
+  ...researchRun,
+  id: config.id,
+  title: config.title,
+  company: config.company,
+  createdAt: config.createdAt,
+  claims: researchRun.claims.map((claim, index) => ({
+    ...claim,
+    statement: config.statements[index],
+    supervisorVerdict: index < 2 || index === 4
+      ? '公开披露与复算结果一致，已形成可追溯的原文引用。'
+      : '现有材料存在口径边界或证据缺口，需要保留人工判断。',
+    reviewerVerdict: index < 2 || index === 4
+      ? '独立复核未发现影响结论的口径差异。'
+      : '当前证据不足以支持确定性表述，建议限制结论范围。',
+    conflictReason: claim.status === 'conflict'
+      ? '不同来源对关键归因的表述并不一致，暂时无法确认单一主要原因。'
+      : claim.conflictReason,
+  })),
+  evidence: researchRun.evidence.map((evidence, index) => ({
+    ...evidence,
+    title: index === 0 ? config.evidenceTitle : `${config.title} · 补充材料 ${index}`,
+    publisher: config.publisher,
+    quote: index === 0
+      ? '报告期数据已经披露，相关指标需结合统计口径、上下文和原始表格进行核对。'
+      : '该材料提供了对应主张的原文依据，具体结论仍需与其他公开来源交叉核验。',
+  })),
+}) as ResearchRun
+
+export const researchRuns: ResearchRun[] = [
+  researchRun,
+  createVariantRun({
+    id: 'FS-2026-0729-031',
+    title: '比亚迪 2025 年海外销量与巴西产能核验',
+    company: '比亚迪 · 002594.SZ',
+    createdAt: '2026-07-29 09:18',
+    statements: [
+      '2025 年比亚迪海外新能源乘用车销量同比增长 42.6%。',
+      '海外销量占公司新能源乘用车总销量的比例首次超过 15%。',
+      '海外业务毛利率改善主要来自高端车型占比提升。',
+      '巴西工厂将在 2026 年第二季度实现满产。',
+      '经营活动现金流净额继续高于归母净利润。',
+    ],
+    evidenceTitle: '比亚迪 2025 年年度报告',
+    publisher: '比亚迪股份有限公司',
+  }),
+  createVariantRun({
+    id: 'FS-2026-0729-029',
+    title: '贵州茅台批价走势与渠道库存核验',
+    company: '贵州茅台 · 600519.SH',
+    createdAt: '2026-07-29 08:46',
+    statements: [
+      '2025 年直销渠道收入占比继续提升。',
+      '合同负债变动与经销商回款节奏基本一致。',
+      '飞天茅台批价回落主要由渠道库存上升导致。',
+      '公司将在三季度完成全部渠道库存去化。',
+      '经营活动现金流与收入增速不存在明显背离。',
+    ],
+    evidenceTitle: '贵州茅台 2025 年年度报告',
+    publisher: '贵州茅台酒股份有限公司',
+  }),
+  createVariantRun({
+    id: 'FS-2026-0725-011',
+    title: '新能源汽车产业链政策调整事实核验',
+    company: '新能源汽车产业链',
+    createdAt: '2026-07-25 16:08',
+    statements: [
+      '新一轮购置税政策延续了分阶段退坡安排。',
+      '动力电池回收责任主体的适用范围已经明确。',
+      '本次调整将直接提高所有整车企业的单车利润。',
+      '地方配套细则将在 2026 年底前全部落地。',
+      '政策原文未改变现行双积分核算周期。',
+    ],
+    evidenceTitle: '新能源汽车产业政策汇编（2026）',
+    publisher: '国务院及相关部委公开文件',
+  }),
+]

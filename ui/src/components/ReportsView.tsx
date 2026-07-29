@@ -1,12 +1,12 @@
 import { BarChartOutlined, CheckCircleFilled, DownloadOutlined, EyeOutlined, FilePdfOutlined, FileWordOutlined, HistoryOutlined, PaperClipOutlined } from '@ant-design/icons'
 import { Button, Tag, message } from 'antd'
 import type { ResearchRun } from '../types'
-import { useWorkspaceStore } from '../store'
+import { getActiveTask, useWorkspaceStore } from '../store'
 import { StatusBadge } from './StatusBadge'
 
 export function ReportsView({ run }: { run: ResearchRun }) {
   const setActiveView = useWorkspaceStore((state) => state.setActiveView)
-  const reviewedClaimIds = useWorkspaceStore((state) => state.reviewedClaimIds)
+  const reviewedClaimIds = useWorkspaceStore(getActiveTask).reviewedClaimIds
   const exportMock = (format: string) => message.success(`${format} 底稿已生成（UI 演示）`)
 
   return (
@@ -49,7 +49,7 @@ export function ReportsView({ run }: { run: ResearchRun }) {
         <h3><HistoryOutlined /> 版本记录</h3>
         <div className="version-item current"><i /><strong>v0.4 · 历史情景附件版</strong><span>刚刚生成</span><p>追加客观时序统计与来源记录</p></div>
         <div className="version-item"><i /><strong>v0.3 · 双层核验版</strong><span>14:42</span><p>加入独立审查结论与疑点说明</p></div>
-        <div className="version-item"><i /><strong>v0.2 · 一级汇总版</strong><span>14:40</span><p>Supervisor 完成证据汇总</p></div>
+        <div className="version-item"><i /><strong>v0.2 · 一级汇总版</strong><span>14:40</span><p>小盾完成证据汇总</p></div>
         <Button block icon={<DownloadOutlined />} onClick={() => message.success('审计日志已生成（UI 演示）')}>下载审计日志</Button>
       </aside>
     </div>

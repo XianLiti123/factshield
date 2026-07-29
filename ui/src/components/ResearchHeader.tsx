@@ -8,10 +8,10 @@ import {
 } from '@ant-design/icons'
 import { Button, Dropdown, Space, Tag } from 'antd'
 import type { ResearchRun } from '../types'
-import { useWorkspaceStore } from '../store'
+import { getActiveTask, useWorkspaceStore } from '../store'
 
 export function ResearchHeader({ run }: { run: ResearchRun }) {
-  const taskPhase = useWorkspaceStore((state) => state.taskPhase)
+  const taskPhase = useWorkspaceStore(getActiveTask).phase
   const setActiveView = useWorkspaceStore((state) => state.setActiveView)
   const phaseCopy = taskPhase === 'running' ? '自动研究中' : taskPhase === 'ready' ? '底稿已就绪' : '待人工复核'
 
