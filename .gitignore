@@ -145,3 +145,6 @@ notes
 .idea/
 # Frontend local artifacts
 .pnpm-store/
+
+# FactShield secrets
+.master_key

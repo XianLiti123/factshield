@@ -54,7 +54,7 @@ class Agent:
     def _maybe_compact(self,force:bool=False)->bool:
         if not force and not needs_compaction(self.context_tokens):
             return False
-        summary = compact_messages(self.messages[1:])#系统提示不参与压缩
+        summary = compact_messages(self.messages[1:],self.user_id)#系统提示不参与压缩
         self.messages = [self.messages[0],SystemMessage(content=f"以下是此前对话的摘要：\n{summary}")]
         self.context_tokens = estimate_tokens(self.messages)#压缩后只剩2条消息，重算开销可忽略
         if self._persist:
@@ -65,6 +65,11 @@ class Agent:
     #手动压缩上下文的公开入口（供CLI/api层调用）
     def compact(self)->None:
         self._maybe_compact(force=True)
+
+    #预检：用户未配置 LLM 时拒绝服务（不回退系统默认 key）
+    def _llm_missing(self)->bool:
+        from .session.model_config import get_config
+        return get_config(self.user_id,"llm") is None
 
     #每轮结束后增量维护context_tokens：
     #拿到真实usage时直接采用（最后一次LLM调用的输入token数就是当时的上下文大小），
@@ -94,6 +99,8 @@ class Agent:
 
     #调用LLM的函数
     def run(self,user_input:str)->str:
+        if self._llm_missing():
+            raise RuntimeError("未配置 LLM 模型，请先在设置中配置 base_url、api_key 和模型名")
         ctx = current_user_id.set(self.user_id)#注入用户上下文，图内的画像工具靠它感知归属
         try:
             self._maybe_compact()
@@ -113,7 +120,11 @@ class Agent:
     #带流式调用LLM的函数
     def run_stream(self,user_input:str)->Iterator[tuple[str,str]]:
         #流式运行，yield (事件类型, 文本)
-        #事件类型: "token" 为LLM输出的文本片段, "think" 为思考内容, "tool" 为工具执行状态, "context" 为上下文压缩提示
+        #事件类型: "token" 为LLM输出的文本片段, "think" 为思考内容, "tool" 为工具执行状态,
+        #"context" 为上下文压缩提示, "error" 为前置拒绝（如未配置模型）
+        if self._llm_missing():
+            yield "error","未配置 LLM 模型，请先在设置中配置 base_url、api_key 和模型名"
+            return
         ctx = current_user_id.set(self.user_id)#注入用户上下文，图内的画像工具靠它感知归属
         try:
             if self._maybe_compact():

@@ -80,20 +80,29 @@ def revoke_token(token: str) -> None:
 
 def ensure_admin() -> int:
     #确保预置 admin 用户存在并返回其 id；同时把存量无归属数据（user_id 为 NULL）回填给 admin。
-    #邮箱/密码可用环境变量 FS_ADMIN_EMAIL、FS_ADMIN_PASSWORD 配置
-    email = os.getenv("FS_ADMIN_EMAIL", "admin@local")
+    #邮箱/密码可用环境变量 FS_ADMIN_EMAIL、FS_ADMIN_PASSWORD 配置；
+    #历史默认邮箱 admin@local、admin@factshield.local 均被邮箱校验拒绝（无点号/保留域名），自动升级
+    email = os.getenv("FS_ADMIN_EMAIL", "admin@factshield.dev")
     with get_connection() as conn:
         row = conn.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
         if row:
             admin_id = row["id"]
         else:
-            password = os.getenv("FS_ADMIN_PASSWORD", "admin123")
-            cursor = conn.execute(
-                "INSERT INTO users (email, password_hash) VALUES (?,?)",
-                (email, _hash_password(password))
-            )
-            admin_id = cursor.lastrowid
-            logger.warning("已创建默认 admin 用户 %s（密码来自 FS_ADMIN_PASSWORD 或缺省值），请尽快修改", email)
+            legacy = conn.execute(
+                "SELECT id FROM users WHERE email IN ('admin@local','admin@factshield.local')"
+            ).fetchone()
+            if legacy:
+                conn.execute("UPDATE users SET email=? WHERE id=?", (email, legacy["id"]))
+                admin_id = legacy["id"]
+                logger.info("已将旧默认 admin 邮箱升级为 %s", email)
+            else:
+                password = os.getenv("FS_ADMIN_PASSWORD", "admin123")
+                cursor = conn.execute(
+                    "INSERT INTO users (email, password_hash) VALUES (?,?)",
+                    (email, _hash_password(password))
+                )
+                admin_id = cursor.lastrowid
+                logger.warning("已创建默认 admin 用户 %s（密码来自 FS_ADMIN_PASSWORD 或缺省值），请尽快修改", email)
         conn.execute("UPDATE sessions SET user_id=? WHERE user_id IS NULL", (admin_id,))
         conn.execute("UPDATE profile_facts SET user_id=? WHERE user_id IS NULL", (admin_id,))
     return admin_id  # type: ignore

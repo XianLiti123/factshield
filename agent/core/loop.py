@@ -1,13 +1,30 @@
 from langgraph.graph import StateGraph,END
 from ..state.base import AgentState
 from ..llm.client import ChatClient
+from ..session.store import current_user_id
+from ..session.model_config import get_config
 from ..tools.toolslist import full_tools,toolsets
 from ..tools.activate import activate_toolset
 from ..tools.subagent import subagent
 from langgraph.prebuilt import ToolNode
 
-# 创建LLM
-LLMclient = ChatClient()
+#每用户 LLM client 缓存：按 current_user_id 装配，配置变更时经 invalidate_llm_cache 失效
+_clients:dict[int,ChatClient] = {}
+
+
+def invalidate_llm_cache(user_id:int)->None:
+    #用户更新模型配置后调用，丢弃其缓存的 client
+    _clients.pop(user_id,None)
+
+
+def get_llm_client(user_id:int)->ChatClient:
+    #按用户取 LLM client（思考模式开启）；未配置时拒绝服务并提示
+    if user_id not in _clients:
+        cfg = get_config(user_id,"llm")
+        if cfg is None:
+            raise RuntimeError("未配置 LLM 模型，请先在设置中配置 base_url、api_key 和模型名")
+        _clients[user_id] = ChatClient(model=cfg["model_name"],base_url=cfg["base_url"],api_key=cfg["api_key"])
+    return _clients[user_id]
 
 
 #判断LLM有没有调工具
@@ -26,7 +43,8 @@ def build_graph(with_subagent:bool):
     def call_LLM(state:AgentState):
         names = state.get("active_toolsets") or ["terminal"]#type:ignore #当前激活的工具集，默认终端
         tools = resident+[t for n in names for t in toolsets.get(n,[])]#元工具常驻，其余按激活状态动态绑定
-        response = LLMclient.llm.bind_tools(tools).invoke(state["messages"])
+        client = get_llm_client(current_user_id.get())#按当前用户装配，用户上下文由 Agent 调图前注入
+        response = client.llm.bind_tools(tools).invoke(state["messages"])
         return {"messages":[response]}
 
     agentloop = StateGraph(AgentState)#绑定state状态

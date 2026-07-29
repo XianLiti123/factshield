@@ -4,8 +4,9 @@ from openai import OpenAI
 import base64
 import logging
 import os
-from ..config import VISION_API_KEY,VISION_BASE_URL,VISION_MODEL
 from ..memory.SQLite.save import save_markdown
+from ..session.store import current_user_id
+from ..session.model_config import get_config
 
 #压住 pdfminer 对不规范 PDF 字体信息的刷屏警告（如 FontBBox 缺失），不影响解析结果
 logging.getLogger("pdfminer").setLevel(logging.ERROR)
@@ -14,15 +15,26 @@ _md = MarkItDown()
 
 _IMAGE_EXTS = {".jpg",".jpeg",".png",".gif",".bmp",".webp",".tiff"}
 
-#视觉模型客户端，未配置时为 None
-_vision_client = OpenAI(api_key=VISION_API_KEY,base_url=VISION_BASE_URL) if VISION_API_KEY and VISION_BASE_URL and VISION_MODEL else None
+#每用户视觉模型客户端缓存：按 current_user_id 装配（用户上下文由 Agent 调图前注入）
+_vision_clients:dict[int,tuple[OpenAI,str]] = {}
 
 
-def _image_to_markdown(image_bytes:bytes,image_type:str)->str:
+def _get_vision_client()->tuple[OpenAI,str]|None:
+    #取当前用户的视觉模型客户端和模型名；未配置时返回 None
+    user_id = current_user_id.get()
+    if user_id not in _vision_clients:
+        cfg = get_config(user_id,"vision")
+        if cfg is None:
+            return None
+        _vision_clients[user_id] = (OpenAI(api_key=cfg["api_key"],base_url=cfg["base_url"]),cfg["model_name"])
+    return _vision_clients[user_id]
+
+
+def _image_to_markdown(client:OpenAI,model:str,image_bytes:bytes,image_type:str)->str:
     #把一张图片交给视觉模型识别，返回 Markdown
     b64 = base64.b64encode(image_bytes).decode()
-    response = _vision_client.chat.completions.create(
-        model=VISION_MODEL,
+    response = client.chat.completions.create(
+        model=model,
         messages=[{"role":"user","content":[
             {"type":"text","text":"请完整识别这张图片中的所有内容，包括文字、表格和图表，以 Markdown 格式输出。"},
             {"type":"image_url","image_url":{"url":f"data:image/{image_type};base64,{b64}"}}
@@ -60,20 +72,22 @@ def ai_recognize_document(file_path: str, max_length: int = 5000, safe: bool = T
     仅支持图片（jpg/png 等）和 PDF 文件；Word、Excel、HTML 等其他格式请使用 convert_document。
     file_path 为文件路径；max_length 为返回内容的最大字符数，默认 5000，
     传 0 表示不截断返回全文；safe 默认为 True，会将完整未截断的 Markdown 保存到本地。"""
-    if _vision_client is None:
-        return "未配置视觉模型，请在 .env 中设置 VISION_API_KEY、VISION_BASE_URL、VISION_MODEL"
+    vision = _get_vision_client()
+    if vision is None:
+        return "未配置视觉模型，请先在设置中配置视觉模型的 base_url、api_key 和模型名"
+    client, model = vision
     ext = os.path.splitext(file_path)[1].lower()
     try:
         if ext in _IMAGE_EXTS:
             with open(file_path,"rb") as f:
-                content = _image_to_markdown(f.read(),ext.lstrip(".").replace("jpg","jpeg"))
+                content = _image_to_markdown(client,model,f.read(),ext.lstrip(".").replace("jpg","jpeg"))
         elif ext == ".pdf":
             import fitz#即 pymupdf，把每页渲染成图片再识别
             pages = []
             with fitz.open(file_path) as doc:
                 for i,page in enumerate(doc,1):
                     png = page.get_pixmap(dpi=150).tobytes("png")
-                    pages.append(f"## 第 {i} 页\n\n" + _image_to_markdown(png,"png"))
+                    pages.append(f"## 第 {i} 页\n\n" + _image_to_markdown(client,model,png,"png"))
             content = "\n\n".join(pages)
         else:
             return f"该工具仅支持图片和 PDF 文件（收到 {ext or '未知类型'}），其他格式请使用 convert_document"

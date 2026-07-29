@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS profile_facts (
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
+CREATE TABLE IF NOT EXISTS user_model_configs (
+    user_id INTEGER NOT NULL,
+    slot TEXT NOT NULL,
+    base_url TEXT NOT NULL,
+    api_key_enc TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY (user_id, slot)
+);
 """
 
 
