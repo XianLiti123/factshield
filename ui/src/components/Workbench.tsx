@@ -26,6 +26,7 @@ import { resolveClaim as resolvePersistedClaim, retryClaim as retryPersistedClai
 import { StatusBadge } from './StatusBadge'
 
 type ClaimVisibility = 'issues' | 'all'
+type EvidenceView = 'text' | 'source'
 
 type GuidanceRecord = {
   id: number
@@ -137,7 +138,14 @@ function EvidenceCard({ evidence, active, onClick }: { evidence: Evidence; activ
 
 function EvidenceViewer({ evidenceList }: { evidenceList: Evidence[] }) {
   const [selectedEvidenceId, setSelectedEvidenceId] = useState(evidenceList[0]?.id ?? '')
+  const [view, setView] = useState<EvidenceView>('text')
   const selectedEvidence = evidenceList.find((item) => item.id === selectedEvidenceId) ?? evidenceList[0]
+
+  useEffect(() => {
+    if (!evidenceList.some((item) => item.id === selectedEvidenceId)) {
+      setSelectedEvidenceId(evidenceList[0]?.id ?? '')
+    }
+  }, [evidenceList, selectedEvidenceId])
 
   if (!selectedEvidence) return <Empty description="该主张暂无证据" />
 
@@ -145,7 +153,12 @@ function EvidenceViewer({ evidenceList }: { evidenceList: Evidence[] }) {
     <section className="evidence-panel">
       <div className="panel-header evidence-heading">
         <div><h2>原始证据</h2><span>{evidenceList.length} 条已引用</span></div>
-        <Segmented size="small" options={[{ label: '原文', value: 'text' }, { label: '来源信息', value: 'source' }]} />
+        <Segmented
+          size="small"
+          value={view}
+          onChange={(value) => setView(value as EvidenceView)}
+          options={[{ label: '原文', value: 'text' }, { label: '来源信息', value: 'source' }]}
+        />
       </div>
       <div className="evidence-list">
         {evidenceList.map((evidence) => (
@@ -157,7 +170,7 @@ function EvidenceViewer({ evidenceList }: { evidenceList: Evidence[] }) {
           />
         ))}
       </div>
-      <article className="document-viewer">
+      {view === 'text' ? <article className="document-viewer">
         <div className="document-toolbar">
           <div className="document-file">
             <FilePdfOutlined />
@@ -180,7 +193,50 @@ function EvidenceViewer({ evidenceList }: { evidenceList: Evidence[] }) {
           <p>相关经营数据均按企业会计准则编制，本段所涉及业务口径与公司年度报告保持一致。部分前瞻性表述可能受到市场环境、原材料价格及项目进度影响。</p>
           <div className="page-number">— {selectedEvidence.locator.split('·')[0]} —</div>
         </div>
-      </article>
+      </article> : <article className="source-info-view">
+        <div className="document-toolbar">
+          <div className="document-file">
+            <DatabaseOutlined />
+            <div><strong>来源档案</strong><span>用于确认材料出处与引用关系</span></div>
+          </div>
+          <button className="source-link-button" onClick={() => message.info('UI 原型：接入来源地址后将在此打开原始页面')}><LinkOutlined /> 打开来源</button>
+        </div>
+        <div className="source-info-content">
+          <section className="source-identity-card">
+            <div className="source-identity-icon"><FileSearchOutlined /></div>
+            <div className="source-identity-copy">
+              <span>当前材料</span>
+              <h3>{selectedEvidence.title}</h3>
+              <p>{selectedEvidence.publisher}</p>
+            </div>
+            <span className={`source-relation ${selectedEvidence.relation}`}>
+              {selectedEvidence.relation === 'support' ? '支持主张' : '质疑主张'}
+            </span>
+          </section>
+
+          <section className="source-detail-card">
+            <div className="source-section-heading"><strong>来源详情</strong><span>随所选证据同步更新</span></div>
+            <dl className="source-detail-grid">
+              <div><dt>发布机构</dt><dd>{selectedEvidence.publisher}</dd></div>
+              <div><dt>披露日期</dt><dd>{selectedEvidence.publishedAt}</dd></div>
+              <div><dt>材料类型</dt><dd>{selectedEvidence.sourceType}</dd></div>
+              <div><dt>证据定位</dt><dd>{selectedEvidence.locator}</dd></div>
+            </dl>
+          </section>
+
+          <section className="source-quality-card">
+            <div className="source-quality-copy">
+              <SafetyCertificateOutlined />
+              <div><strong>来源可信度</strong><span>根据来源层级、可访问性与引用完整性综合评估</span></div>
+            </div>
+            <div className="source-quality-score">
+              <strong>{Math.round(selectedEvidence.credibility * 100)}<small>%</small></strong>
+              <span>已完成归档校验</span>
+            </div>
+            <div className="source-quality-track"><i style={{ width: `${selectedEvidence.credibility * 100}%` }} /></div>
+          </section>
+        </div>
+      </article>}
       <div className="evidence-verification">
         <SafetyCertificateOutlined />
         <div><strong>证据完整性已验证</strong><span>来源可访问 · 原文未篡改 · 引用定位准确</span></div>
