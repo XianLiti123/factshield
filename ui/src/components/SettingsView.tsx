@@ -3,6 +3,7 @@ import {
   ApiOutlined,
   CheckCircleFilled,
   CloseOutlined,
+  CompressOutlined,
   DeleteOutlined,
   EyeInvisibleOutlined,
   EyeOutlined,
@@ -11,7 +12,7 @@ import {
   SearchOutlined,
   ThunderboltFilled,
 } from '@ant-design/icons'
-import { Button, Input, Modal, Select, Switch, Tag, message } from 'antd'
+import { Button, Input, Modal, Select, Slider, Switch, Tag, message } from 'antd'
 import { getCapabilities, getSettings, saveModelConfig, type CapabilityStatus } from '../services/api'
 
 type ModelConfig = {
@@ -94,7 +95,28 @@ const initialSearchEngines: SearchEngine[] = [
   { id: 'python', name: 'Python', description: '通过本地 Python 检索流程执行，无需 API Key', apiKey: '', requiresApiKey: false },
 ]
 
+const DEFAULT_CONTEXT_TRIGGER = 80
+const CONTEXT_PREFERENCE_KEY = 'factshield.settings.context-compaction'
+
+function loadContextPreference() {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(CONTEXT_PREFERENCE_KEY) ?? '{}') as {
+      custom?: boolean
+      trigger?: number
+    }
+    return {
+      custom: Boolean(stored.custom),
+      trigger: typeof stored.trigger === 'number'
+        ? Math.min(100, Math.max(0, Math.round(stored.trigger)))
+        : DEFAULT_CONTEXT_TRIGGER,
+    }
+  } catch {
+    return { custom: false, trigger: DEFAULT_CONTEXT_TRIGGER }
+  }
+}
+
 export function SettingsView() {
+  const initialContextPreference = useMemo(loadContextPreference, [])
   const [slots, setSlots] = useState<ModelSlot[]>(initialSlots)
   const [activeSlotId, setActiveSlotId] = useState<ModelSlotId>('primary')
   const [deepThinking, setDeepThinking] = useState(true)
@@ -106,6 +128,8 @@ export function SettingsView() {
   const [showSearchApiKey, setShowSearchApiKey] = useState(false)
   const [saving, setSaving] = useState(false)
   const [capabilities, setCapabilities] = useState<CapabilityStatus | null>(null)
+  const [customContextTrigger, setCustomContextTrigger] = useState(initialContextPreference.custom)
+  const [contextTrigger, setContextTrigger] = useState(initialContextPreference.trigger)
 
   useEffect(() => {
     getSettings().then((settings) => {
@@ -128,6 +152,13 @@ export function SettingsView() {
     }).catch((error) => message.error(error instanceof Error ? error.message : '设置加载失败'))
     getCapabilities().then(setCapabilities).catch(() => setCapabilities(null))
   }, [])
+
+  useEffect(() => {
+    window.localStorage.setItem(CONTEXT_PREFERENCE_KEY, JSON.stringify({
+      custom: customContextTrigger,
+      trigger: contextTrigger,
+    }))
+  }, [contextTrigger, customContextTrigger])
 
   const activeSlot = useMemo(
     () => slots.find((slot) => slot.id === activeSlotId) ?? slots[0],
@@ -348,6 +379,38 @@ export function SettingsView() {
             <div><strong>深度思考</strong><p>仅作用于支持推理模式的主 LLM；不会改变视觉、Embedding 或 Reranker 配置。</p></div>
           </div>
           <Switch checked={deepThinking} onChange={setDeepThinking} />
+        </section>
+
+        <section className={`settings-context-card page-card${customContextTrigger ? ' custom' : ''}`}>
+          <div className="settings-context-heading">
+            <span><CompressOutlined /></span>
+            <div>
+              <strong>上下文自动整理</strong>
+              <p>对话内容接近窗口上限时，把较早内容整理成摘要，保留关键结论和未完成事项。</p>
+            </div>
+          </div>
+          <div className="settings-context-controls">
+            <div className="settings-context-toggle">
+              <div>
+                <strong>自定义触发比例</strong>
+                <span>{customContextTrigger ? `达到 ${contextTrigger}% 时开始整理` : `使用系统默认 ${DEFAULT_CONTEXT_TRIGGER}%`}</span>
+              </div>
+              <Switch checked={customContextTrigger} onChange={setCustomContextTrigger} />
+            </div>
+            <div className="settings-context-slider">
+              <div><span>触发比例</span><strong>{customContextTrigger ? contextTrigger : DEFAULT_CONTEXT_TRIGGER}%</strong></div>
+              <Slider
+                min={0}
+                max={100}
+                value={customContextTrigger ? contextTrigger : DEFAULT_CONTEXT_TRIGGER}
+                disabled={!customContextTrigger}
+                onChange={setContextTrigger}
+                tooltip={{ formatter: (value) => `${value ?? 0}%` }}
+                marks={{ 0: '0%', 50: '50%', 80: '80%', 100: '100%' }}
+              />
+            </div>
+            <small>设置会保存在当前浏览器；后端接入后可读取该偏好并实际执行。</small>
+          </div>
         </section>
       </div>
 
