@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 ClaimStatus = Literal["verified", "review", "conflict"]
 AgentStatus = Literal["done", "running", "waiting", "warning"]
+TaskStatus = Literal["running", "review", "ready", "stopped", "failed"]
 
 
 class Evidence(BaseModel):
@@ -31,6 +32,8 @@ class Claim(BaseModel):
     reviewerVerdict: str
     conflictReason: str | None = None
     issueType: str | None = None
+    humanAction: str | None = None  #人工裁决动作（reject/keep/remove/rewrite）
+    humanNote: str | None = None
     evidenceIds: list[str]
 
 
@@ -48,8 +51,31 @@ class ResearchRun(BaseModel):
     id: str
     title: str
     company: str
+    status: TaskStatus
     createdAt: str
     progress: float
     claims: list[Claim]
     evidence: list[Evidence]
     agents: list[AgentInfo]
+
+
+class TaskSummary(BaseModel):
+    #任务列表/创建返回的概要（不含主张与证据明细）
+    id: str
+    title: str
+    company: str
+    status: TaskStatus
+    researchType: str
+    progress: float
+    createdAt: str
+    updatedAt: str
+    claimCount: int = 0
+
+
+class TaskEvent(BaseModel):
+    #研究过程播报事件（SSE 与审计日志共用）
+    seq: int
+    ts: str
+    actor: str
+    kind: str
+    payload: dict[str, Any]

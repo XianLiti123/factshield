@@ -35,11 +35,12 @@ def _get_store() -> Chroma:
     )
 
 
-def add_document(content:str)->tuple[str,int]:
+def add_document(content:str,group_id:str|None=None)->tuple[str,int]:
     #把一篇 Markdown 文档切分后写入向量库，返回 (组ID, 块数)
-    #同一篇文档的所有块共享 group_id，用于和 SQLite 中的元数据对应
+    #同一篇文档的所有块共享 group_id，用于和 SQLite 中的元数据对应；
+    #可传入自定义 group_id（如 task:xxx:1 标记任务采集的素材），缺省自动生成
     store = _get_store()
-    group_id = uuid.uuid4().hex
+    group_id = group_id or uuid.uuid4().hex
     chunks = _splitter.split_text(content)
     store.add_texts(
         texts=chunks,

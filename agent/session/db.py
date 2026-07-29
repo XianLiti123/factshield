@@ -54,6 +54,86 @@ CREATE TABLE IF NOT EXISTS user_model_configs (
     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     PRIMARY KEY (user_id, slot)
 );
+-- 以下为事实核查流水线（agent/research）的结构化存储
+CREATE TABLE IF NOT EXISTS research_tasks (
+    task_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    company TEXT NOT NULL DEFAULT '',
+    research_type TEXT NOT NULL DEFAULT 'policy',
+    preferred_sources TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'running',
+    progress REAL NOT NULL DEFAULT 0,
+    report_md TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS task_materials (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    group_id TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    publisher TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    source_type TEXT NOT NULL DEFAULT '',
+    credibility REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS claims (
+    id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    idx INTEGER NOT NULL,
+    statement TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'review',
+    confidence REAL NOT NULL DEFAULT 0,
+    supervisor_verdict TEXT NOT NULL DEFAULT '',
+    reviewer_verdict TEXT NOT NULL DEFAULT '',
+    conflict_reason TEXT,
+    issue_type TEXT,
+    human_action TEXT,
+    human_note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY (task_id, id)
+);
+CREATE TABLE IF NOT EXISTS evidence (
+    id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    publisher TEXT NOT NULL DEFAULT '',
+    published_at TEXT NOT NULL DEFAULT '',
+    locator TEXT NOT NULL DEFAULT '',
+    quote TEXT NOT NULL DEFAULT '',
+    source_type TEXT NOT NULL DEFAULT '',
+    relation TEXT NOT NULL DEFAULT 'support',
+    credibility REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY (task_id, id)
+);
+CREATE TABLE IF NOT EXISTS claim_evidence (
+    task_id TEXT NOT NULL,
+    claim_id TEXT NOT NULL,
+    evidence_id TEXT NOT NULL,
+    PRIMARY KEY (task_id, claim_id, evidence_id)
+);
+CREATE TABLE IF NOT EXISTS task_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    actor TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    ts TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS task_guidance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    consumed INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
 """
 
 

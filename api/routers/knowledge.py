@@ -42,10 +42,16 @@ def save_document(request: SaveDocumentRequest) -> SaveDocumentResponse:
 
 
 @router.get("/documents")
-def list_documents() -> DocumentListResponse:
-    #列出知识库中全部文档的元数据
+def list_documents(group_id: str | None = None) -> DocumentListResponse:
+    #列出知识库中文档的元数据；可按 group_id 前缀过滤（如 task:FS-2026-001 回溯某任务采集的素材）
     with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT id, group_id, chunk_count, created_at FROM documents ORDER BY id DESC"
-        ).fetchall()
+        if group_id:
+            rows = conn.execute(
+                "SELECT id, group_id, chunk_count, created_at FROM documents"
+                " WHERE group_id LIKE ? ORDER BY id DESC", (f"{group_id}%",)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, group_id, chunk_count, created_at FROM documents ORDER BY id DESC"
+            ).fetchall()
     return DocumentListResponse(documents=[DocumentMeta(**dict(row)) for row in rows])
