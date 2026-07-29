@@ -22,6 +22,12 @@ CREATE TABLE IF NOT EXISTS turns (
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     UNIQUE(session_id, seq)
 );
+CREATE TABLE IF NOT EXISTS profile_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
 """
 
 

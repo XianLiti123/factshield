@@ -5,12 +5,13 @@ from langchain_core.messages import HumanMessage,SystemMessage,BaseMessage,ToolM
 
 from .core.loop import graph
 from .core.context import estimate_tokens,needs_compaction,compact_messages
+from .core.prompt import build_system_prompt
 from .session import store as session_store
 
 logger = logging.getLogger(__name__)
 
-#系统提示词，重建会话视图时复用同一常量
-SYSTEM_PROMPT = "你是一个有用的助手。你的工具按组提供，默认只有终端命令（execute_command）和工具集激活工具（activate_toolset）。需要联网搜索/读网页/下载文件时激活 web 工具集，需要转换本地文档或 AI 识别图片/PDF 时激活 document 工具集，需要检索本地文档知识库或回忆历史对话时激活 memory 工具集；激活后本次对话内一直有效，无需重复激活。此外你还可以通过 subagent 工具把可以独立完成的子任务交给子代理处理，子代理拥有全部工具能力但看不到对话历史，任务描述要写完整。"
+#无画像时的系统提示词，作为向后兼容的入口；实际使用走 build_system_prompt 动态组装
+SYSTEM_PROMPT = build_system_prompt()
 
 
 #Agent的对外接口
@@ -19,7 +20,9 @@ class Agent:
     def __init__(self,session_id:str|None=None):
         self.graph = graph
         self.session_id = session_store.create_session(session_id)#建行或复用
-        self.messages:list[BaseMessage] = [SystemMessage(content=SYSTEM_PROMPT)]#初始化系统提示词
+        #画像只在会话建立时加载一次，会话生命周期内固定不变：
+        #中途重建系统提示会打飞整段前缀缓存，因此本会话存入的画像要到下次新建对话才生效
+        self.messages:list[BaseMessage] = [SystemMessage(content=build_system_prompt(session_store.profile_text() or None))]#初始化系统提示词
         self.active_toolsets = ["terminal"]#已激活的工具集，跨轮持久化
         self.context_tokens = 0#当前上下文token数的运行值，随轮次增量维护，不再全量遍历历史；随会话持久化到 sessions.db
         self._turn_seq = 0#当前轮次序号，与 turns 表的 seq 对应
@@ -167,7 +170,7 @@ if __name__ == "__main__":
 
     agent = Agent()
     print(f"会话ID: {agent.session_id}（下次可用 Agent('{agent.session_id}') 恢复）")
-    print("输入 exit 退出，输入 compact 手动压缩上下文")
+    print("输入 exit 退出，输入 compact 手动压缩上下文，输入 profile 查看用户画像")
     while True:
         input_message = input("你: ")
         if input_message == "exit":
@@ -175,6 +178,10 @@ if __name__ == "__main__":
         if input_message == "compact":
             agent.compact()
             print("[上下文已手动压缩]")
+            continue
+        if input_message == "profile":
+            text = session_store.profile_text()
+            print(f"[用户画像]\n{text}" if text else "[用户画像为空]")
             continue
         print("AI: ",end="",flush=True)
         thinking = False#是否正在输出思考内容

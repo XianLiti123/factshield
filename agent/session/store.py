@@ -89,3 +89,46 @@ def delete_session(session_id: str) -> bool:
         conn.execute("DELETE FROM turns WHERE session_id=?", (session_id,))
         conn.execute("DELETE FROM sessions WHERE session_id=?", (session_id,))
     return True
+
+
+# ---- 用户画像（全局一份，跨会话共享，不带 session_id）----
+
+#画像条目软上限，超限时工具层提示 LLM 先合并/删除旧条目
+MAX_PROFILE_FACTS = 50
+
+
+def add_fact(content: str) -> int:
+    #新增一条画像事实，返回条目 id
+    with get_connection() as conn:
+        cursor = conn.execute("INSERT INTO profile_facts (content) VALUES (?)", (content,))
+        return cursor.lastrowid  # type: ignore
+
+
+def update_fact(fact_id: int, content: str) -> bool:
+    #更新一条画像事实，条目不存在时返回 False
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "UPDATE profile_facts SET content=?, updated_at=datetime('now','localtime') WHERE id=?",
+            (content, fact_id)
+        )
+        return cursor.rowcount > 0
+
+
+def delete_fact(fact_id: int) -> bool:
+    #删除一条画像事实，条目不存在时返回 False
+    with get_connection() as conn:
+        cursor = conn.execute("DELETE FROM profile_facts WHERE id=?", (fact_id,))
+        return cursor.rowcount > 0
+
+
+def list_facts() -> list[dict]:
+    #列出全部画像事实，按 id 升序
+    with get_connection() as conn:
+        rows = conn.execute("SELECT id, content, created_at, updated_at FROM profile_facts ORDER BY id").fetchall()
+    return [dict(row) for row in rows]
+
+
+def profile_text() -> str:
+    #把画像事实拼成注入系统提示词的文本（"1. ...\n2. ..."），无事实时返回空串
+    facts = list_facts()
+    return "\n".join(f"{i}. {row['content']}" for i, row in enumerate(facts, 1))
