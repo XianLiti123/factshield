@@ -2,24 +2,24 @@ import json
 import queue
 from typing import Iterator
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agent.research import runner, store
+from agent.research.export import report_to_docx, report_to_pdf
 from agent.research.models import run_to_dto
+from agent.research.pipeline import _build_report
 from agent.session.model_config import get_config
 
 from ..core.security import get_current_user
 from ..core.session import get_or_create_session, mark_running, unmark_running
 from ..schemas.research import ResearchRun, TaskSummary
-from ..utils.reserved import not_implemented
 from ..utils.sse import sse_event
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
-#事实核查研究任务接口：创建/运行（SSE）/裁决/重新取证/底稿/审计/Supervisor 对话
-#历史情景复盘（history-analysis）与 PDF/Word 导出仍预留，待后续阶段实现
+#事实核查研究任务接口：创建/运行（SSE）/裁决/重新取证/底稿（markdown/pdf/docx）/审计/Supervisor 对话/历史情景统计
 
 
 class CreateTaskRequest(BaseModel):
@@ -191,14 +191,21 @@ def retry_claim(task_id: str, claim_id: str, user_id: int = Depends(get_current_
 
 @router.get("/{task_id}/report")
 def export_report(task_id: str, format: str = "markdown",
-                  user_id: int = Depends(get_current_user)) -> dict:
-    #研究底稿：本期支持 Markdown；PDF/Word 导出预留
+                  user_id: int = Depends(get_current_user)):
+    #研究底稿导出：markdown 返回 JSON；pdf/docx 返回文件字节流
     task = _get_task_or_404(task_id, user_id)
-    if format != "markdown":
-        raise not_implemented(f"底稿导出格式 {format}（当前支持 markdown）")
     if not task["report_md"]:
         raise HTTPException(status_code=409, detail="底稿尚未生成（任务未完成）")
-    return {"format": "markdown", "content": task["report_md"]}
+    if format == "markdown":
+        return {"format": "markdown", "content": task["report_md"]}
+    if format == "pdf":
+        return Response(content=report_to_pdf(task["report_md"]), media_type="application/pdf",
+                        headers={"Content-Disposition": f'attachment; filename="{task_id}.pdf"'})
+    if format == "docx":
+        return Response(content=report_to_docx(task["report_md"]),
+                        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        headers={"Content-Disposition": f'attachment; filename="{task_id}.docx"'})
+    raise HTTPException(status_code=400, detail="不支持的导出格式，可选: markdown/pdf/docx")
 
 
 @router.get("/{task_id}/audit-log")
@@ -215,9 +222,43 @@ def audit_log(task_id: str, user_id: int = Depends(get_current_user)) -> dict:
 
 
 @router.post("/{task_id}/history-analysis")
-def history_analysis(task_id: str, user_id: int = Depends(get_current_user)) -> None:
+def history_analysis(task_id: str, user_id: int = Depends(get_current_user)) -> dict[str, str]:
+    #历史情景时序统计：后台执行（检索+数据抽取需数十秒），进度经 events 端点推送
     _get_task_or_404(task_id, user_id)
-    raise not_implemented("历史情景复盘")
+    if get_config(user_id, "llm") is None:
+        raise HTTPException(status_code=400, detail="未配置 LLM 模型，请先在 /settings 配置")
+    if runner.is_analysis_running(task_id):
+        raise HTTPException(status_code=409, detail="该任务已有正在运行的历史情景统计")
+    try:
+        runner.start_history_analysis(task_id, user_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"status": "running", "task_id": task_id}
+
+
+@router.get("/{task_id}/history-analysis")
+def get_history_analysis(task_id: str, user_id: int = Depends(get_current_user)) -> dict:
+    #取最新一次历史情景统计结果（前端据此绘制时序曲线与样本表）
+    _get_task_or_404(task_id, user_id)
+    analysis = store.get_latest_analysis(task_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="尚无历史情景统计结果")
+    return {"id": analysis["id"], "task_id": task_id, "attached": bool(analysis["attached"]),
+            "created_at": analysis["created_at"], **analysis["payload"]}
+
+
+@router.post("/{task_id}/history-analysis/attach")
+def attach_history_analysis(task_id: str, user_id: int = Depends(get_current_user)) -> dict[str, str]:
+    #把最新一次统计结果加入研究底稿附件 A（幂等：重复调用内容不重复）
+    task = _get_task_or_404(task_id, user_id)
+    analysis = store.get_latest_analysis(task_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="尚无历史情景统计结果")
+    if not task["report_md"]:
+        raise HTTPException(status_code=409, detail="底稿尚未生成（任务未完成）")
+    store.set_analysis_attached(analysis["id"], True)
+    store.update_task(task_id, report_md=_build_report(store.get_task(task_id, user_id)))
+    return {"status": "attached", "task_id": task_id}
 
 
 @router.post("/{task_id}/chat")

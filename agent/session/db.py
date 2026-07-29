@@ -134,6 +134,15 @@ CREATE TABLE IF NOT EXISTS task_guidance (
     consumed INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
+CREATE TABLE IF NOT EXISTS history_analyses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    metric TEXT NOT NULL,
+    unit TEXT NOT NULL DEFAULT '',
+    payload TEXT NOT NULL,
+    attached INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
 """
 
 

@@ -72,7 +72,8 @@ def delete_task(task_id: str, user_id: int) -> bool:
     if get_task(task_id, user_id) is None:
         return False
     with get_connection() as conn:
-        for table in ("task_materials", "claims", "evidence", "claim_evidence", "task_events", "task_guidance"):
+        for table in ("task_materials", "claims", "evidence", "claim_evidence",
+                      "task_events", "task_guidance", "history_analyses"):
             conn.execute(f"DELETE FROM {table} WHERE task_id=?", (task_id,))
         conn.execute("DELETE FROM research_tasks WHERE task_id=?", (task_id,))
     return True
@@ -258,3 +259,34 @@ def consume_guidance(task_id: str) -> list[str]:
             ids = ",".join(str(r["id"]) for r in rows)
             conn.execute(f"UPDATE task_guidance SET consumed=1 WHERE id IN ({ids})")
     return [r["content"] for r in rows]
+
+
+# ---------------- 历史情景时序统计 ----------------
+
+def save_analysis(task_id: str, metric: str, unit: str, payload: dict) -> int:
+    #保存一次历史情景时序统计结果；新结果保存时把旧结果的附件标记清除（附件始终指向最新一次）
+    with get_connection() as conn:
+        conn.execute("UPDATE history_analyses SET attached=0 WHERE task_id=?", (task_id,))
+        cur = conn.execute(
+            "INSERT INTO history_analyses (task_id, metric, unit, payload) VALUES (?,?,?,?)",
+            (task_id, metric, unit, json.dumps(payload, ensure_ascii=False))
+        )
+        return cur.lastrowid  # type: ignore[return-value]
+
+
+def get_latest_analysis(task_id: str) -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM history_analyses WHERE task_id=? ORDER BY id DESC LIMIT 1", (task_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    result = dict(row)
+    result["payload"] = json.loads(result["payload"])
+    return result
+
+
+def set_analysis_attached(analysis_id: int, attached: bool) -> None:
+    with get_connection() as conn:
+        conn.execute("UPDATE history_analyses SET attached=? WHERE id=?",
+                     (1 if attached else 0, analysis_id))

@@ -93,3 +93,36 @@ def start_retry(task_id: str, claim_id: str, user_id: int) -> None:
             q.put(None)
 
     threading.Thread(target=run, daemon=True, name=f"retry-{task_id}-{claim_id}").start()
+
+
+#正在运行的历史情景统计（task_id 去重，防并发重复触发）
+_running_analysis: set[str] = set()
+
+
+def is_analysis_running(task_id: str) -> bool:
+    with _registry_lock:
+        return task_id in _running_analysis
+
+
+def start_history_analysis(task_id: str, user_id: int) -> None:
+    #后台线程执行历史情景时序统计，事件落 task_events 表（SSE 由 events 端点回放/推送）
+    from .history import run_history_analysis  #延迟导入，避免模块加载顺序问题
+    with _registry_lock:
+        if task_id in _running_analysis:
+            raise RuntimeError("该任务已有正在运行的历史情景统计")
+        _running_analysis.add(task_id)
+
+    def emit(actor: str, kind: str, **payload) -> None:
+        store.append_event(task_id, actor, kind, payload)
+
+    def run() -> None:
+        try:
+            run_history_analysis(task_id, user_id, emit)
+        except Exception as e:
+            logger.exception("任务 %s 历史情景统计失败", task_id)
+            emit("system", "error", {"title": "历史情景统计失败", "speech": str(e)})
+        finally:
+            with _registry_lock:
+                _running_analysis.discard(task_id)
+
+    threading.Thread(target=run, daemon=True, name=f"history-{task_id}").start()

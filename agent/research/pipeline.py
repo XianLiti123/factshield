@@ -366,7 +366,8 @@ def assemble_node(state: ResearchState, config: RunnableConfig) -> dict:
     #底稿组装：按模板拼装已核验素材（纯代码组装，不新增任何分析文字）
     _check_stop(config)
     task_id = state["task_id"]
-    store.update_task(task_id, report_md=_build_report(task_id, state), status="review", progress=100)
+    task = store.get_task(task_id, state["user_id"]) or {}
+    store.update_task(task_id, report_md=_build_report(task), status="review", progress=100)
     _emit(config, "assembler", "progress",
           title="研究底稿已生成", speech="带完整证据索引的研究底稿已组装完成，请研究员审阅并做最终研判。",
           details=[], metrics=[], progress=100)
@@ -374,10 +375,11 @@ def assemble_node(state: ResearchState, config: RunnableConfig) -> dict:
     return {}
 
 
-def _build_report(task_id: str, state: ResearchState) -> str:
+def _build_report(task: dict) -> str:
+    #组装 Markdown 研究底稿（幂等：完全由库中结构化数据重建，可在流水线外重新生成）
     from datetime import datetime
     from .models import STATUS_LABEL
-    task = store.get_task(task_id, state["user_id"]) or {}
+    task_id = task["task_id"]
     claims = store.list_claims(task_id)
     evidence = {e["id"]: e for e in store.list_evidence(task_id)}
     ce_map = store.claim_evidence_ids(task_id)
@@ -385,11 +387,11 @@ def _build_report(task_id: str, state: ResearchState) -> str:
     for c in claims:
         counts[c["status"]] = counts.get(c["status"], 0) + 1
     lines = [
-        f"# 研究底稿：{task.get('title', state['topic'])}",
+        f"# 研究底稿：{task.get('title', task['topic'])}",
         "",
         f"- 任务编号：{task_id}",
-        f"- 研究主题：{state['topic']}",
-        f"- 研究类型：{state['research_type']}",
+        f"- 研究主题：{task['topic']}",
+        f"- 研究类型：{task['research_type']}",
         f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "",
         "## 摘要",
@@ -428,9 +430,34 @@ def _build_report(task_id: str, state: ResearchState) -> str:
         for m in materials:
             lines.append(f"- {m['title']}（{m['publisher']}，{m['source_type']}，"
                          f"可信度 {m['credibility']:.2f}）：{m['url']}")
+    attachment = _attachment_section(task_id)
+    if attachment:
+        lines += ["", attachment]
     lines += ["", "---",
               "",
               "> 免责声明：本底稿仅为金融研究辅助素材，不构成任何投资建议，最终结论由研究员人工研判。"]
+    return "\n".join(lines)
+
+
+def _attachment_section(task_id: str) -> str:
+    #附件 A：已标记加入底稿的最新一次历史情景时序统计（纯客观数据，无趋势判断）
+    analysis = store.get_latest_analysis(task_id)
+    if analysis is None or not analysis["attached"]:
+        return ""
+    payload = analysis["payload"]
+    lines = [f"## 附件 A：历史情景时序统计（指标：{payload['metric']}"
+             + (f"，单位：{payload['unit']}" if payload.get("unit") else "") + "）",
+             "",
+             "> 本附件仅为公开数据的客观时序统计，不构成任何趋势判断或研究结论。",
+             "",
+             "| 事件 | 时段 | 数据点数 | 客观描述 |",
+             "| --- | --- | --- | --- |"]
+    for e in payload["events"]:
+        lines.append(f"| {e['name']} | {e['period']} | {len(e['points'])} | {e['description']} |")
+    for e in payload["events"]:
+        lines += ["", f"### {e['name']}（{e['period']}）", ""]
+        lines.append("、".join(f"{p['t']}：{p['value']}{payload.get('unit', '')}" for p in e["points"]))
+    lines += ["", f"数据完整度：{payload['completeness'] * 100:.0f}%"]
     return "\n".join(lines)
 
 
