@@ -38,7 +38,7 @@ function AgentNode({ data }: NodeProps<Node<AgentNodeData>>) {
     <div className={`agent-node ${data.kind ?? ''} ${data.status}`}>
       <Handle type="target" position={Position.Top} />
       <div className="agent-node-top">
-        <span className="agent-node-icon">{data.kind === 'reviewer' ? 'R' : data.kind === 'supervisor' ? 'S' : 'A'}</span>
+        <span className="agent-node-icon">{data.kind === 'reviewer' ? '复' : data.kind === 'supervisor' ? '盾' : '核'}</span>
         <div className="agent-node-copy"><strong>{displayName}</strong><span>{data.role}</span></div>
         <i>{statusIcon}</i>
       </div>
@@ -115,7 +115,7 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
         <div><strong>当前阻塞：独立审查发现 {warningCount} 项冲突</strong><span>{conflictClaim?.statement ?? '需要返回核验工作台补充交叉证据。'}</span></div>
         <Button onClick={() => setActiveView('workbench')}>查看待核验主张</Button>
       </div>
-      <div className="isolation-banner"><LockFilled /><strong>隔离状态正常</strong><span>SubAgent 仅向 Supervisor 回传结果，彼此不共享上下文。</span></div>
+      <div className="isolation-banner"><LockFilled /><strong>隔离状态正常</strong><span>后台助手只把结果交给小盾，彼此不共享上下文。</span></div>
       <div className="flow-canvas">
         <ReactFlow
           nodes={nodes}

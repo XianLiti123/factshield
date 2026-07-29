@@ -12,33 +12,40 @@ import { TaskCenter } from './components/TaskCenter'
 import { LoginView } from './components/LoginView'
 import { SupervisorAssistant } from './components/SupervisorAssistant'
 import { SettingsView } from './components/SettingsView'
-import { getResearchRun } from './services/mockApi'
-import { useWorkspaceStore } from './store'
+import { getResearchRuns } from './services/mockApi'
+import { getActiveTask, getTaskProgress, useWorkspaceStore } from './store'
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const activeView = useWorkspaceStore((state) => state.activeView)
-  const demoStep = useWorkspaceStore((state) => state.demoStep)
-  const isDemoRunning = useWorkspaceStore((state) => state.isDemoRunning)
-  const advanceDemo = useWorkspaceStore((state) => state.advanceDemo)
-  const finishResearch = useWorkspaceStore((state) => state.finishResearch)
-  const stopDemo = useWorkspaceStore((state) => state.stopDemo)
+  const activeTask = useWorkspaceStore(getActiveTask)
+  const hasRunningTasks = useWorkspaceStore((state) => state.tasks.some((task) => task.phase === 'running' && task.isDemoRunning))
+  const advanceRunningTasks = useWorkspaceStore((state) => state.advanceRunningTasks)
 
-  const { data: run, isLoading, isError, refetch } = useQuery({
-    queryKey: ['research-run', 'FS-2026-0726-018'],
-    queryFn: getResearchRun,
+  const { data: runs, isLoading, isError, refetch } = useQuery({
+    queryKey: ['research-runs'],
+    queryFn: getResearchRuns,
   })
 
   useEffect(() => {
-    if (!isDemoRunning) return
-    if (demoStep >= 8) {
-      finishResearch('claim-3')
-      stopDemo()
-      return
-    }
-    const timer = window.setTimeout(advanceDemo, 7200)
-    return () => window.clearTimeout(timer)
-  }, [advanceDemo, demoStep, finishResearch, isDemoRunning, stopDemo])
+    if (!hasRunningTasks) return
+    const timer = window.setInterval(advanceRunningTasks, 7200)
+    return () => window.clearInterval(timer)
+  }, [advanceRunningTasks, hasRunningTasks])
+
+  const baseRun = runs?.[0]
+  const matchedRun = runs?.find((run) => run.id === activeTask.id)
+  const run = matchedRun ? {
+    ...matchedRun,
+    progress: getTaskProgress(activeTask),
+  } : (baseRun ? {
+    ...baseRun,
+    id: activeTask.id,
+    title: activeTask.title,
+    company: activeTask.company,
+    createdAt: activeTask.createdAt,
+    progress: getTaskProgress(activeTask),
+  } : undefined)
 
   if (!isAuthenticated) {
     return <LoginView onLogin={() => setIsAuthenticated(true)} />
@@ -62,7 +69,7 @@ function App() {
       {run && (
         <>
           {!['tasks', 'settings'].includes(activeView) && <ResearchHeader run={run} />}
-          {activeView === 'tasks' && <TaskCenter run={run} />}
+          {activeView === 'tasks' && <TaskCenter runs={runs ?? [run]} />}
           {activeView === 'workbench' && <Workbench run={run} />}
           {activeView === 'topology' && <AgentTopology run={run} />}
           {activeView === 'analytics' && <AnalyticsView run={run} />}

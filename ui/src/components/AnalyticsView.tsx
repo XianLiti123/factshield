@@ -88,7 +88,7 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
         </div>
         <div className="history-agent-status">
           <span className={running ? 'agent-live-dot running' : 'agent-live-dot'} />
-          <div><strong>历史情景复盘 SubAgent</strong><span>{running ? '正在执行 Mock 统计' : '等待研究员手动触发'}</span></div>
+          <div><strong>历史情景复盘</strong><span>{running ? '正在执行 Mock 统计' : '等待研究员手动触发'}</span></div>
         </div>
       </section>
 

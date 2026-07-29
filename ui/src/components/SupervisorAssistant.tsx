@@ -12,7 +12,7 @@ import {
 } from '@ant-design/icons'
 import { Button, Drawer, Input, Tag } from 'antd'
 import type { ResearchRun } from '../types'
-import { useWorkspaceStore } from '../store'
+import { getActiveTask, useWorkspaceStore } from '../store'
 
 type AssistantMessage = {
   id: number
@@ -49,17 +49,17 @@ function createMockReply(request: string, claimStatement?: string) {
     return '当前结论的关键依据是：支持证据能够证明相关因素存在，但不足以排除其他因素的贡献，因此独立审查将其标记为需要人工研判。'
   }
   if (request.includes('取证')) {
-    return '已记录补充取证要求。正式接入后，Supervisor 会保留现有证据，并围绕当前疑点追加限定检索与独立复核。'
+    return '记下了。我会保留已经找到的证据，再围绕当前疑点补一轮限定检索和独立复核。'
   }
   if (request.includes('范围')) {
-    return '可以调整。请直接说明新增或排除的公司、时间区间、指标或信源范围，Supervisor 将据此更新研究任务。'
+    return '可以调整。告诉我想新增或排除哪些公司、时间区间、指标或信源，我会按新的范围继续查。'
   }
   if (request.includes('修正')) {
     return claimStatement
       ? `建议将当前表述改为更审慎的可核验口径，并保留证据限定：${claimStatement}`
-      : '请指定需要修正的事实主张，Supervisor 将基于原始证据给出更审慎的可核验表述。'
+      : '告诉我需要修正哪条事实主张，我会根据原始证据换成更审慎、可核验的说法。'
   }
-  return '要求已记录。正式接入 Supervisor 服务后，系统会结合当前任务、事实主张和证据链执行，并将处理结果回传到对应工作区。'
+  return '好，我记下了。我会结合当前任务、事实主张和已有证据继续处理，结果会回到对应的工作区。'
 }
 
 export function SupervisorAssistant({ run }: { run: ResearchRun }) {
@@ -72,11 +72,11 @@ export function SupervisorAssistant({ run }: { run: ResearchRun }) {
     {
       id: 1,
       role: 'assistant',
-      content: '你可以直接追问核验依据、补充研究要求或要求重新取证。我会自动携带当前任务与证据上下文。',
+      content: '哪条结论看着不对，直接问我就好。你也可以补充要求或让我重新找证据，当前任务和证据会自动带入对话。',
     },
   ])
   const activeView = useWorkspaceStore((state) => state.activeView)
-  const selectedClaimId = useWorkspaceStore((state) => state.selectedClaimId)
+  const selectedClaimId = useWorkspaceStore(getActiveTask).selectedClaimId
   const selectedClaim = useMemo(
     () => run.claims.find((claim) => claim.id === selectedClaimId),
     [run.claims, selectedClaimId],
@@ -113,7 +113,7 @@ export function SupervisorAssistant({ run }: { run: ResearchRun }) {
     <>
       <button className="supervisor-assistant-trigger" onClick={() => setOpen(true)}>
         <span className="assistant-trigger-icon"><MessageOutlined /><i /></span>
-        <span><strong>向研究主控追问</strong><small>自动携带当前上下文</small></span>
+        <span><strong>问问小盾</strong><small>已关联当前任务</small></span>
       </button>
 
       <Drawer
@@ -121,7 +121,7 @@ export function SupervisorAssistant({ run }: { run: ResearchRun }) {
         title={
           <div className="assistant-drawer-title">
             <span><SafetyCertificateOutlined /></span>
-            <div><strong>研究主控</strong><small>Supervisor 单一交互入口</small></div>
+            <div><strong>小盾</strong><small>你的事实核验搭档</small></div>
           </div>
         }
         width={440}
@@ -137,7 +137,7 @@ export function SupervisorAssistant({ run }: { run: ResearchRun }) {
 
         <div className="assistant-isolation-note">
           <SafetyCertificateOutlined />
-          <span>请求仅发送给 Supervisor；SubAgent 仍保持隔离，不直接参与对话。</span>
+          <span>这段对话由小盾接收；后台核验任务彼此隔离，不会互相影响判断。</span>
         </div>
 
         <div className="assistant-quick-actions">
@@ -148,13 +148,13 @@ export function SupervisorAssistant({ run }: { run: ResearchRun }) {
         <div className="assistant-message-list">
           {messages.map((message) => (
             <div className={`assistant-message ${message.role}`} key={message.id}>
-              {message.role === 'assistant' && <span className="assistant-message-avatar">S</span>}
+              {message.role === 'assistant' && <span className="assistant-message-avatar">盾</span>}
               <div>
-                <small>{message.role === 'assistant' ? '研究主控' : '你'}</small>
+                <small>{message.role === 'assistant' ? '小盾' : '你'}</small>
                 {message.replyTo && (
                   <div className="assistant-sent-reply-card">
                     <RetweetOutlined />
-                    <div><strong>追问研究主控</strong><span>{message.replyTo.content}</span></div>
+                    <div><strong>追问小盾</strong><span>{message.replyTo.content}</span></div>
                   </div>
                 )}
                 <p>{message.content}</p>
@@ -199,7 +199,7 @@ export function SupervisorAssistant({ run }: { run: ResearchRun }) {
                 }
               }}
               autoSize={{ minRows: 2, maxRows: 5 }}
-              placeholder="补充要求或追问当前核验结论…"
+              placeholder="有疑问或想补充什么，直接告诉小盾…"
             />
             {attachments.length > 0 && (
               <div className="assistant-pending-attachments">
@@ -224,7 +224,7 @@ export function SupervisorAssistant({ run }: { run: ResearchRun }) {
                 onChange={(event) => addAttachments(event.target.files)}
               />
               <Button type="text" icon={<PaperClipOutlined />} aria-label="添加附件" onClick={() => attachmentInputRef.current?.click()}>添加附件</Button>
-              <Button type="primary" icon={<ArrowUpOutlined />} aria-label="发送给研究主控" onClick={() => sendRequest(input)} />
+              <Button type="primary" icon={<ArrowUpOutlined />} aria-label="发送给小盾" onClick={() => sendRequest(input)} />
             </div>
           </div>
           <span>Enter 发送 · Shift + Enter 换行 · 当前为 UI Mock</span>

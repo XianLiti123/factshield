@@ -97,7 +97,7 @@ export function WorkbenchOverview({ run, onOpenClaim }: { run: ResearchRun; onOp
         <SafetyCertificateOutlined />
       </section>
       <section className="overview-metric-card">
-        <div><span>双层核验进度</span><strong>{run.progress}%</strong><small><i /> Supervisor 与独立审查</small></div>
+        <div><span>双层核验进度</span><strong>{run.progress}%</strong><small><i /> 小盾与独立复核</small></div>
         <CheckCircleFilled />
       </section>
 

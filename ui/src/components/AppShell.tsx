@@ -1,8 +1,10 @@
 import type { ReactNode } from 'react'
 import {
   ApartmentOutlined,
+  ArrowRightOutlined,
   BarChartOutlined,
   BellOutlined,
+  CheckCircleFilled,
   DownOutlined,
   FileSearchOutlined,
   FileTextOutlined,
@@ -15,7 +17,7 @@ import { Avatar, Badge, Button, Input, Tooltip } from 'antd'
 import { useWorkspaceStore } from '../store'
 
 const navItems = [
-  { key: 'tasks' as const, label: '开始研究', icon: <RocketOutlined /> },
+  { key: 'tasks' as const, label: '研究任务', icon: <RocketOutlined /> },
   { key: 'workbench' as const, label: '待我复核', icon: <FileSearchOutlined /> },
   { key: 'reports' as const, label: '研究底稿', icon: <FileTextOutlined /> },
 ]
@@ -27,7 +29,7 @@ const secondaryItems = [
 ]
 
 const pageMeta = {
-  tasks: { title: '开始研究', subtitle: '输入问题，其余步骤交给系统' },
+  tasks: { title: '研究任务', subtitle: '同时查看、切换和管理多项研究' },
   workbench: { title: '待我复核', subtitle: '只处理系统无法自动确认的疑点' },
   topology: { title: '执行监控', subtitle: '查看各执行单元的进度、耗时、回传状态与异常' },
   analytics: { title: '历史情景复盘', subtitle: '对照已结束事件的公开时序数据与客观指标' },
@@ -38,18 +40,35 @@ const pageMeta = {
 export function AppShell({ children }: { children: ReactNode }) {
   const activeView = useWorkspaceStore((state) => state.activeView)
   const setActiveView = useWorkspaceStore((state) => state.setActiveView)
-  const taskPhase = useWorkspaceStore((state) => state.taskPhase)
-  const reviewedClaimIds = useWorkspaceStore((state) => state.reviewedClaimIds)
+  const tasks = useWorkspaceStore((state) => state.tasks)
+  const activeTaskId = useWorkspaceStore((state) => state.activeTaskId)
+  const selectTask = useWorkspaceStore((state) => state.selectTask)
   const openReviewQueue = useWorkspaceStore((state) => state.openReviewQueue)
   const activeMeta = pageMeta[activeView]
-  const pendingCount = taskPhase === 'ready' ? 0 : Math.max(0, 2 - reviewedClaimIds.length)
+  const pendingItems = tasks.flatMap((task) => task.phase === 'review'
+    ? task.reviewClaimIds
+      .filter((claimId) => !task.reviewedClaimIds.includes(claimId))
+      .map((claimId) => ({ taskId: task.id, claimId }))
+    : [])
+  const pendingCount = pendingItems.length
+  const nextPendingItem = pendingItems[0]
 
   const navigate = (view: typeof navItems[number]['key'] | typeof secondaryItems[number]['key']) => {
-    if (view === 'workbench' && taskPhase === 'draft') {
-      openReviewQueue('claim-3')
+    if (view === 'workbench' && nextPendingItem) {
+      openReviewQueue(nextPendingItem.claimId, nextPendingItem.taskId)
       return
     }
     setActiveView(view)
+  }
+
+  const openCurrentTodo = () => {
+    if (nextPendingItem) {
+      openReviewQueue(nextPendingItem.claimId, nextPendingItem.taskId)
+      return
+    }
+    const completedTask = tasks.find((task) => task.phase === 'ready')
+    if (completedTask && completedTask.id !== activeTaskId) selectTask(completedTask.id)
+    setActiveView('reports')
   }
 
   return (
@@ -89,14 +108,21 @@ export function AppShell({ children }: { children: ReactNode }) {
           ))}
         </nav>
 
-        <div className="isolation-card">
-          <div className="isolation-icon"><SafetyCertificateFilled /></div>
-          <div>
-            <strong>隔离策略已启用</strong>
-            <p>SubAgent 间通信已阻断</p>
-          </div>
-          <span className="live-dot" />
-        </div>
+        <button
+          className={pendingCount > 0 ? 'sidebar-task-card' : 'sidebar-task-card complete'}
+          onClick={openCurrentTodo}
+        >
+          <span className="sidebar-task-card-heading">
+            <span className="sidebar-task-card-icon">{pendingCount > 0 ? <FileSearchOutlined /> : <CheckCircleFilled />}</span>
+            <small>{pendingCount > 0 ? '当前待办' : '本轮完成'}</small>
+          </span>
+          <strong>{pendingCount > 0 ? `${pendingCount} 项疑点待复核` : '所有疑点已处理'}</strong>
+          <p>{pendingCount > 0 ? '直接进入下一条需要判断的主张' : '结论与证据已经整理进研究底稿'}</p>
+          <span className="sidebar-task-card-action">
+            {pendingCount > 0 ? '继续复核' : '查看研究底稿'}
+            <ArrowRightOutlined />
+          </span>
+        </button>
       </aside>
 
       <div className="main-column">

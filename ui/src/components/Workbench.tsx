@@ -20,7 +20,7 @@ import {
 } from '@ant-design/icons'
 import { Button, Drawer, Empty, Input, Modal, Progress, Segmented, Steps, Table, Tag, message } from 'antd'
 import type { Claim, Evidence, ResearchRun } from '../types'
-import { useWorkspaceStore } from '../store'
+import { getActiveTask, useWorkspaceStore } from '../store'
 import { StatusBadge } from './StatusBadge'
 
 type ClaimVisibility = 'issues' | 'all'
@@ -69,7 +69,7 @@ function ClaimList({
   visibility: ClaimVisibility
   onVisibilityChange: (visibility: ClaimVisibility) => void
 }) {
-  const selectedClaimId = useWorkspaceStore((state) => state.selectedClaimId)
+  const selectedClaimId = useWorkspaceStore(getActiveTask).selectedClaimId
   const selectClaim = useWorkspaceStore((state) => state.selectClaim)
 
   return (
@@ -207,11 +207,11 @@ function VerdictPanel({ claim, onResolve }: { claim: Claim; onResolve: (decision
   ]
 
   const auditRows = [
-    { key: '1', time: '14:41:26', actor: '独立幻觉审查单元', action: '完成二级复核', input: 'Supervisor 一级汇总 v0.2', output: '标记“归因冲突”，建议重新取证', evidence: 'EV-04 / EV-05 / EV-06' },
-    { key: '2', time: '14:41:08', actor: '独立幻觉审查单元', action: '检查证据完整性', input: '3 条原文证据及定位', output: '证据可访问，归因强度不足', evidence: '3 / 3 已验证' },
-    { key: '3', time: '14:40:08', actor: 'Supervisor 主控', action: '生成一级汇总结论', input: '4 个 SubAgent 原始结果', output: '初步判断陈述基本成立', evidence: '3 条证据绑定' },
-    { key: '4', time: '14:38:36', actor: '向量证据检索 SubAgent', action: '检索匹配原文', input: '毛利率改善归因核验点', output: '返回 3 个原文片段及坐标', evidence: '相似度 0.86–0.94' },
-    { key: '5', time: '14:36:42', actor: '文档解析提取 SubAgent', action: '提取结构化指标', input: '年报第 41 页、调研记录问题 12', output: '提取成本与产品结构描述', evidence: '原文坐标已绑定' },
+    { key: '1', time: '14:41:26', actor: '独立复核', action: '完成二级复核', input: '小盾的一级汇总 v0.2', output: '标记“归因冲突”，建议重新取证', evidence: 'EV-04 / EV-05 / EV-06' },
+    { key: '2', time: '14:41:08', actor: '独立复核', action: '检查证据完整性', input: '3 条原文证据及定位', output: '证据可访问，归因强度不足', evidence: '3 / 3 已验证' },
+    { key: '3', time: '14:40:08', actor: '小盾', action: '生成一级汇总结论', input: '4 组后台核验结果', output: '初步判断陈述基本成立', evidence: '3 条证据绑定' },
+    { key: '4', time: '14:38:36', actor: '证据检索', action: '检索匹配原文', input: '毛利率改善归因核验点', output: '返回 3 个原文片段及坐标', evidence: '相似度 0.86–0.94' },
+    { key: '5', time: '14:36:42', actor: '文档解析', action: '提取结构化指标', input: '年报第 41 页、调研记录问题 12', output: '提取成本与产品结构描述', evidence: '原文坐标已绑定' },
   ]
 
   return (
@@ -251,8 +251,8 @@ function VerdictPanel({ claim, onResolve }: { claim: Claim; onResolve: (decision
       <div className="verification-flow">
         <div className="verdict-card supervisor">
           <div className="verdict-card-header">
-            <div className="verdict-avatar">S</div>
-            <div><strong>Supervisor 一级汇总</strong><span><ClockCircleOutlined /> 14:40:08 完成</span></div>
+            <div className="verdict-avatar">盾</div>
+            <div><strong>小盾的第一轮判断</strong><span><ClockCircleOutlined /> 14:40:08 完成</span></div>
             <span className="verdict-state"><CheckOutlined /> 已完成</span>
           </div>
           <p>{claim.supervisorVerdict}</p>
@@ -263,14 +263,14 @@ function VerdictPanel({ claim, onResolve }: { claim: Claim; onResolve: (decision
 
         <div className="verdict-card reviewer">
           <div className="verdict-card-header">
-            <div className="verdict-avatar">R</div>
-            <div><strong>独立幻觉审查</strong><span><ClockCircleOutlined /> 14:41:26 完成</span></div>
+            <div className="verdict-avatar">复</div>
+            <div><strong>独立复核</strong><span><ClockCircleOutlined /> 14:41:26 完成</span></div>
             <span className={claim.status === 'verified' ? 'verdict-state' : 'verdict-state warning'}>
               {claim.status === 'verified' ? <><CheckOutlined /> 一致</> : '发现分歧'}
             </span>
           </div>
           <p>{claim.reviewerVerdict}</p>
-          <div className="independence-note"><SafetyCertificateOutlined /> 未读取其他 SubAgent 推理过程</div>
+          <div className="independence-note"><SafetyCertificateOutlined /> 未读取其他核验过程</div>
         </div>
       </div>
 
@@ -305,9 +305,9 @@ function VerdictPanel({ claim, onResolve }: { claim: Claim; onResolve: (decision
 
       <div className="audit-mini">
         <div className="audit-title"><strong>关键审计记录</strong><button onClick={() => setAuditOpen(true)}>查看全部</button></div>
-        <div><i className="blue" /><span>14:41:26</span><p>Reviewer 完成独立复核</p></div>
+        <div><i className="blue" /><span>14:41:26</span><p>独立复核已完成</p></div>
         <div><i className="orange" /><span>14:41:08</span><p>识别到因果归因证据不足</p></div>
-        <div><i className="green" /><span>14:40:08</span><p>Supervisor 生成一级结论</p></div>
+        <div><i className="green" /><span>14:40:08</span><p>小盾给出第一轮判断</p></div>
       </div>
 
       <Drawer title="全链路审计记录" width={820} open={auditOpen} onClose={() => setAuditOpen(false)} extra={<Tag color="blue">Mock 数据</Tag>}>
@@ -326,18 +326,18 @@ function VerdictPanel({ claim, onResolve }: { claim: Claim; onResolve: (decision
             { title: '证据/状态', dataIndex: 'evidence', width: 135 },
           ]}
         />
-        <div className="audit-seal"><SafetyCertificateOutlined /><div><strong>审计链完整</strong><span>各环节时间、来源与原文定位均已记录；未展示任何 SubAgent 间直接通信。</span></div></div>
+        <div className="audit-seal"><SafetyCertificateOutlined /><div><strong>审计链完整</strong><span>各环节时间、来源与原文定位均已记录；后台核验任务彼此隔离。</span></div></div>
       </Drawer>
 
       <Modal title="发起第二轮取证" open={retryOpen} onCancel={() => setRetryOpen(false)} onOk={() => { setRetryOpen(false); message.success('重新取证流程已加入 Mock 运行队列') }} okText="确认发起" cancelText="取消" width={660}>
-        <div className="mock-notice"><RetweetOutlined /><span>本操作只演示 UI 流程，不会实际调度任何 Agent 或访问外部数据。</span></div>
+        <div className="mock-notice"><RetweetOutlined /><span>本操作只演示 UI 流程，不会实际启动后台任务或访问外部数据。</span></div>
         <div className="retry-summary"><strong>触发原因</strong><p>{claim.conflictReason}</p></div>
         <Steps
           direction="vertical"
           size="small"
           current={0}
           items={[
-            { title: 'Supervisor 接收复核疑点', description: '问题类型：归因冲突；缺少各因素贡献的定量拆分。' },
+            { title: '小盾收到复核疑点', description: '问题类型：归因冲突；缺少各因素贡献的定量拆分。' },
             { title: '重新派发原子任务', description: '仅向公开信源采集、文档解析、证据检索单元追加限定任务。' },
             { title: '新旧证据并排比较', description: '保留第一轮证据，不覆盖历史记录。' },
             { title: '再次进入独立审查', description: '形成第二轮可信度标签，最终由研究员研判。' },
@@ -356,12 +356,13 @@ export function Workbench({ run }: { run: ResearchRun }) {
   const [suspectedEventSteps, setSuspectedEventSteps] = useState<number[]>([])
   const processListRef = useRef<HTMLDivElement>(null)
   const guidanceAttachmentInputRef = useRef<HTMLInputElement>(null)
-  const taskPhase = useWorkspaceStore((state) => state.taskPhase)
-  const researchTopic = useWorkspaceStore((state) => state.researchTopic)
-  const demoStep = useWorkspaceStore((state) => state.demoStep)
-  const isDemoRunning = useWorkspaceStore((state) => state.isDemoRunning)
-  const reviewedClaimIds = useWorkspaceStore((state) => state.reviewedClaimIds)
-  const selectedClaimId = useWorkspaceStore((state) => state.selectedClaimId)
+  const activeTask = useWorkspaceStore(getActiveTask)
+  const taskPhase = activeTask.phase
+  const researchTopic = activeTask.researchTopic
+  const demoStep = activeTask.demoStep
+  const isDemoRunning = activeTask.isDemoRunning
+  const reviewedClaimIds = activeTask.reviewedClaimIds
+  const selectedClaimId = activeTask.selectedClaimId
   const selectClaim = useWorkspaceStore((state) => state.selectClaim)
   const resolveClaim = useWorkspaceStore((state) => state.resolveClaim)
   const finishResearch = useWorkspaceStore((state) => state.finishResearch)
@@ -401,20 +402,20 @@ export function Workbench({ run }: { run: ResearchRun }) {
     const progress = Math.round((demoStep / 8) * 100)
     const runningSteps = [
       { title: '采集并解析资料', description: '归档公开披露和补充材料，提取原文坐标' },
-      { title: '多源交叉核验', description: 'Supervisor 汇总，独立审查单元二次复核' },
+      { title: '多源交叉核验', description: '小盾汇总结果，再交给独立复核检查' },
       { title: '筛出需要人工判断的疑点', description: '可信结论自动进入底稿，黄红疑点等待你处理' },
     ]
     const processEvents = [
       {
         step: 0,
         time: '14:32:01',
-        actor: 'Supervisor 主控',
+        actor: '小盾',
         icon: <FileSearchOutlined />,
-        title: '开始理解研究任务',
-        speech: `我现在开始核验“${researchTopic || run.title}”。这不是一个只核对数字的问题，我需要同时确认经营质量、海外增长、盈利改善归因和欧洲产能风险。先把研究对象、时间范围和证据标准定清楚，再开始取证。`,
+        title: '先弄清楚这次要查什么',
+        speech: `我来核验“${researchTopic || run.title}”。先把研究对象、时间范围和证据标准理清楚，再逐条找原文、核对口径；证据不够的地方我会单独留给你判断。`,
         details: [
-          { label: '对象识别', text: '宁德时代（300750.SZ），报告期限定为 2025 财年；涉及历史比较时向前回溯三年。' },
-          { label: '核验范围', text: '经营质量、海外收入、盈利改善归因、欧洲产能进度与关键风险。' },
+          { label: '对象识别', text: `${run.company}；研究范围以当前任务描述和已提交材料为准。` },
+          { label: '核验范围', text: `围绕 ${run.claims.length} 条事实主张分别查证，不合并不同口径的结论。` },
           { label: '证据约束', text: '监管披露和公司原文优先；结论必须绑定文件名、页码或问答序号，不接受无出处转述。' },
           { label: '输出约束', text: '区分事实、管理层判断与研究推断；证据不足时保留疑点，不补写确定性结论。' },
         ],
@@ -423,47 +424,40 @@ export function Workbench({ run }: { run: ResearchRun }) {
       {
         step: 1,
         time: '14:32:04',
-        actor: 'Supervisor 主控',
+        actor: '小盾',
         icon: <FileSearchOutlined />,
-        title: '拆分需要分别核验的问题',
-        speech: '这个问题里混合了数字、排名、因果归因和未来产能四类判断，不能用同一组证据一次回答。我已经拆成 5 条可以独立判断真假的事实主张，接下来分别取证。各执行单元只接收自己的任务，不会互相传递判断。',
+        title: '把问题拆开来查',
+        speech: `这项研究里有 ${run.claims.length} 条需要分别回答的判断，不能拿同一组证据一次作答。我先逐条拆开，再让后台助手各查一块；当前任务的材料和进度会单独保存。`,
         details: [
-          { label: '任务 C01', text: '核对营业收入同比增速，并判断海外业务是否构成主要增量来源。' },
-          { label: '任务 C02', text: '核对全球动力电池使用量排名及连续领先年限。' },
-          { label: '任务 C03', text: '区分原材料降价、产品结构与海外客户对毛利率改善的影响。' },
-          { label: '任务 C04', text: '核对匈牙利工厂投产、产能释放与“满产”时点之间的表述差异。' },
-          { label: '任务 C05', text: '复算经营现金流净额与归母净利润的三年关系。' },
+          ...run.claims.map((claim) => ({ label: `任务 C${String(claim.index).padStart(2, '0')}`, text: claim.statement })),
         ],
-        metrics: ['5 条事实主张', '4 个隔离执行单元'],
+        metrics: ['5 条事实主张', '4 组隔离核验任务'],
       },
       {
         step: 2,
         time: '14:32:16',
-        actor: '公开信源检索 SubAgent',
+        actor: '公开信源检索',
         icon: <DatabaseOutlined />,
         title: '开始检索公开信源',
-        speech: '我现在开始为 5 条主张分别寻找原始来源。先检索监管披露和公司公告，再用独立行业数据做交叉确认。搜索摘要不能直接作为证据，所以我会打开原文，并排除重复转载、期间不一致和无法定位出处的材料。',
+        speech: `我现在开始为 ${run.claims.length} 条主张分别寻找原始来源。先查监管披露和当事方原文，再用独立行业数据交叉确认；搜索摘要不会直接当作证据。`,
         details: [
-          { label: '检索请求 01', text: '“宁德时代 2025 年报 营业收入 境外收入”——命中 9 份，保留年报及业绩说明会记录。' },
-          { label: '检索请求 02', text: '“宁德时代 匈牙利工厂 产能释放 满产”——命中 7 份，保留公司公告与互动易答复。' },
-          { label: '检索请求 03', text: '“CATL battery usage ranking 2025 SNE Research”——命中 8 份，保留行业统计原始发布。' },
+          { label: '检索请求 01', text: `“${run.company} 年度报告 经营数据”——优先保留监管披露和原始报告。` },
+          { label: '检索请求 02', text: `“${run.claims[2]?.statement ?? run.title}”——查找可定位到上下文的原文。` },
+          { label: '检索请求 03', text: `“${run.claims[3]?.statement ?? run.title}”——补充独立来源进行交叉确认。` },
           { label: '结果筛选', text: '共命中 24 份；排除重复转载 5 份、无法定位原文 2 份、统计期间不一致 1 份。' },
-          { label: '候选来源', text: '巨潮资讯、深交所互动易、SNE Research、上海有色网 SMM，共保留 16 份材料。' },
+          { label: '候选来源', text: `${Array.from(new Set(run.evidence.slice(0, 5).map((evidence) => evidence.publisher))).join('、')}，共保留 ${run.evidence.length} 份材料。` },
         ],
         metrics: ['命中 24 份', '保留 16 份', '排除 8 份'],
       },
       {
         step: 3,
         time: '14:33:02',
-        actor: '文档解析 SubAgent',
+        actor: '文档解析',
         icon: <ReadOutlined />,
         title: '逐份打开材料并读取原文',
         speech: '检索结果已经筛完，我正在逐份打开保留下来的材料。年报中的数字要同时核对单位和上期口径；管理层回答要连同上下文阅读，不能只摘一句。我会把每个可用结论绑定到文件名、页码或问答序号。',
         details: [
-          { label: '已浏览 01', text: '《2025 年年度报告》第 26 页——提取营业总收入、同比增速、境外收入及对应单位。' },
-          { label: '已浏览 02', text: '《2025 年年度报告》第 41 页——定位主要原材料价格与营业成本变化说明。' },
-          { label: '已浏览 03', text: '业绩说明会问题 12——原文同时列出技术、产品结构、海外客户与原材料因素。' },
-          { label: '已浏览 04', text: '业绩说明会问题 15——原文仅说明项目将按建设进度和客户需求分阶段释放产能。' },
+          ...run.evidence.slice(0, 4).map((evidence, index) => ({ label: `已浏览 ${String(index + 1).padStart(2, '0')}`, text: `《${evidence.title}》${evidence.locator}——已提取对应原文并保留定位。` })),
           { label: '字段检查', text: '统一金额单位为亿元、比例保留两位小数；8 处摘录均已绑定原始页码或问题序号。' },
         ],
         metrics: ['浏览 8 份原文', '提取 18 个字段', '绑定 8 处坐标'],
@@ -471,32 +465,31 @@ export function Workbench({ run }: { run: ResearchRun }) {
       {
         step: 4,
         time: '14:34:18',
-        actor: '证据交叉核验 SubAgent',
+        actor: '证据交叉核验',
         icon: <SwapOutlined />,
         title: '比对不同来源的口径与结论',
         tone: 'warning',
-        speech: '我开始把公司披露、监管问答和行业数据并排核对。收入增速和现金流复算都能对上，但毛利率归因出现了问题：原文明确提到多个共同因素，把它写成“主要来自原材料下降”会夸大证据。匈牙利工厂的确定满产日期也还没有找到直接来源。',
+        speech: '我开始把当事方披露、监管文件和独立来源并排核对。三条主张能够互相印证，另外两条存在归因口径或确定时间点的问题，还没有找到足以直接支持原表述的来源。',
         details: [
-          { label: 'C01 · 数值复算', text: '年报披露收入增速 18.2%；按本期与上期原始值复算为 18.17%，四舍五入口径一致。' },
-          { label: 'C02 · 来源一致', text: '公司披露与 SNE Research 的排名方向一致，统计对象均为全球动力电池使用量。' },
-          { label: 'C03 · 归因冲突', text: '原材料价格下降得到支持，但管理层原文同时列出产品结构与海外客户因素，无法证明单一主因。' },
-          { label: 'C04 · 证据缺口', text: '公开来源仅确认分阶段释放产能，未发现“2026 年第四季度满产”的明确承诺。' },
-          { label: 'C05 · 现金流复算', text: '三年经营现金流净额均覆盖归母净利润，计算结果与年报现金流量表一致。' },
+          ...run.claims.map((claim) => ({
+            label: `C${String(claim.index).padStart(2, '0')} · ${claim.status === 'verified' ? '来源一致' : claim.status === 'conflict' ? '口径冲突' : '证据缺口'}`,
+            text: claim.statement,
+          })),
         ],
         metrics: ['3 组口径一致', '1 项归因冲突', '1 项证据缺口'],
       },
       {
         step: 5,
         time: '14:35:06',
-        actor: 'Supervisor 主控',
+        actor: '小盾',
         icon: <SafetyCertificateOutlined />,
-        title: '汇总第一轮核验结果',
+        title: '第一轮结果回来了',
         tone: 'warning',
-        speech: '第一轮结果已经回到我这里。C01、C02 和 C05 的证据可以相互印证，我先列为可信候选。C03 的“主要来自原材料下降”非常可疑，因为没有任何来源给出各因素贡献度；C04 的满产时点也超出了原文边界。这两项不能自动进入底稿。',
+        speech: '第一轮结果都回来了。三条主张的证据能互相印证，我先把它们列为可信候选；另外两条缺少足够直接的支持，我不会把它们直接写进底稿。',
         details: [
           { label: '合并结果', text: 'C01、C02、C05 获得一手来源或一手来源与独立来源共同支持，进入可信结论候选。' },
-          { label: '保留分歧', text: 'C03 中“主要来自原材料下降”缺少贡献度拆分，不将多因素表述改写为单一因果。' },
-          { label: '限制结论', text: 'C04 的“满产时点”超出原文可支持范围，标记为证据不足并进入人工队列。' },
+          { label: '保留分歧', text: `C03“${run.claims[2]?.statement}”缺少足够的归因拆分，不改写为确定结论。` },
+          { label: '限制结论', text: `C04“${run.claims[3]?.statement}”超出原文可支持范围，进入人工队列。` },
           { label: '证据绑定', text: '5 条一级结论共绑定 8 份原始材料，引用均可回到页码、表格或问答序号。' },
         ],
         metrics: ['5 条一级结论', '8 份证据绑定', '2 项疑点'],
@@ -504,11 +497,11 @@ export function Workbench({ run }: { run: ResearchRun }) {
       {
         step: 6,
         time: '14:35:29',
-        actor: '独立幻觉审查单元',
+        actor: '独立复核',
         icon: <SafetyCertificateOutlined />,
-        title: '独立审查单元重新核验',
+        title: '再做一次独立复核',
         tone: 'danger',
-        speech: '我现在以独立审查单元的身份重新检查这些结论。我没有读取其他 SubAgent 的过程，只看待核主张和原始证据。复算结果一致，但 C03 确实把“多因素共同作用”强化成了“单一主要原因”；C04 也把产能释放计划外推成了确定日期。这两项需要退回。',
+        speech: '这一轮会独立重查，只看待核主张和原始证据，不读取前面的核验过程。复算结果一致，但 C03 的归因强度和 C04 的确定时间点都超出了现有材料能支持的边界，需要退回。',
         details: [
           { label: '引用忠实度', text: '逐条比对摘录与上下文，未发现断章取义；8 处引用定位均可复现。' },
           { label: '数值复算', text: '重新计算收入增速与现金流覆盖关系，结果与一级汇总一致。' },
@@ -520,11 +513,11 @@ export function Workbench({ run }: { run: ResearchRun }) {
       {
         step: 7,
         time: '14:35:46',
-        actor: 'Supervisor 主控',
+        actor: '小盾',
         icon: <CheckOutlined />,
-        title: '给出最终分级并说明原因',
+        title: '结果分好级了',
         tone: 'danger',
-        speech: '二级复核完成。C01、C02、C05 定为可信并自动归档；C03 存在明显的因果夸大，我把它定为高度存疑项，禁止直接写入正式结论；C04 缺少确定满产日期的直接证据，需要你自行复核，可以选择改写为“分阶段释放产能”或要求系统继续取证。',
+        speech: '独立复核完成了。C01、C02、C05 可以定为可信并自动归档；C03 的因果关系表述过强，C04 缺少确定时间点的直接证据，这两项需要你判断、改写或继续取证。',
         details: [
           { label: '自动归档', text: 'C01、C02、C05 证据充分且二级复核一致，自动写入研究底稿。' },
           { label: '待人工复核', text: 'C04 缺少确定满产日期的直接证据，允许研究员改写为“分阶段释放”或追加取证。' },
@@ -558,7 +551,7 @@ export function Workbench({ run }: { run: ResearchRun }) {
       setGuidanceAttachments([])
       setSuspectedEventSteps([])
       resumeDemo()
-      message.success('研究要求已记录，系统将从当前进度继续')
+      message.success('小盾记下了，会从当前进度继续查')
     }
     const addGuidanceAttachments = (files: FileList | null) => {
       if (!files) return
@@ -575,13 +568,13 @@ export function Workbench({ run }: { run: ResearchRun }) {
           <section className="running-progress-card">
           <div className="running-card-heading">
             <div>
-              <span className={isDemoRunning ? 'start-kicker' : 'start-kicker paused'}><i /> {isDemoRunning ? '系统正在自动研究' : '研究过程已暂停'}</span>
+              <span className={isDemoRunning ? 'start-kicker' : 'start-kicker paused'}><i /> {isDemoRunning ? '小盾正在帮你查' : '小盾先停在这里了'}</span>
               <h2>{researchTopic || run.title}</h2>
-              <p>{isDemoRunning ? '系统正在自动采集、核验与整理证据；需要人工判断时会提醒你。' : '当前任务与已有证据均已保留，请补充要求后继续。'}</p>
+              <p>{isDemoRunning ? '我正在收集、核验和整理证据，有需要你判断的地方会及时告诉你。' : '任务和已经找到的证据都还在，把你的想法告诉我就能继续。'}</p>
             </div>
           </div>
           <Progress percent={progress} showInfo={false} strokeColor="#0d6575" trailColor="#dfeae6" />
-          <div className="running-progress-meta"><strong>{progress}%</strong><span>{isDemoRunning ? '持续记录研究执行过程（UI 演示）' : '已停在当前进度，等待研究员引导'}</span></div>
+          <div className="running-progress-meta"><strong>{progress}%</strong><span>{isDemoRunning ? '小盾会把查证过程记在这里（UI 演示）' : '停在当前进度，等你补充想法'}</span></div>
           <Steps direction="vertical" size="small" current={Math.min(Math.floor(demoStep / 3), 2)} items={runningSteps} />
           <div className="running-progress-summary">
             <div><span>已归档材料</span><strong>{Math.min(12, demoStep * 2 + 2)}</strong><small>份公开原文</small></div>
@@ -593,7 +586,7 @@ export function Workbench({ run }: { run: ResearchRun }) {
 
           <section className="research-process-panel running-process-card">
             <div className="process-panel-heading">
-              <div><strong>Supervisor 实时播报</strong><span>一边执行研究，一边说明正在做什么、发现了什么以及为何需要你复核</span></div>
+              <div><strong>小盾的研究动态</strong><span>我会边查边记，发现疑点或需要你判断时就告诉你</span></div>
               <div className="process-panel-actions">
                 <span className={isDemoRunning ? 'process-recording' : 'process-recording paused'}><i /> {isDemoRunning ? '实时记录' : '已暂停'}</span>
                 <Button danger icon={<PauseCircleOutlined />} disabled={!isDemoRunning} onClick={stopDemo}>终止</Button>
@@ -641,7 +634,7 @@ export function Workbench({ run }: { run: ResearchRun }) {
                             <p className="process-agent-broadcast">{item.content}</p>
                             {item.suspectedStages.length > 0 && <div className="guidance-record-stages">{item.suspectedStages.map((stage) => <span key={stage}><SafetyCertificateOutlined />怀疑环节：{stage}</span>)}</div>}
                             {item.attachments.length > 0 && <div className="guidance-record-attachments">{item.attachments.map((fileName) => <span key={fileName}><PaperClipOutlined />{fileName}</span>)}</div>}
-                            <div className="process-item-metrics"><span>Supervisor 已接收</span><span>从当前节点继续</span></div>
+                            <div className="process-item-metrics"><span>小盾记下了</span><span>从当前节点继续</span></div>
                           </div>
                           <small>已提交</small>
                         </div>
@@ -654,7 +647,7 @@ export function Workbench({ run }: { run: ResearchRun }) {
 
             {!isDemoRunning && (
               <div className="process-guidance-box">
-                <div><strong>{suspectedEvents.length > 0 ? `处理 ${suspectedEvents.length} 个怀疑环节` : '调整研究方向'}</strong><span>{suspectedEvents.length > 0 ? '补充说明或材料后，Supervisor 将针对这些环节重新检查。' : '可以直接继续，也可以补充要求、附件或标记有问题的环节。'}</span></div>
+                <div><strong>{suspectedEvents.length > 0 ? `处理 ${suspectedEvents.length} 个怀疑环节` : '调整研究方向'}</strong><span>{suspectedEvents.length > 0 ? '补充说明或材料后，小盾会把这些环节重新检查一遍。' : '可以直接继续，也可以补充要求、附件或标记有问题的环节。'}</span></div>
                 {suspectedEvents.length > 0 && (
                   <div className="suspected-stage-chips">
                     {suspectedEvents.map((event) => (
@@ -676,7 +669,7 @@ export function Workbench({ run }: { run: ResearchRun }) {
                     }
                   }}
                   autoSize={{ minRows: 2, maxRows: 4 }}
-                  placeholder={suspectedEvents.length > 0 ? '说明这个环节存在什么问题，或直接提交让 Supervisor 重新检查…' : '例如：优先核对监管披露，并补充 2024—2025 年同口径数据…'}
+                  placeholder={suspectedEvents.length > 0 ? '告诉小盾这个环节哪里不对，或直接提交让我重新检查…' : '例如：优先核对监管披露，并补充 2024—2025 年同口径数据…'}
                 />
                 {guidanceAttachments.length > 0 && (
                   <div className="guidance-pending-attachments">
