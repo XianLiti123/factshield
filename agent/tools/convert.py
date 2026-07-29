@@ -1,11 +1,12 @@
 from langchain_core.tools import tool
 from markitdown import MarkItDown
 from openai import OpenAI
+from typing import Annotated
 import base64
 import logging
 import os
+from langgraph.prebuilt import InjectedState
 from ..memory.SQLite.save import save_markdown
-from ..session.store import current_user_id
 from ..session.model_config import get_config
 
 #压住 pdfminer 对不规范 PDF 字体信息的刷屏警告（如 FontBBox 缺失），不影响解析结果
@@ -15,13 +16,12 @@ _md = MarkItDown()
 
 _IMAGE_EXTS = {".jpg",".jpeg",".png",".gif",".bmp",".webp",".tiff"}
 
-#每用户视觉模型客户端缓存：按 current_user_id 装配（用户上下文由 Agent 调图前注入）
+#每用户视觉模型客户端缓存：按 user_id 装配（随图状态注入，线程安全）
 _vision_clients:dict[int,tuple[OpenAI,str]] = {}
 
 
-def _get_vision_client()->tuple[OpenAI,str]|None:
+def _get_vision_client(user_id:int)->tuple[OpenAI,str]|None:
     #取当前用户的视觉模型客户端和模型名；未配置时返回 None
-    user_id = current_user_id.get()
     if user_id not in _vision_clients:
         cfg = get_config(user_id,"vision")
         if cfg is None:
@@ -67,12 +67,13 @@ def convert_document(file_path: str, max_length: int = 5000, safe: bool = True) 
 
 
 @tool
-def ai_recognize_document(file_path: str, max_length: int = 5000, safe: bool = True) -> str:
+def ai_recognize_document(file_path: str, max_length: int = 5000, safe: bool = True,
+                          user_id: Annotated[int, InjectedState("user_id")] = None) -> str:
     """AI 高精度识别：调用视觉大模型识别图片或 PDF（含扫描件）的内容，输出 Markdown。
     仅支持图片（jpg/png 等）和 PDF 文件；Word、Excel、HTML 等其他格式请使用 convert_document。
     file_path 为文件路径；max_length 为返回内容的最大字符数，默认 5000，
     传 0 表示不截断返回全文；safe 默认为 True，会将完整未截断的 Markdown 保存到本地。"""
-    vision = _get_vision_client()
+    vision = _get_vision_client(user_id)
     if vision is None:
         return "未配置视觉模型，请先在设置中配置视觉模型的 base_url、api_key 和模型名"
     client, model = vision

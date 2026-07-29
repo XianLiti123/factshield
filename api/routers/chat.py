@@ -8,7 +8,7 @@ from agent.session.model_config import get_config
 from agent.session.store import load_session
 
 from ..core.security import get_current_user
-from ..core.session import get_or_create_session
+from ..core.session import get_or_create_session, mark_running, unmark_running
 from ..utils.sse import sse_event
 
 router = APIRouter()
@@ -31,12 +31,15 @@ def chat_stream(request: ChatRequest, user_id: int = Depends(get_current_user)) 
 
     def event_stream() -> Iterator[str]:
         with lock:  #同一会话串行执行，防止并发写乱消息历史
+            mark_running(session_id)
             try:
                 for kind, text in agent.run_stream(request.message):
                     yield sse_event(kind, text)
                 yield sse_event("done")
             except Exception as e:
                 yield sse_event("error", str(e))
+            finally:
+                unmark_running(session_id)
 
     return StreamingResponse(
         event_stream(),

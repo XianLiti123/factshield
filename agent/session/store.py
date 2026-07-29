@@ -4,6 +4,7 @@ from contextvars import ContextVar
 
 from ..memory.reranker.rerank import rerank
 from . import turns_store
+from .checkpoint_db import delete_threads
 from .db import get_connection, init_db
 from .users import ensure_admin
 
@@ -67,6 +68,37 @@ def get_turns(session_id: str, after_seq: int = 0) -> list[tuple[int, str, str]]
     return turns_store.get_turns(session_id, after_seq)
 
 
+# ---- 暂停状态（手动叫停式暂停/恢复）----
+
+def set_paused(session_id: str, thread_id: str, user_input: str) -> None:
+    #记录暂停：挂起那轮的 graph thread_id 和用户输入（供恢复/重启后补入库）
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE sessions SET paused_thread_id=?, paused_input=?, updated_at=datetime('now','localtime') WHERE session_id=?",
+            (thread_id, user_input, session_id)
+        )
+
+
+def get_paused(session_id: str) -> tuple[str, str] | None:
+    #取暂停状态，返回 (thread_id, user_input)；无暂停返回 None
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT paused_thread_id, paused_input FROM sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+    if row and row["paused_thread_id"]:
+        return row["paused_thread_id"], row["paused_input"]
+    return None
+
+
+def clear_paused(session_id: str) -> None:
+    #清除暂停状态（恢复完成或 abort 后）
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE sessions SET paused_thread_id=NULL, paused_input=NULL WHERE session_id=?",
+            (session_id,)
+        )
+
+
 def max_seq(session_id: str) -> int:
     #会话当前最大轮次序号，没有轮次时为 0
     with get_connection() as conn:
@@ -95,11 +127,12 @@ def list_sessions(user_id: int) -> list[dict]:
 
 
 def delete_session(session_id: str) -> bool:
-    #删除会话：Chroma 轮次切片 + SQLite 两表级联删除，不存在时返回 False（归属校验由调用方负责）
+    #删除会话：Chroma 轮次切片 + checkpoint 线程 + SQLite 两表级联删除，不存在时返回 False（归属校验由调用方负责）
     existed = load_session(session_id) is not None
     if not existed:
         return False
     turns_store.delete_turns(session_id)
+    delete_threads(session_id)
     with get_connection() as conn:
         conn.execute("DELETE FROM turns WHERE session_id=?", (session_id,))
         conn.execute("DELETE FROM sessions WHERE session_id=?", (session_id,))

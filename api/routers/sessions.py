@@ -1,10 +1,17 @@
+from typing import Iterator
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agent.session import store as session_store
 
 from ..core.security import get_current_user
-from ..core.session import delete_session, get_or_create_session, list_sessions
+from ..core.session import (
+    delete_session, get_or_create_session, get_session, is_running,
+    list_sessions, mark_running, unmark_running,
+)
+from ..utils.sse import sse_event
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -77,3 +84,76 @@ def delete(session_id: str, user_id: int = Depends(get_current_user)) -> dict[st
     _check_ownership(session_id, user_id)
     delete_session(session_id)
     return {"status": "deleted", "session_id": session_id}
+
+
+# ---- 手动叫停式暂停/恢复 ----
+
+class StatusResponse(BaseModel):
+    session_id: str
+    running: bool
+    paused: bool
+    thread_id: str | None
+
+
+@router.get("/{session_id}/status")
+def status(session_id: str, user_id: int = Depends(get_current_user)) -> StatusResponse:
+    #查询会话运行/暂停状态（重启后也可查出哪些会话挂着暂停）
+    _check_ownership(session_id, user_id)
+    paused = session_store.get_paused(session_id)
+    return StatusResponse(
+        session_id=session_id,
+        running=is_running(session_id),
+        paused=paused is not None,
+        thread_id=paused[0] if paused else None,
+    )
+
+
+@router.post("/{session_id}/pause")
+def pause(session_id: str, user_id: int = Depends(get_current_user)) -> dict[str, str]:
+    #手动叫停：置位暂停标志，当前节点跑完后在节点边界挂起（SSE 中会收到 paused 事件）
+    _check_ownership(session_id, user_id)
+    if not is_running(session_id):
+        raise HTTPException(status_code=409, detail="当前没有正在运行的轮次")
+    session = get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=409, detail="会话不在本进程活跃，无法叫停")
+    session[0].pause()
+    return {"status": "pausing", "session_id": session_id}
+
+
+@router.post("/{session_id}/resume")
+def resume(session_id: str, user_id: int = Depends(get_current_user)) -> StreamingResponse:
+    #流式恢复暂停的轮次（thread 状态在 checkpointer 中，支持重启后恢复）
+    _check_ownership(session_id, user_id)
+    if session_store.get_paused(session_id) is None:
+        raise HTTPException(status_code=409, detail="没有暂停中的轮次")
+    _, agent, lock = get_or_create_session(session_id, user_id)
+
+    def event_stream() -> Iterator[str]:
+        with lock:
+            mark_running(session_id)
+            try:
+                for kind, text in agent.resume_stream():
+                    yield sse_event(kind, text)
+                yield sse_event("done")
+            except Exception as e:
+                yield sse_event("error", str(e))
+            finally:
+                unmark_running(session_id)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/{session_id}/abort")
+def abort(session_id: str, user_id: int = Depends(get_current_user)) -> dict[str, str]:
+    #丢弃暂停中的轮次
+    _check_ownership(session_id, user_id)
+    if session_store.get_paused(session_id) is None:
+        raise HTTPException(status_code=409, detail="没有暂停中的轮次")
+    _, agent, _ = get_or_create_session(session_id, user_id)
+    agent.abort()
+    return {"status": "aborted", "session_id": session_id}

@@ -27,7 +27,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     context_tokens INTEGER NOT NULL DEFAULT 0,
     active_toolsets TEXT NOT NULL DEFAULT '["terminal"]',
     summary TEXT,
-    compacted_until_seq INTEGER NOT NULL DEFAULT 0
+    compacted_until_seq INTEGER NOT NULL DEFAULT 0,
+    paused_thread_id TEXT,
+    paused_input TEXT
 );
 CREATE TABLE IF NOT EXISTS turns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,4 +76,6 @@ def init_db() -> None:
     with get_connection() as conn:
         conn.executescript(_SCHEMA)
         _add_column_if_missing(conn, "sessions", "user_id", "user_id INTEGER")
+        _add_column_if_missing(conn, "sessions", "paused_thread_id", "paused_thread_id TEXT")
+        _add_column_if_missing(conn, "sessions", "paused_input", "paused_input TEXT")
         _add_column_if_missing(conn, "profile_facts", "user_id", "user_id INTEGER")

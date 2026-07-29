@@ -38,3 +38,22 @@ def delete_session(session_id: str) -> bool:
     with _registry_lock:
         _sessions.pop(session_id, None)
     return session_store.delete_session(session_id)
+
+
+#正在流式运行的会话集合（pause 接口据此判断是否有活跃运行）
+_running: set[str] = set()
+
+
+def mark_running(session_id: str) -> None:
+    with _registry_lock:
+        _running.add(session_id)
+
+
+def unmark_running(session_id: str) -> None:
+    with _registry_lock:
+        _running.discard(session_id)
+
+
+def is_running(session_id: str) -> bool:
+    with _registry_lock:
+        return session_id in _running

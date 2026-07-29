@@ -1,13 +1,13 @@
 import logging
+import threading
 from typing import Iterator
 
 from langchain_core.messages import HumanMessage,SystemMessage,BaseMessage,ToolMessage,AIMessage
 
-from .core.loop import graph
+from .core.loop import graph,get_stream_config
 from .core.context import estimate_tokens,needs_compaction,compact_messages
 from .core.prompt import build_system_prompt
 from .session import store as session_store
-from .session.store import current_user_id
 from .session.users import ensure_admin
 
 logger = logging.getLogger(__name__)
@@ -30,6 +30,7 @@ class Agent:
         self.context_tokens = 0#当前上下文token数的运行值，随轮次增量维护，不再全量遍历历史；随会话持久化到 sessions.db
         self._turn_seq = 0#当前轮次序号，与 turns 表的 seq 对应
         self._persist = True#embedding 不可用时降级为内存态
+        self._pause_event = threading.Event()#手动叫停标志：置位后 run_stream 在节点边界挂起
 
         #尝试从 sessions.db 恢复会话状态（跨进程/重启续聊）
         try:
@@ -101,78 +102,141 @@ class Agent:
     def run(self,user_input:str)->str:
         if self._llm_missing():
             raise RuntimeError("未配置 LLM 模型，请先在设置中配置 base_url、api_key 和模型名")
-        ctx = current_user_id.set(self.user_id)#注入用户上下文，图内的画像工具靠它感知归属
-        try:
-            self._maybe_compact()
-            self.messages.append(HumanMessage(content=user_input))
-            result = self.graph.invoke({
-                "messages":self.messages,"active_toolsets":self.active_toolsets
-            })#type:ignore
-            self.messages = result["messages"]
-            self.active_toolsets = result.get("active_toolsets",self.active_toolsets)
-            self._update_context_tokens(result["messages"])
-            answer = result["messages"][-1].content
-            self._save_turn(user_input,answer if isinstance(answer,str) else str(answer))
-            return answer
-        finally:
-            current_user_id.reset(ctx)
+        if session_store.get_paused(self.session_id):
+            raise RuntimeError("有暂停中的轮次，请先 resume 或 abort")
+        self._maybe_compact()
+        self.messages.append(HumanMessage(content=user_input))
+        result = self.graph.invoke({
+            "messages":self.messages,"active_toolsets":self.active_toolsets,"user_id":self.user_id
+        },config=get_stream_config(self.session_id,self._turn_seq+1))#type:ignore
+        self.messages = result["messages"]
+        self.active_toolsets = result.get("active_toolsets",self.active_toolsets)
+        self._update_context_tokens(result["messages"])
+        answer = result["messages"][-1].content
+        self._save_turn(user_input,answer if isinstance(answer,str) else str(answer))
+        return answer
+
+    #消费 graph 流并产出事件；_pause_event 置位时停止拉动生成器（图在节点边界挂起），
+    #置 self._paused 标志后提前返回。collected/order 为出参，累计本轮新消息
+    def _stream_turn(self,stream,collected:dict,order:list)->Iterator[tuple[str,str]]:
+        for mode,payload in stream:
+            if self._pause_event.is_set():
+                self._paused = True
+                return
+            if mode == "updates":
+                toolsets_update = payload.get("tools",{}).get("active_toolsets")#工具节点可能更新了激活的工具集
+                if toolsets_update:
+                    self.active_toolsets = list(dict.fromkeys(self.active_toolsets+toolsets_update))#updates 里是本次新增，做并集
+                continue
+            chunk,metadata = payload
+            msg_id = chunk.id
+            if msg_id in collected:
+                collected[msg_id] = collected[msg_id] + chunk#type:ignore #同一条消息的分片累加
+            else:
+                collected[msg_id] = chunk
+                order.append(msg_id)
+
+            node = metadata.get("langgraph_node")
+            if node == "call_LLM":
+                reasoning = chunk.additional_kwargs.get("reasoning_content")
+                if reasoning:
+                    yield "think",reasoning
+                if chunk.content:
+                    yield "token",chunk.content
+            elif node == "tools" and isinstance(chunk,ToolMessage):
+                args_text = self._find_tool_args(collected,chunk.tool_call_id)
+                yield ("tool",f"{chunk.name}: {args_text}" if args_text else str(chunk.name))
+
+    #一轮流式收尾：消息入列、token 计量、写入本轮
+    def _finish_stream_turn(self,user_input:str,collected:dict,order:list)->None:
+        self.messages.extend(collected[i] for i in order)
+        self._update_context_tokens([collected[i] for i in order])
+        #取本轮最后一条有内容的AI消息作为最终回复入库
+        answer = ""
+        for msg_id in reversed(order):
+            msg = collected[msg_id]
+            if isinstance(msg,AIMessage) and isinstance(msg.content,str) and msg.content:
+                answer = msg.content
+                break
+        self._save_turn(user_input,answer)
 
     #带流式调用LLM的函数
     def run_stream(self,user_input:str)->Iterator[tuple[str,str]]:
         #流式运行，yield (事件类型, 文本)
-        #事件类型: "token" 为LLM输出的文本片段, "think" 为思考内容, "tool" 为工具执行状态,
-        #"context" 为上下文压缩提示, "error" 为前置拒绝（如未配置模型）
+        #事件类型: "token" 正文片段, "think" 思考内容, "tool" 工具状态,
+        #"context" 压缩提示, "paused" 已挂起（附 thread_id）, "error" 前置拒绝
         if self._llm_missing():
             yield "error","未配置 LLM 模型，请先在设置中配置 base_url、api_key 和模型名"
             return
-        ctx = current_user_id.set(self.user_id)#注入用户上下文，图内的画像工具靠它感知归属
-        try:
-            if self._maybe_compact():
-                yield "context","上下文已压缩"
-            self.messages.append(HumanMessage(content=user_input))
-            collected:dict[str,BaseMessage] = {}#本轮产生的消息，按id累加
-            order:list[str] = []#消息出现顺序
+        if session_store.get_paused(self.session_id):
+            yield "error","有暂停中的轮次，请先 resume 或 abort"
+            return
+        if self._maybe_compact():
+            yield "context","上下文已压缩"
+        self.messages.append(HumanMessage(content=user_input))
+        collected:dict[str,BaseMessage] = {}
+        order:list[str] = []
+        self._paused = False
+        thread_id = get_stream_config(self.session_id,self._turn_seq+1)["configurable"]["thread_id"]
+        stream = self.graph.stream(
+            {"messages":self.messages,"active_toolsets":self.active_toolsets,"user_id":self.user_id},
+            config=get_stream_config(self.session_id,self._turn_seq+1),
+            stream_mode=["messages","updates"]
+        )#type:ignore
+        yield from self._stream_turn(stream,collected,order)
+        if self._paused:
+            #手动叫停：状态已被 checkpointer 落盘，本轮不入库，随时可 resume
+            self._pause_event.clear()
+            session_store.set_paused(self.session_id,thread_id,user_input)
+            yield "paused",thread_id
+            return
+        self._finish_stream_turn(user_input,collected,order)
 
-            for mode,payload in self.graph.stream(
-                {"messages":self.messages,"active_toolsets":self.active_toolsets},
-                stream_mode=["messages","updates"]
-            ):#type:ignore
-                if mode == "updates":
-                    toolsets_update = payload.get("tools",{}).get("active_toolsets")#工具节点可能更新了激活的工具集
-                    if toolsets_update:
-                        self.active_toolsets = list(dict.fromkeys(self.active_toolsets+toolsets_update))#updates 里是本次新增，做并集
-                    continue
-                chunk,metadata = payload
-                msg_id = chunk.id
-                if msg_id in collected:
-                    collected[msg_id] = collected[msg_id] + chunk#type:ignore #同一条消息的分片累加
-                else:
-                    collected[msg_id] = chunk
-                    order.append(msg_id)
+    #手动叫停：置位标志，run_stream 在下一事件（节点边界）挂起
+    def pause(self)->None:
+        self._pause_event.set()
 
-                node = metadata.get("langgraph_node")
-                if node == "call_LLM":
-                    reasoning = chunk.additional_kwargs.get("reasoning_content")
-                    if reasoning:
-                        yield "think",reasoning
-                    if chunk.content:
-                        yield "token",chunk.content
-                elif node == "tools" and isinstance(chunk,ToolMessage):
-                    args_text = self._find_tool_args(collected,chunk.tool_call_id)
-                    yield ("tool",f"{chunk.name}: {args_text}" if args_text else str(chunk.name))
+    #流式恢复暂停的轮次（thread 状态在 checkpointer 中，支持重启后恢复）
+    def resume_stream(self)->Iterator[tuple[str,str]]:
+        paused = session_store.get_paused(self.session_id)
+        if not paused:
+            yield "error","没有暂停中的轮次"
+            return
+        thread_id,user_input = paused
+        collected:dict[str,BaseMessage] = {}
+        order:list[str] = []
+        self._paused = False
+        config = {"configurable":{"thread_id":thread_id}}
+        stream = self.graph.stream(None,config=config,stream_mode=["messages","updates"])#type:ignore
+        yield from self._stream_turn(stream,collected,order)
+        if self._paused:
+            self._pause_event.clear()
+            yield "paused",thread_id#恢复途中再次被叫停，保持暂停状态
+            return
+        #恢复只收集到暂停点之后的分片（暂停前的工具调用消息在 checkpoint 里），
+        #消息列表必须以 graph 最终状态为准整体同步，否则会缺 AIMessage(tool_calls) 导致序列非法
+        final = self.graph.get_state(config)#type:ignore
+        self.messages = list(final.values["messages"])
+        self.active_toolsets = final.values.get("active_toolsets",self.active_toolsets)
+        self._update_context_tokens(self.messages)
+        answer = ""
+        for msg in reversed(self.messages):
+            if isinstance(msg,AIMessage) and isinstance(msg.content,str) and msg.content:
+                answer = msg.content
+                break
+        self._save_turn(user_input,answer)
+        session_store.clear_paused(self.session_id)
 
-            self.messages.extend(collected[i] for i in order)
-            self._update_context_tokens([collected[i] for i in order])
-            #取本轮最后一条有内容的AI消息作为最终回复入库
-            answer = ""
-            for msg_id in reversed(order):
-                msg = collected[msg_id]
-                if isinstance(msg,AIMessage) and isinstance(msg.content,str) and msg.content:
-                    answer = msg.content
-                    break
-            self._save_turn(user_input,answer)
-        finally:
-            current_user_id.reset(ctx)
+    #丢弃暂停中的轮次（checkpoint 线程遗弃，无后续影响）
+    def abort(self)->None:
+        paused = session_store.get_paused(self.session_id)
+        self._pause_event.clear()
+        #同进程残留清理：run_stream 开始时已把该轮用户消息追加到内存，丢弃时一并弹出，
+        #避免被丢弃的问题仍留在后续对话的上下文中
+        if paused and self.messages and isinstance(self.messages[-1],HumanMessage) \
+                and self.messages[-1].content == paused[1]:
+            self.messages.pop()
+        session_store.clear_paused(self.session_id)
 
     @staticmethod
     def _find_tool_args(collected:dict[str,BaseMessage],tool_call_id:str)->str:
@@ -191,8 +255,41 @@ if __name__ == "__main__":
     CHAR_DELAY = 0.02#每个字之间的延时(秒)，调大打字更慢，调小更快
 
     agent = Agent()
+
+    def render(events):
+        #把事件流打印成打字机效果
+        print("AI: ",end="",flush=True)
+        thinking = False#是否正在输出思考内容
+        for kind,text in events:
+            if kind == "tool":
+                thinking = False
+                print(f"\n[执行工具] {text}\nAI: ",end="",flush=True)
+                continue
+            if kind == "context":
+                thinking = False
+                print(f"[{text}]")
+                continue
+            if kind == "paused":
+                thinking = False
+                print(f"\n[已暂停] thread={text}（输入 resume 继续，abort 丢弃）")
+                continue
+            if kind == "error":
+                thinking = False
+                print(f"\n[错误] {text}")
+                continue
+            if kind == "think" and not thinking:
+                print("[思考] ",end="",flush=True)
+                thinking = True
+            elif kind == "token" and thinking:
+                print("\n[回答] ",end="",flush=True)
+                thinking = False
+            for char in text:
+                print(char,end="",flush=True)#逐字打印，打字机效果
+                time.sleep(CHAR_DELAY)
+        print()
+
     print(f"会话ID: {agent.session_id}（下次可用 Agent('{agent.session_id}') 恢复）")
-    print("输入 exit 退出，输入 compact 手动压缩上下文，输入 profile 查看用户画像")
+    print("输入 exit 退出，compact 压缩上下文，profile 查看画像，resume 恢复暂停，abort 丢弃暂停")
     while True:
         input_message = input("你: ")
         if input_message == "exit":
@@ -205,24 +302,11 @@ if __name__ == "__main__":
             text = session_store.profile_text()
             print(f"[用户画像]\n{text}" if text else "[用户画像为空]")
             continue
-        print("AI: ",end="",flush=True)
-        thinking = False#是否正在输出思考内容
-        for kind,text in agent.run_stream(input_message):
-            if kind == "tool":
-                thinking = False
-                print(f"\n[执行工具] {text}\nAI: ",end="",flush=True)
-                continue
-            if kind == "context":
-                thinking = False
-                print(f"[{text}]")
-                continue
-            if kind == "think" and not thinking:
-                print("[思考] ",end="",flush=True)
-                thinking = True
-            elif kind == "token" and thinking:
-                print("\n[回答] ",end="",flush=True)
-                thinking = False
-            for char in text:
-                print(char,end="",flush=True)#逐字打印，打字机效果
-                time.sleep(CHAR_DELAY)
-        print()
+        if input_message == "resume":
+            render(agent.resume_stream())
+            continue
+        if input_message == "abort":
+            agent.abort()
+            print("[已丢弃暂停中的轮次]")
+            continue
+        render(agent.run_stream(input_message))
