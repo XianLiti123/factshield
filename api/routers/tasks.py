@@ -105,29 +105,34 @@ def delete_task(task_id: str, user_id: int = Depends(get_current_user)) -> dict[
 
 @router.get("/{task_id}/events")
 def task_events(task_id: str, user_id: int = Depends(get_current_user)) -> StreamingResponse:
-    #研究过程播报流：先回放已持久化事件，运行中则继续实时推送，直到结束哨兵
-    task = _get_task_or_404(task_id, user_id)
+    #研究过程播报流：先回放已持久化事件，再经订阅队列实时推送（含重取证/历史统计事件）。
+    #连接时任务在运行中：收到主流水线终态事件后关闭；已结束的任务：回放后保持连接，
+    #客户端可继续收到后续的重新取证/统计事件，自行决定何时断开
+    _get_task_or_404(task_id, user_id)
 
     def stream() -> Iterator[str]:
-        last_seq = 0
-        for event in store.list_events(task_id):
-            last_seq = event["seq"]
-            yield _sse(event)
-        q = runner.get_queue(task_id)
-        if q is None:
-            return  #任务已结束，回放即全部
-        while True:
-            try:
-                event = q.get(timeout=15)
-            except queue.Empty:
-                yield ": ping\n\n"  #保活注释行，防止代理断连
-                continue
-            if event is None:
-                return  #结束哨兵
-            if event["seq"] <= last_seq:
-                continue  #回放阶段已发过，去重
-            last_seq = event["seq"]
-            yield _sse(event)
+        q = runner.subscribe(task_id)  #先订阅再回放，衔接处事件经 seq 去重，无缺口
+        try:
+            was_running = runner.is_running(task_id)
+            last_seq = 0
+            for event in store.list_events(task_id):
+                last_seq = event["seq"]
+                yield _sse(event)
+            while True:
+                try:
+                    event = q.get(timeout=15)
+                except queue.Empty:
+                    yield ": ping\n\n"  #保活注释行，防止代理断连
+                    continue
+                if event["seq"] <= last_seq:
+                    continue  #回放阶段已发过，去重
+                last_seq = event["seq"]
+                yield _sse(event)
+                if (was_running and event["actor"] == "system"
+                        and event["kind"] in ("done", "stopped", "error")):
+                    return  #主流水线终态事件送达后关闭
+        finally:
+            runner.unsubscribe(task_id, q)
 
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -174,7 +179,15 @@ def resolve_claim(task_id: str, claim_id: str, request: ResolveClaimRequest,
         "details": [{"label": claim_id, "text": claim["statement"]}],
         "metrics": [], "tone": None, "progress": None,
     })
-    return {"status": "resolved", "claim_id": claim_id, "new_status": claim["status"]}
+    task = store.get_task(task_id, user_id)
+    if task["report_md"]:
+        #裁决改变了主张状态与结论，底稿按最新数据重建（纯代码组装，幂等）
+        store.update_task(task_id, report_md=_build_report(task))
+    if all(c["human_action"] for c in store.list_claims(task_id)):
+        store.update_task(task_id, status="ready")  #全部主张均有终判，任务进入完成态
+        task = store.get_task(task_id, user_id)
+    return {"status": "resolved", "claim_id": claim_id, "new_status": claim["status"],
+            "task_status": task["status"]}
 
 
 @router.post("/{task_id}/claims/{claim_id}/retry")

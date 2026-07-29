@@ -12,6 +12,8 @@ AGENT_ROSTER = [
      "restriction": "只做检索匹配，禁止判断观点真伪"},
     {"id": "scorer", "name": "评分员", "role": "信源可信度打分",
      "restriction": "只输出可信度标签，禁止据此判定真假"},
+    {"id": "history", "name": "统计员", "role": "历史情景时序统计",
+     "restriction": "只做客观时序数据查询与统计，禁止解读与预判"},
     {"id": "reviewer", "name": "审查员", "role": "独立幻觉审查",
      "restriction": "独立于采集链路，只做二级复核与可信度分级"},
     {"id": "assembler", "name": "组装员", "role": "底稿组装",
