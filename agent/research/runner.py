@@ -120,8 +120,8 @@ def is_analysis_running(task_id: str) -> bool:
         return task_id in _running_analysis
 
 
-def start_history_analysis(task_id: str, user_id: int) -> None:
-    #后台线程执行历史情景时序统计，事件经 publish_event 落库并广播
+def start_history_analysis(task_id: str, user_id: int, config: dict | None = None) -> None:
+    #后台线程执行历史情景时序统计，事件经 publish_event 落库并广播；config 为用户自定义比较口径
     from .history import run_history_analysis  #延迟导入，避免模块加载顺序问题
     with _registry_lock:
         if task_id in _running_analysis:
@@ -133,7 +133,7 @@ def start_history_analysis(task_id: str, user_id: int) -> None:
 
     def run() -> None:
         try:
-            run_history_analysis(task_id, user_id, emit)
+            run_history_analysis(task_id, user_id, emit, config)
         except Exception as e:
             logger.exception("任务 %s 历史情景统计失败", task_id)
             emit("system", "error", {"title": "历史情景统计失败", "speech": str(e)})

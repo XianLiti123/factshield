@@ -1,6 +1,6 @@
 import json
 import queue
-from typing import Iterator
+from typing import Iterator, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
@@ -42,6 +42,15 @@ class ResolveClaimRequest(BaseModel):
 class SupervisorChatRequest(BaseModel):
     message: str
     claim_id: str | None = None  #可选：针对某条主张提问
+
+
+class HistoryAnalysisRequest(BaseModel):
+    #历史复盘用户自定义比较口径；全部留空则完全由系统推荐
+    metric: str | None = None          #比较指标（如 股价涨幅、营业收入）
+    scenarios: list[str] = []          #关注的历史事件或场景
+    start: str | None = None           #观察时间范围起（YYYY-MM）
+    end: str | None = None             #观察时间范围止（YYYY-MM）
+    frequency: Literal["auto", "monthly", "quarterly", "yearly"] = "auto"
 
 
 #人工裁决动作 -> 主张最终状态
@@ -244,15 +253,18 @@ def audit_log(task_id: str, user_id: int = Depends(get_current_user)) -> dict:
 
 
 @router.post("/{task_id}/history-analysis")
-def history_analysis(task_id: str, user_id: int = Depends(get_current_user)) -> dict[str, str]:
-    #历史情景时序统计：后台执行（检索+数据抽取需数十秒），进度经 events 端点推送
+def history_analysis(task_id: str, request: HistoryAnalysisRequest | None = None,
+                     user_id: int = Depends(get_current_user)) -> dict[str, str]:
+    #历史情景时序统计：后台执行（检索+数据抽取需数十秒），进度经 events 端点推送；
+    #可选请求体为用户自定义比较口径（指标/场景/时间范围/频率），缺省完全由系统推荐
     _get_task_or_404(task_id, user_id)
     if get_config(user_id, "llm") is None:
         raise HTTPException(status_code=400, detail="未配置 LLM 模型，请先在 /settings 配置")
     if runner.is_analysis_running(task_id):
         raise HTTPException(status_code=409, detail="该任务已有正在运行的历史情景统计")
     try:
-        runner.start_history_analysis(task_id, user_id)
+        runner.start_history_analysis(task_id, user_id,
+                                      request.model_dump() if request else None)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return {"status": "running", "task_id": task_id}

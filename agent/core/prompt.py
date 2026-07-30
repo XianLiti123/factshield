@@ -17,14 +17,16 @@ _BASE_PROMPT = "你是一个有用的助手。你的工具按组提供，默认�
 _PROFILE_GUIDE = "当用户透露关于自身的稳定信息（称呼、偏好、背景、习惯等）时，调用 update_user_profile 工具保存到长期画像；一次性的临时信息不要保存。回复时参考用户画像做个性化回应。新保存的画像条目在后续新建对话时才生效，本次对话内不会出现在上方画像中。"
 
 
-def build_system_prompt(profile_text: str | None = None) -> str:
-    #组装系统提示词：角色设定 + 规定约束 + 能力指南 + 画像指引 + 当前日期 +（有画像时）画像段，无画像时整段省略
+def build_system_prompt(profile_text: str | None = None, user_name: str | None = None) -> str:
+    #组装系统提示词：角色设定 + 规定约束 + 能力指南 + 画像指引 + 当前日期 +（有用户名时）用户称呼 +（有画像时）画像段
     from datetime import datetime
     _weekdays = "一二三四五六日"
     now = datetime.now()
     date_line = (f"当前日期：{now.strftime('%Y-%m-%d')}（星期{_weekdays[now.weekday()]}）。"
                  "涉及时间敏感的问题（如「今天」「最近」「最新」）以此日期为准。")
     parts = [_ROLE_PROMPT, _RULES_PROMPT, _BASE_PROMPT, _PROFILE_GUIDE, date_line]
+    if user_name:
+        parts.append(f"当前用户的称呼：{user_name}。回复时以此称呼用户，语气自然，不要每句都带称呼。")
     if profile_text:
         parts.append(f"当前用户画像：\n{profile_text}")
     return "\n\n".join(parts)

@@ -8,7 +8,7 @@ from .core.loop import graph,get_stream_config
 from .core.context import estimate_tokens,needs_compaction,compact_messages
 from .core.prompt import build_system_prompt
 from .session import store as session_store
-from .session.users import ensure_admin
+from .session.users import ensure_admin, get_user
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,8 @@ class Agent:
         self.session_id = session_store.create_session(session_id,self.user_id)#建行或复用
         #画像只在会话建立时加载一次，会话生命周期内固定不变：
         #中途重建系统提示会打飞整段前缀缓存，因此本会话存入的画像要到下次新建对话才生效
-        self.messages:list[BaseMessage] = [SystemMessage(content=build_system_prompt(session_store.profile_text(self.user_id) or None))]#初始化系统提示词
+        user_name = (get_user(self.user_id) or {}).get("display_name") or None#用户名注入系统提示，供模型称呼用户
+        self.messages:list[BaseMessage] = [SystemMessage(content=build_system_prompt(session_store.profile_text(self.user_id) or None,user_name))]#初始化系统提示词
         self.active_toolsets = ["terminal"]#已激活的工具集，跨轮持久化
         self.context_tokens = 0#当前上下文token数的运行值，随轮次增量维护，不再全量遍历历史；随会话持久化到 sessions.db
         self._turn_seq = 0#当前轮次序号，与 turns 表的 seq 对应

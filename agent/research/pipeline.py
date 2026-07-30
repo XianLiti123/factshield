@@ -22,7 +22,20 @@ from . import prompts, store
 MAX_CLAIMS = 6          #单任务主张上限，控制 LLM 调用规模
 MAX_KEYWORDS = 4        #每次采集的关键词上限
 MAX_MATERIALS = 6       #单轮采集素材上限
-MAX_MATERIALS_TOTAL = 12  #含二次取证轮次的素材总量上限
+MAX_MATERIALS_TOTAL = 20  #含二次取证轮次的素材总量上限
+
+#来源可信度三档 -> 兼容数值（数值仅供排序与旧字段兼容，展示一律以等级为准）
+_LEVEL_SCORE = {"高": 0.9, "中": 0.6, "低": 0.25}
+
+
+def _parse_level(value: object) -> str:
+    #把模型输出归一到 高/中/低 三档；无法识别时按"中"兜底
+    text = str(value or "").strip().lower()
+    if "高" in text or "high" in text:
+        return "高"
+    if "低" in text or "low" in text:
+        return "低"
+    return "中"
 MAX_RETRY = 1           #冲突二次取证上限（控制运行时长与进度回退次数）
 
 _search = TavilySearch(max_results=3)
@@ -261,20 +274,19 @@ def score_node(state: ResearchState, config: RunnableConfig) -> dict:
     for i, m in enumerate(materials):
         s = scores.get(i, {})
         source_type = str(s.get("source_type") or "其他")
-        try:
-            credibility = min(1.0, max(0.0, float(s.get("credibility", 0.5))))
-        except (TypeError, ValueError):
-            credibility = 0.5
-        store.update_material_score(task_id, m["group_id"], source_type, credibility)
-        #证据的可信度跟随其来源素材
+        level = _parse_level(s.get("credibility_level", s.get("credibility")))
+        credibility = _LEVEL_SCORE[level]
+        store.update_material_score(task_id, m["group_id"], source_type, credibility, level)
+        #证据的来源可信度跟随其来源素材
         with store.get_connection() as conn:
             conn.execute(
-                "UPDATE evidence SET source_type=?, credibility=? WHERE task_id=? AND title=? AND publisher=?",
-                (source_type, credibility, task_id, m["title"], m["publisher"]))
+                "UPDATE evidence SET source_type=?, credibility=?, credibility_level=?"
+                " WHERE task_id=? AND title=? AND publisher=?",
+                (source_type, credibility, level, task_id, m["title"], m["publisher"]))
     store.bump_progress(task_id, 70)
     _emit(config, "scorer", "progress",
-          title="信源打分完成", speech="已按来源类型输出标准化可信度标签。",
-          details=[{"label": m["publisher"], "text": f"{m['source_type']} {m['credibility']:.2f}"}
+          title="信源打分完成", speech="已按来源类型输出来源可信度等级（高/中/低）。",
+          details=[{"label": m["publisher"], "text": f"{m['source_type']} 来源可信度：{m['credibility_level'] or '中'}"}
                    for m in store.list_materials(task_id)],
           metrics=[], progress=70)
     return {}
@@ -369,11 +381,51 @@ def review_node(state: ResearchState, config: RunnableConfig) -> dict:
     return {}
 
 
+def _generate_abstract(llm: ChatClient, task: dict, claims: list[dict]) -> str:
+    #调一次 LLM 基于核查结果撰写底稿摘要；失败返回空串，底稿退化为统计行
+    from .models import STATUS_LABEL
+    lines = []
+    for c in claims:
+        verdict = c["reviewer_verdict"] or c["supervisor_verdict"] or ""
+        extra = f"；存疑原因：{c['conflict_reason']}" if c["conflict_reason"] else ""
+        lines.append(f"- [{STATUS_LABEL.get(c['status'], c['status'])}] {c['statement']}（{verdict or '无结论'}{extra}）")
+    try:
+        text = str(llm.chat([HumanMessage(content=prompts.REPORT_ABSTRACT_PROMPT.format(
+            topic=task["topic"], claims="\n".join(lines)[:3000]))]))
+        return _strip_abstract(text)
+    except Exception:
+        return ""
+
+
+def _strip_abstract(text: str) -> str:
+    #模型习惯性把摘要包进 JSON/代码块（{"summary": "..."}），这里剥壳取纯文本
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    if text.startswith("{"):
+        try:
+            obj = json.loads(text[text.find("{"):text.rfind("}") + 1])
+            if isinstance(obj, dict):
+                for key in ("summary", "摘要", "abstract"):
+                    if isinstance(obj.get(key), str):
+                        return obj[key].strip()
+                for v in obj.values():  #无惯用键时取第一个字符串值
+                    if isinstance(v, str):
+                        return v.strip()
+        except Exception:
+            pass
+    return text
+
+
 def assemble_node(state: ResearchState, config: RunnableConfig) -> dict:
-    #底稿组装：按模板拼装已核验素材（纯代码组装，不新增任何分析文字）
+    #底稿组装：先由 LLM 撰写摘要落库，再按模板拼装已核验素材（摘要之外不新增任何分析文字）
     _check_stop(config)
     task_id = state["task_id"]
     task = store.get_task(task_id, state["user_id"]) or {}
+    summary = _generate_abstract(_llm(config), task, store.list_claims(task_id))
+    if summary:
+        store.update_task(task_id, summary_md=summary)
+        task["summary_md"] = summary
     store.update_task(task_id, report_md=_build_report(task), status="review", progress=100)
     _emit(config, "assembler", "progress",
           title="研究底稿已生成", speech="带完整证据索引的研究底稿已组装完成，请研究员审阅并做最终研判。",
@@ -408,6 +460,10 @@ def _build_report(task: dict) -> str:
         "",
         "## 摘要",
         "",
+    ]
+    if (task.get("summary_md") or "").strip():
+        lines += [task["summary_md"].strip(), ""]
+    lines += [
         f"共核查主张 {len(claims)} 条：核验通过 {counts['verified']} 条，"
         f"待复核 {counts['review']} 条，高度存疑 {counts['conflict']} 条。",
         "",
@@ -432,7 +488,7 @@ def _build_report(task: dict) -> str:
                 e = evidence[eid]
                 relation = "支持" if e["relation"] == "support" else "质疑"
                 lines.append(
-                    f"  - [{eid}]（{relation}，可信度 {e['credibility']:.2f}）「{_clean(e['quote'])}」"
+                    f"  - [{eid}]（{relation}，来源可信度：{e['credibility_level'] or '中'}）「{_clean(e['quote'])}」"
                     f" —— {_clean(e['publisher'])}，{_clean(e['locator'])}"
                     + (f"，{e['url']}" if e["url"] else ""))
         else:
@@ -477,15 +533,72 @@ def _attachment_section(task_id: str) -> str:
 # ---------------- 单条主张重新取证 ----------------
 
 def retry_single_claim(task_id: str, claim_id: str, emit: Callable, llm: ChatClient) -> None:
-    #对单条主张重跑 检索->打分->核验->审查 子流程（后台线程执行，事件照常产出）
+    #对单条主张重跑 联网补采->检索->复核 子流程（后台线程执行，事件照常产出）
     claim = store.get_claim(task_id, claim_id)
     if claim is None:
         raise ValueError(f"主张不存在: {claim_id}")
     emit("supervisor", "progress", title="启动重新取证",
-         speech=f"主控已受理对主张 [{claim_id}] 的重新取证请求，调度检索子智能体二次匹配证据。",
+         speech=f"主控已受理对主张 [{claim_id}] 的重新取证请求，调度采集子智能体联网寻找新的公开信源。",
          details=[{"label": claim_id, "text": claim["statement"]}], metrics=[], progress=None)
+
+    #1. 联网二次采集：按主张原文搜索新网页，正文切块入知识库（只翻旧素材不可能带来新证据）
+    existing = store.list_materials(task_id)
+    new_materials = 0
+    new_mats: list[dict] = []  #新采集的素材，待打分
+    if len(existing) >= MAX_MATERIALS_TOTAL:
+        emit("collector", "warning", title="素材已达上限",
+             speech=f"本任务素材已达 {MAX_MATERIALS_TOTAL} 篇上限，本次仅在现有素材中重新匹配证据。",
+             details=[], metrics=[], progress=None)
+    else:
+        try:
+            result = _search.invoke({"query": claim["statement"][:200]})
+            search_items = result.get("results", []) if isinstance(result, dict) else []
+        except Exception as e:
+            search_items = []
+            emit("collector", "warning", title="联网检索失败", speech=f"二次取证联网检索失败：{e}",
+                 details=[], metrics=[], progress=None)
+        for item in search_items[:3]:  #重取证定向补采：取搜索结果前 3 篇抓全文
+            if len(existing) + new_materials >= MAX_MATERIALS_TOTAL:
+                break
+            url, title = item.get("url", ""), item.get("title", "")
+            try:
+                ext = _extract.invoke({"urls": [url]})
+                pages = ext.get("results", []) if isinstance(ext, dict) else []
+                content = str(pages[0].get("raw_content", ""))[:6000] if pages else ""
+            except Exception:
+                content = str(item.get("content", ""))[:6000]  #正文抓取失败时退化为搜索摘要
+            if not content.strip():
+                continue
+            group_id = f"task:{task_id}:{len(existing) + new_materials + 1}"
+            _, chunk_count = add_document(content, group_id=group_id)
+            with memory_conn() as conn:
+                conn.execute("INSERT INTO documents (group_id, chunk_count) VALUES (?,?)",
+                             (group_id, chunk_count))
+            publisher = url.split("/")[2] if "://" in url else url
+            store.add_material(task_id, group_id, title, publisher, url)
+            new_mats.append({"group_id": group_id, "title": title, "publisher": publisher, "url": url})
+            new_materials += 1
+
+    #1.5 新素材来源可信度评级：与流水线 score 节点同口径，否则证据等级会落空
+    if new_mats:
+        src_text = "\n".join(f"[{i}] {m['title']} | {m['publisher']} | {m['url']}"
+                             for i, m in enumerate(new_mats))
+        try:
+            data = _llm_json(llm, prompts.SCORE_SOURCES_PROMPT.format(sources=src_text))
+            scores = {s.get("id"): s for s in data.get("scores", [])}
+        except RuntimeError:
+            scores = {}  #评级失败时按"其他/中"兜底
+        for i, m in enumerate(new_mats):
+            s = scores.get(i, {})
+            source_type = str(s.get("source_type") or "其他")
+            level = _parse_level(s.get("credibility_level", s.get("credibility")))
+            store.update_material_score(task_id, m["group_id"], source_type,
+                                        _LEVEL_SCORE[level], level)
+
+    #2. 精确匹配证据：向量粗筛 + reranker 精排（候选池含刚入库的新素材）
     candidates = _search_with_meta(claim["statement"], num=3)
     materials_by_group = {m["group_id"]: m for m in store.list_materials(task_id)}
+    saved = 0
     if candidates:
         cand_text = "\n\n".join(f"[{i}] {c['content'][:800]}" for i, c in enumerate(candidates))
         try:
@@ -508,11 +621,16 @@ def retry_single_claim(task_id: str, claim_id: str, emit: Callable, llm: ChatCli
                           "locator": f"{src.get('title') or cand['group_id']} 第{cand['chunk_index'] + 1}段",
                           "quote": quote, "source_type": src.get("source_type", ""),
                           "credibility": src.get("credibility", 0.0),
+                          "credibility_level": src.get("credibility_level", ""),
                           "relation": "challenge" if e.get("relation") == "challenge" else "support"})
         if items:
             store.save_evidence(task_id, claim_id, items)
+            saved = len(items)
     emit("retriever", "progress", title="二次取证完成",
-         speech=f"已为 [{claim_id}] 补充检索证据。", details=[], metrics=[], progress=None)
+         speech=f"已为 [{claim_id}] 新采集 {new_materials} 篇信源，补充 {saved} 条证据。" if saved
+                else f"已为 [{claim_id}] 新采集 {new_materials} 篇信源，但未能从中摘录出可用证据。",
+         details=[], metrics=[{"label": "新信源", "value": str(new_materials)},
+                              {"label": "新证据", "value": str(saved)}], progress=None)
     #单条复核：复用审查提示词，只看这一条主张的最新快照
     snapshot = [c for c in _claims_snapshot(task_id) if c["claim_id"] == claim_id]
     data = _llm_json(llm, prompts.REVIEW_PROMPT.format(

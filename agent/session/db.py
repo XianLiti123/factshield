@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS research_tasks (
     status TEXT NOT NULL DEFAULT 'running',
     progress REAL NOT NULL DEFAULT 0,
     report_md TEXT,
+    summary_md TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
@@ -79,6 +80,7 @@ CREATE TABLE IF NOT EXISTS task_materials (
     url TEXT NOT NULL DEFAULT '',
     source_type TEXT NOT NULL DEFAULT '',
     credibility REAL NOT NULL DEFAULT 0,
+    credibility_level TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 CREATE TABLE IF NOT EXISTS claims (
@@ -110,6 +112,7 @@ CREATE TABLE IF NOT EXISTS evidence (
     source_type TEXT NOT NULL DEFAULT '',
     relation TEXT NOT NULL DEFAULT 'support',
     credibility REAL NOT NULL DEFAULT 0,
+    credibility_level TEXT NOT NULL DEFAULT '',
     url TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     PRIMARY KEY (task_id, id)
@@ -172,5 +175,8 @@ def init_db() -> None:
         _add_column_if_missing(conn, "profile_facts", "user_id", "user_id INTEGER")
         _add_column_if_missing(conn, "users", "display_name", "display_name TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "evidence", "url", "url TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "research_tasks", "summary_md", "summary_md TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "task_materials", "credibility_level", "credibility_level TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "evidence", "credibility_level", "credibility_level TEXT NOT NULL DEFAULT ''")
         #存量用户显示名为空时回填邮箱前缀
         conn.execute("UPDATE users SET display_name=substr(email,1,instr(email,'@')-1) WHERE display_name=''")

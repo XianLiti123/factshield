@@ -133,11 +133,13 @@ def add_material(task_id: str, group_id: str, title: str, publisher: str, url: s
         return cur.lastrowid  # type: ignore[return-value]
 
 
-def update_material_score(task_id: str, group_id: str, source_type: str, credibility: float) -> None:
+def update_material_score(task_id: str, group_id: str, source_type: str, credibility: float,
+                          credibility_level: str = "") -> None:
     with get_connection() as conn:
         conn.execute(
-            "UPDATE task_materials SET source_type=?, credibility=? WHERE task_id=? AND group_id=?",
-            (source_type, credibility, task_id, group_id)
+            "UPDATE task_materials SET source_type=?, credibility=?, credibility_level=?"
+            " WHERE task_id=? AND group_id=?",
+            (source_type, credibility, credibility_level, task_id, group_id)
         )
 
 
@@ -171,11 +173,11 @@ def save_evidence(task_id: str, claim_id: str, items: list[dict]) -> None:
             eid = f"e{n}"
             conn.execute(
                 "INSERT INTO evidence (id, task_id, title, publisher, published_at, locator, quote,"
-                " source_type, relation, credibility, url) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                " source_type, relation, credibility, credibility_level, url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (eid, task_id, item.get("title", ""), item.get("publisher", ""),
                  item.get("published_at", ""), item.get("locator", ""), item.get("quote", ""),
                  item.get("source_type", ""), item.get("relation", "support"),
-                 item.get("credibility", 0.0), item.get("url", ""))
+                 item.get("credibility", 0.0), item.get("credibility_level", ""), item.get("url", ""))
             )
             conn.execute(
                 "INSERT OR IGNORE INTO claim_evidence (task_id, claim_id, evidence_id) VALUES (?,?,?)",

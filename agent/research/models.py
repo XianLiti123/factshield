@@ -54,6 +54,7 @@ def evidence_to_dto(row: dict) -> dict:
         "sourceType": row["source_type"],
         "relation": row["relation"],
         "credibility": row["credibility"],
+        "credibilityLevel": row["credibility_level"],  #来源可信度三档：高/中/低
         "url": row["url"],
     }
 
