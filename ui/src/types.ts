@@ -6,6 +6,7 @@ export interface Evidence {
   title: string
   publisher: string
   publishedAt: string
+  url?: string
   locator: string
   quote: string
   sourceType: string

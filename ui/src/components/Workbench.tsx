@@ -272,10 +272,33 @@ function EvidenceCard({ evidence, active, onClick }: { evidence: Evidence; activ
   )
 }
 
+function getEvidenceSourceUrl(evidence: Evidence) {
+  const rawUrl = evidence.url?.trim()
+  if (!rawUrl) return null
+  try {
+    const normalizedUrl = /^https?:\/\//i.test(rawUrl)
+      ? rawUrl
+      : rawUrl.startsWith('//')
+        ? `https:${rawUrl}`
+        : `https://${rawUrl}`
+    const parsedUrl = new URL(normalizedUrl)
+    return parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:' ? parsedUrl.href : null
+  } catch {
+    return null
+  }
+}
+
+function openEvidenceSource(sourceUrl: string) {
+  const sourceWindow = window.open(sourceUrl, '_blank')
+  if (sourceWindow) sourceWindow.opener = null
+  if (!sourceWindow) message.warning('浏览器阻止了新窗口，请允许本站打开新标签页后重试')
+}
+
 function EvidenceViewer({ evidenceList }: { evidenceList: Evidence[] }) {
   const [selectedEvidenceId, setSelectedEvidenceId] = useState(evidenceList[0]?.id ?? '')
   const [view, setView] = useState<EvidenceView>('text')
   const selectedEvidence = evidenceList.find((item) => item.id === selectedEvidenceId) ?? evidenceList[0]
+  const selectedSourceUrl = selectedEvidence ? getEvidenceSourceUrl(selectedEvidence) : null
 
   useEffect(() => {
     if (!evidenceList.some((item) => item.id === selectedEvidenceId)) {
@@ -312,7 +335,12 @@ function EvidenceViewer({ evidenceList }: { evidenceList: Evidence[] }) {
             <FilePdfOutlined />
             <div><strong>{selectedEvidence.title}</strong><span>原始文件 · 已完成哈希校验</span></div>
           </div>
-          <button className="source-link-button" onClick={() => message.info('UI 原型：接入后端后将在此打开原始来源')}><LinkOutlined /> 打开来源</button>
+          <button
+            className="source-link-button"
+            disabled={!selectedSourceUrl}
+            title={selectedSourceUrl ? `打开 ${selectedSourceUrl}` : selectedEvidence.url ? '后端返回的来源地址无效' : '后端未返回来源地址'}
+            onClick={() => selectedSourceUrl && openEvidenceSource(selectedSourceUrl)}
+          ><LinkOutlined /> {selectedSourceUrl ? '打开来源' : '暂无来源地址'}</button>
         </div>
         <div className="document-page">
           <div className="document-brand">{selectedEvidence.publisher}</div>
@@ -335,7 +363,12 @@ function EvidenceViewer({ evidenceList }: { evidenceList: Evidence[] }) {
             <DatabaseOutlined />
             <div><strong>来源档案</strong><span>用于确认材料出处与引用关系</span></div>
           </div>
-          <button className="source-link-button" onClick={() => message.info('UI 原型：接入来源地址后将在此打开原始页面')}><LinkOutlined /> 打开来源</button>
+          <button
+            className="source-link-button"
+            disabled={!selectedSourceUrl}
+            title={selectedSourceUrl ? `打开 ${selectedSourceUrl}` : selectedEvidence.url ? '后端返回的来源地址无效' : '后端未返回来源地址'}
+            onClick={() => selectedSourceUrl && openEvidenceSource(selectedSourceUrl)}
+          ><LinkOutlined /> {selectedSourceUrl ? '打开来源' : '暂无来源地址'}</button>
         </div>
         <div className="source-info-content">
           <section className="source-identity-card">
@@ -357,6 +390,7 @@ function EvidenceViewer({ evidenceList }: { evidenceList: Evidence[] }) {
               <div><dt>披露日期</dt><dd>{selectedEvidence.publishedAt}</dd></div>
               <div><dt>材料类型</dt><dd>{selectedEvidence.sourceType}</dd></div>
               <div><dt>证据定位</dt><dd>{selectedEvidence.locator}</dd></div>
+              <div><dt>原始地址</dt><dd className="source-url-value" title={selectedEvidence.url || undefined}>{selectedEvidence.url || '后端未返回'}</dd></div>
             </dl>
           </section>
 
