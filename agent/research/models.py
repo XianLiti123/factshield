@@ -69,29 +69,43 @@ def _fmt_duration(seconds: float) -> str:
 
 def agents_status(task: dict, events: list[dict]) -> list[dict]:
     #由事件流推导各智能体状态：出现过→done；最新一条进度事件的 actor→running；未出现→waiting
-    #耗时取该 actor 首末事件的时间差（执行监控页节点页脚展示，无事件则显示"尚未启动"）
+    #耗时按"时间片归属"累加：相邻两条事件之间的时间记在后者 actor 头上（多数节点只在完成时发一条事件，
+    #首末事件相减会是 0，故不能用 actor 自己的首末事件差）
     from datetime import datetime
+
+    def _parse_ts(ts: object):
+        try:
+            return datetime.strptime(str(ts), "%Y-%m-%d %H:%M:%S")
+        except (ValueError, TypeError):
+            return None
+
     seen = {e["actor"] for e in events}
     current = None
     if task["status"] == "running" and events:
         current = events[-1]["actor"]
     has_conflict = any(e["actor"] == "reviewer" and e["kind"] == "warning" for e in events)
-    first_ts: dict[str, str] = {}
-    last_ts: dict[str, str] = {}
+
+    durations: dict[str, float] = {}
+    prev = _parse_ts(task.get("created_at"))
     for e in events:
-        first_ts.setdefault(e["actor"], e["ts"])
-        last_ts[e["actor"]] = e["ts"]
+        ts = _parse_ts(e["ts"])
+        if ts is None:
+            continue
+        if prev is not None:
+            gap = (ts - prev).total_seconds()
+            #间隙超 5 分钟视为等待人工的空档（隔夜重取证等），不计入任何智能体的工时
+            if 0 < gap <= 300:
+                durations[e["actor"]] = durations.get(e["actor"], 0.0) + gap
+        prev = ts
+    if current is not None and prev is not None:  #正在运行的节点：末条事件到现在的时间也记给它
+        gap = (datetime.now() - prev).total_seconds()
+        if 0 < gap <= 300:
+            durations[current] = durations.get(current, 0.0) + gap
 
     def duration_of(aid: str) -> str | None:
-        if aid not in first_ts:
+        if aid not in seen:
             return None
-        try:
-            start = datetime.strptime(first_ts[aid], "%Y-%m-%d %H:%M:%S")
-            end = (datetime.now() if aid == current
-                   else datetime.strptime(last_ts[aid], "%Y-%m-%d %H:%M:%S"))
-            return _fmt_duration((end - start).total_seconds())
-        except ValueError:
-            return None
+        return _fmt_duration(durations.get(aid, 0.0))
 
     agents = []
     for spec in AGENT_ROSTER:

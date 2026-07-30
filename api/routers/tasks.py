@@ -1,16 +1,19 @@
 import json
 import queue
+import uuid
+from pathlib import Path
 from typing import Iterator, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agent.research import runner, store
 from agent.research.export import report_to_docx, report_to_pdf
 from agent.research.models import run_to_dto
-from agent.research.pipeline import _build_report
+from agent.research.pipeline import MAX_MATERIALS_TOTAL, _build_report, _ingest_material
 from agent.session.model_config import get_config
+from agent.tools.convert import convert_document
 
 from ..core.security import get_current_user
 from ..core.session import get_or_create_session, mark_running, unmark_running
@@ -28,6 +31,7 @@ class CreateTaskRequest(BaseModel):
     company: str | None = None
     research_type: str = "policy"
     preferred_sources: list[str] = []
+    attachment_ids: list[str] = []  #任务附件：/tasks/uploads 返回的 upload_id，建任务时绑定为素材
 
 
 class GuidanceRequest(BaseModel):
@@ -79,16 +83,74 @@ def _sse(obj: dict) -> str:
 
 @router.post("", response_model=TaskSummary)
 def create_task(request: CreateTaskRequest, user_id: int = Depends(get_current_user)) -> TaskSummary:
-    #创建研究任务并后台启动流水线（未配置 LLM 拒绝服务）
+    #创建研究任务并后台启动流水线（未配置 LLM 拒绝服务）；附件先于流水线绑定，随首轮参与主张提取
     if get_config(user_id, "llm") is None:
         raise HTTPException(status_code=400, detail="未配置 LLM 模型，请先在 /settings 配置")
+    if request.attachment_ids:
+        if len(request.attachment_ids) > MAX_MATERIALS_TOTAL:
+            raise HTTPException(status_code=400, detail=f"附件数量超过素材总量上限 {MAX_MATERIALS_TOTAL}")
+        for upload_id in request.attachment_ids:
+            upload = store.get_upload(upload_id, user_id)
+            if upload is None or upload["task_id"]:
+                raise HTTPException(status_code=400, detail=f"附件 {upload_id} 不存在或已绑定其他任务")
     task = store.create_task(
         user_id=user_id, title=request.title or request.topic, topic=request.topic,
         company=request.company or "", research_type=request.research_type,
         preferred_sources=request.preferred_sources,
     )
+    for seq, upload_id in enumerate(request.attachment_ids, 1):
+        try:
+            upload = store.get_upload(upload_id, user_id)
+            _ingest_material(task["task_id"], seq, upload["filename"], "用户上传附件", "", upload["content"])  # type: ignore[index]
+            store.bind_upload(upload_id, task["task_id"])
+        except Exception as e:
+            store.delete_task(task["task_id"], user_id)  #附件入库失败不留半成品任务
+            raise HTTPException(status_code=503, detail=f"附件入库失败（可能未配置 Embedding 模型）: {e}")
     runner.start_task(task["task_id"], user_id)
     return _summary(task)
+
+
+# ---------------- 任务附件上传（先传后绑：上传暂存 -> 建任务时 attachment_ids 绑定） ----------------
+
+_ALLOWED_UPLOAD_EXT = {".pdf", ".xlsx", ".xls", ".docx", ".txt"}
+_MAX_UPLOAD_SIZE = 10 * 1024 * 1024  #单附件 10MB
+_MAX_UPLOAD_FILES = 5                #单次最多 5 个
+_UPLOAD_DIR = Path(__file__).resolve().parent.parent.parent / "agent" / "workspace" / "uploads"
+
+
+@router.post("/uploads")
+async def upload_attachments(files: list[UploadFile] = File(...),
+                             user_id: int = Depends(get_current_user)) -> dict:
+    #上传任务附件：转 Markdown 暂存并返回 upload_id；建任务时以 attachment_ids 绑定为任务素材
+    if len(files) > _MAX_UPLOAD_FILES:
+        raise HTTPException(status_code=400, detail=f"一次最多上传 {_MAX_UPLOAD_FILES} 个附件")
+    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    uploads = []
+    for f in files:
+        name = f.filename or "未命名"
+        ext = Path(name).suffix.lower()
+        if ext not in _ALLOWED_UPLOAD_EXT:
+            raise HTTPException(status_code=400,
+                                detail=f"不支持的附件类型 {ext}，支持: {'/'.join(sorted(_ALLOWED_UPLOAD_EXT))}")
+        data = await f.read()
+        if len(data) > _MAX_UPLOAD_SIZE:
+            raise HTTPException(status_code=400, detail=f"附件 {name} 超过 10MB 限制")
+        if ext == ".txt":
+            content = data.decode("utf-8", errors="ignore")[:6000]
+        else:
+            tmp = _UPLOAD_DIR / f"{uuid.uuid4().hex}{ext}"
+            tmp.write_bytes(data)
+            try:
+                content = convert_document.invoke({"file_path": str(tmp), "max_length": 6000, "safe": False})
+            finally:
+                tmp.unlink(missing_ok=True)
+            if str(content).startswith("文档转换失败"):
+                raise HTTPException(status_code=422, detail=f"附件 {name} 解析失败: {content}")
+        if not str(content).strip():
+            raise HTTPException(status_code=422, detail=f"附件 {name} 未解析出文本内容")
+        uploads.append({"upload_id": store.save_upload(user_id, name, str(content)),
+                        "filename": name, "chars": len(str(content))})
+    return {"uploads": uploads}
 
 
 @router.get("", response_model=list[TaskSummary])

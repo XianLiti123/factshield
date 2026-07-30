@@ -61,6 +61,7 @@ class ResearchState(TypedDict, total=False):
     claims: list[dict]         #[{id,statement,category}]
     retry_count: int
     need_retry: bool
+    guidance: list[str]       #研究员中途介入指令（各节点边界消费并累计，verify 统一拼入提示词）
 
 
 def _emit(config: RunnableConfig, actor: str, kind: str, **payload) -> None:
@@ -79,6 +80,15 @@ def _check_stop(config: RunnableConfig) -> None:
     stop: threading.Event = config["configurable"]["stop_event"]
     if stop.is_set():
         raise TaskStopped()
+
+
+def _consume_guidance(config: RunnableConfig, task_id: str, progress: float) -> list[str]:
+    #在节点边界消费研究员介入指令并立即播报（指令若攒到一级核验才消费，用户会以为"打断"没生效）
+    guidance = store.consume_guidance(task_id)
+    for g in guidance:
+        _emit(config, "researcher", "progress", title="研究员介入", speech=g,
+              details=[], metrics=[], tone="warning", progress=progress)
+    return guidance
 
 
 def _llm_json(llm: ChatClient, prompt: str, retries: int = 1) -> dict:
@@ -106,6 +116,7 @@ def _llm(config: RunnableConfig) -> ChatClient:
 def plan_node(state: ResearchState, config: RunnableConfig) -> dict:
     #Supervisor 任务拆解：主题 -> 原子核查点 + 检索关键词
     _check_stop(config)
+    guidance = state.get("guidance", []) + _consume_guidance(config, state["task_id"], 12)
     data = _llm_json(_llm(config), prompts.PLAN_PROMPT.format(
         topic=state["topic"], company=state["company"] or "未指定",
         research_type=state["research_type"],
@@ -119,14 +130,28 @@ def plan_node(state: ResearchState, config: RunnableConfig) -> dict:
           title="任务拆解完成", speech=f"已拆解为 {len(checkpoints)} 个核查点，准备定向采集公开信源。",
           details=[{"label": "核查点", "text": c} for c in checkpoints],
           metrics=[{"label": "检索关键词", "value": "、".join(keywords)}], progress=12)
-    return {"title": title, "keywords": keywords, "checkpoints": checkpoints}
+    return {"title": title, "keywords": keywords, "checkpoints": checkpoints, "guidance": guidance}
+
+
+def _ingest_material(task_id: str, seq: int, title: str, publisher: str, url: str, content: str) -> dict:
+    #一份素材入库：正文切块进知识库（group_id 标任务归属）+ 登记元数据 + 落 task_materials
+    group_id = f"task:{task_id}:{seq}"
+    _, chunk_count = add_document(content, group_id=group_id)
+    with memory_conn() as conn:  #登记知识库元数据，/knowledge/documents 可按任务回溯
+        conn.execute("INSERT INTO documents (group_id, chunk_count) VALUES (?,?)",
+                     (group_id, chunk_count))
+    store.add_material(task_id, group_id, title, publisher, url, content=content)
+    return {"group_id": group_id, "title": title, "publisher": publisher,
+            "url": url, "content": content}
 
 
 def collect_node(state: ResearchState, config: RunnableConfig) -> dict:
     #信源采集：按关键词抓取公开网页正文，原文切块入知识库（group_id 标任务归属）
     _check_stop(config)
     task_id = state["task_id"]
-    materials: list[dict] = list(state.get("materials") or [])
+    guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 25)
+    #首轮取图状态；建任务时绑定的用户附件已在库中，从库里带出来（含正文，供主张提取）
+    materials: list[dict] = list(state.get("materials") or store.list_materials(task_id))
     collected = 0  #本轮新增素材数（二次取证轮次不受首轮上限影响，总量以 MAX_MATERIALS_TOTAL 封顶）
     for kw in state["keywords"]:
         _check_stop(config)
@@ -152,15 +177,8 @@ def collect_node(state: ResearchState, config: RunnableConfig) -> dict:
                 content = str(item.get("content", ""))[:6000]  #正文抓取失败时退化为搜索摘要
             if not content.strip():
                 continue
-            group_id = f"task:{task_id}:{len(materials) + 1}"
-            _, chunk_count = add_document(content, group_id=group_id)
-            with memory_conn() as conn:  #登记知识库元数据，/knowledge/documents 可按任务回溯
-                conn.execute("INSERT INTO documents (group_id, chunk_count) VALUES (?,?)",
-                             (group_id, chunk_count))
             publisher = url.split("/")[2] if "://" in url else url
-            material = {"group_id": group_id, "title": title, "publisher": publisher,
-                        "url": url, "content": content}
-            store.add_material(task_id, group_id, title, publisher, url)
+            material = _ingest_material(task_id, len(materials) + 1, title, publisher, url, content)
             materials.append(material)
             collected += 1
     store.bump_progress(task_id, 25)
@@ -169,13 +187,14 @@ def collect_node(state: ResearchState, config: RunnableConfig) -> dict:
           details=[{"label": m["title"] or m["url"], "text": m["url"]}
                    for m in (materials[len(materials) - collected:] if collected else [])],
           metrics=[{"label": "累计素材", "value": str(len(materials))}], progress=25)
-    return {"materials": materials}
+    return {"materials": materials, "guidance": guidance}
 
 
 def parse_node(state: ResearchState, config: RunnableConfig) -> dict:
     #主张提取：从素材中提取事实性主张（只提取原文存在的内容）
     _check_stop(config)
     task_id = state["task_id"]
+    guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 40)
     materials_text = "\n\n".join(
         f"【材料{i}】{m['title']}（{m['publisher']}）\n{m['content'][:1200]}"
         for i, m in enumerate(state["materials"], 1)
@@ -196,7 +215,7 @@ def parse_node(state: ResearchState, config: RunnableConfig) -> dict:
           title="主张提取完成", speech=f"从材料中提取出 {len(claims)} 条待核查主张。",
           details=[{"label": c["id"], "text": c["statement"]} for c in claims],
           metrics=[], progress=40)
-    return {"claims": claims}
+    return {"claims": claims, "guidance": guidance}
 
 
 def _search_with_meta(query: str, num: int = 2) -> list[dict]:
@@ -218,6 +237,7 @@ def retrieve_node(state: ResearchState, config: RunnableConfig) -> dict:
     #证据检索：逐条主张检索原文段落，LLM 判定支持/质疑关系并摘录原文
     _check_stop(config)
     task_id = state["task_id"]
+    guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 55)
     llm = _llm(config)
     materials_by_group = {m["group_id"]: m for m in state["materials"]}
     total = 0
@@ -256,13 +276,14 @@ def retrieve_node(state: ResearchState, config: RunnableConfig) -> dict:
     _emit(config, "retriever", "progress",
           title="证据检索完成", speech=f"已为各主张匹配到 {total} 条原文证据。",
           details=[], metrics=[{"label": "证据总数", "value": str(total)}], progress=55)
-    return {}
+    return {"guidance": guidance}
 
 
 def score_node(state: ResearchState, config: RunnableConfig) -> dict:
     #信源可信度打分：按来源类型打标签（官方高/媒体中/自媒体低）
     _check_stop(config)
     task_id = state["task_id"]
+    guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 70)
     materials = store.list_materials(task_id)
     src_text = "\n".join(f"[{i}] {m['title']} | {m['publisher']} | {m['url']}"
                          for i, m in enumerate(materials))
@@ -289,7 +310,7 @@ def score_node(state: ResearchState, config: RunnableConfig) -> dict:
           details=[{"label": m["publisher"], "text": f"{m['source_type']} 来源可信度：{m['credibility_level'] or '中'}"}
                    for m in store.list_materials(task_id)],
           metrics=[], progress=70)
-    return {}
+    return {"guidance": guidance}
 
 
 def _claims_snapshot(task_id: str) -> list[dict]:
@@ -308,14 +329,10 @@ def _claims_snapshot(task_id: str) -> list[dict]:
 
 
 def verify_node(state: ResearchState, config: RunnableConfig) -> dict:
-    #Supervisor 一级核验：判冲突/证据缺失，必要时决策二次取证；研究员介入在此消费
+    #Supervisor 一级核验：判冲突/证据缺失，必要时决策二次取证；研究员介入指令在此统一生效
     _check_stop(config)
     task_id = state["task_id"]
-    guidance = store.consume_guidance(task_id)
-    for g in guidance:
-        _emit(config, "researcher", "progress",
-              title="研究员介入", speech=g, details=[], metrics=[], tone="warning",
-              progress=state.get("progress", 80))
+    guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 80)
     guidance_text = ("研究员中途介入指令：\n" + "\n".join(f"- {g}" for g in guidance)) if guidance else ""
     data = _llm_json(_llm(config), prompts.VERIFY_PROMPT.format(
         topic=state["topic"], guidance=guidance_text,
@@ -340,11 +357,12 @@ def verify_node(state: ResearchState, config: RunnableConfig) -> dict:
               details=[{"label": "新关键词", "text": "、".join(retry_keywords)}],
               metrics=[{"label": "重试轮次", "value": f"{retry_count + 1}/{MAX_RETRY}"}],
               tone="warning", progress=80)
-        return {"need_retry": True, "keywords": retry_keywords, "retry_count": retry_count + 1}
+        return {"need_retry": True, "keywords": retry_keywords, "retry_count": retry_count + 1,
+                "guidance": guidance}
     _emit(config, "supervisor", "progress",
           title="一级核验完成", speech="已完成冲突识别与证据充分性检查，移送独立幻觉审查单元复核。",
           details=[], metrics=[], progress=85)
-    return {"need_retry": False, "retry_count": retry_count}
+    return {"need_retry": False, "retry_count": retry_count, "guidance": guidance}
 
 
 def route_after_verify(state: ResearchState) -> str:
@@ -356,6 +374,7 @@ def review_node(state: ResearchState, config: RunnableConfig) -> dict:
     #独立幻觉审查：二级复核闸门，输出绿/黄/红可信度分级
     _check_stop(config)
     task_id = state["task_id"]
+    guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 95)
     data = _llm_json(_llm(config), prompts.REVIEW_PROMPT.format(
         claims_with_verdicts=json.dumps(_claims_snapshot(task_id), ensure_ascii=False)[:8000]))
     level_map = {"green": "verified", "yellow": "review", "red": "conflict"}
@@ -378,7 +397,7 @@ def review_node(state: ResearchState, config: RunnableConfig) -> dict:
           details=[], metrics=[{"label": "高度存疑", "value": str(red)}],
           tone="danger" if red else None, progress=95)
     store.bump_progress(task_id, 95)
-    return {}
+    return {"guidance": guidance}
 
 
 def _generate_abstract(llm: ChatClient, task: dict, claims: list[dict]) -> str:
@@ -421,6 +440,7 @@ def assemble_node(state: ResearchState, config: RunnableConfig) -> dict:
     #底稿组装：先由 LLM 撰写摘要落库，再按模板拼装已核验素材（摘要之外不新增任何分析文字）
     _check_stop(config)
     task_id = state["task_id"]
+    guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 100)
     task = store.get_task(task_id, state["user_id"]) or {}
     summary = _generate_abstract(_llm(config), task, store.list_claims(task_id))
     if summary:
@@ -431,7 +451,7 @@ def assemble_node(state: ResearchState, config: RunnableConfig) -> dict:
           title="研究底稿已生成", speech="带完整证据索引的研究底稿已组装完成，请研究员审阅并做最终研判。",
           details=[], metrics=[], progress=100)
     _emit(config, "system", "done", title="任务完成", speech="", details=[], metrics=[], progress=100)
-    return {}
+    return {"guidance": guidance}
 
 
 def _clean(text: object) -> str:
@@ -569,14 +589,10 @@ def retry_single_claim(task_id: str, claim_id: str, emit: Callable, llm: ChatCli
                 content = str(item.get("content", ""))[:6000]  #正文抓取失败时退化为搜索摘要
             if not content.strip():
                 continue
-            group_id = f"task:{task_id}:{len(existing) + new_materials + 1}"
-            _, chunk_count = add_document(content, group_id=group_id)
-            with memory_conn() as conn:
-                conn.execute("INSERT INTO documents (group_id, chunk_count) VALUES (?,?)",
-                             (group_id, chunk_count))
             publisher = url.split("/")[2] if "://" in url else url
-            store.add_material(task_id, group_id, title, publisher, url)
-            new_mats.append({"group_id": group_id, "title": title, "publisher": publisher, "url": url})
+            _ingest_material(task_id, len(existing) + new_materials + 1, title, publisher, url, content)
+            new_mats.append({"group_id": f"task:{task_id}:{len(existing) + new_materials + 1}",
+                             "title": title, "publisher": publisher, "url": url})
             new_materials += 1
 
     #1.5 新素材来源可信度评级：与流水线 score 节点同口径，否则证据等级会落空

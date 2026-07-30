@@ -123,14 +123,40 @@ def delete_task(task_id: str, user_id: int) -> bool:
 # ---------------- 素材（采集到的原始资料，group_id 对应知识库向量块） ----------------
 
 def add_material(task_id: str, group_id: str, title: str, publisher: str, url: str,
-                 source_type: str = "", credibility: float = 0.0) -> int:
+                 source_type: str = "", credibility: float = 0.0, content: str = "") -> int:
     with get_connection() as conn:
         cur = conn.execute(
-            "INSERT INTO task_materials (task_id, group_id, title, publisher, url, source_type, credibility)"
-            " VALUES (?,?,?,?,?,?,?)",
-            (task_id, group_id, title, publisher, url, source_type, credibility)
+            "INSERT INTO task_materials (task_id, group_id, title, publisher, url, source_type, credibility, content)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (task_id, group_id, title, publisher, url, source_type, credibility, content)
         )
         return cur.lastrowid  # type: ignore[return-value]
+
+
+# ---------------- 任务附件（上传暂存，建任务时绑定为素材） ----------------
+
+def save_upload(user_id: int, filename: str, content: str) -> str:
+    import uuid
+    upload_id = uuid.uuid4().hex
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO task_uploads (upload_id, user_id, filename, content) VALUES (?,?,?,?)",
+            (upload_id, user_id, filename, content)
+        )
+    return upload_id
+
+
+def get_upload(upload_id: str, user_id: int) -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM task_uploads WHERE upload_id=? AND user_id=?", (upload_id, user_id)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def bind_upload(upload_id: str, task_id: str) -> None:
+    with get_connection() as conn:
+        conn.execute("UPDATE task_uploads SET task_id=? WHERE upload_id=?", (task_id, upload_id))
 
 
 def update_material_score(task_id: str, group_id: str, source_type: str, credibility: float,
