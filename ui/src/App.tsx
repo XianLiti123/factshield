@@ -176,8 +176,10 @@ function App() {
           {activeView === 'topology' && <AgentTopology run={run} />}
           {activeView === 'analytics' && <AnalyticsView run={run} />}
           {activeView === 'reports' && <ReportsView run={run} />}
-          {activeTask.id && activeTask.phase !== 'draft' && <SupervisorAssistant run={run} />}
         </>
+      )}
+      {run && activeTask.id && activeTask.phase !== 'draft' && (
+        <SupervisorAssistant key={`${user.id}-${run.id}`} run={run} userId={user.id} />
       )}
     </AppShell>
   )

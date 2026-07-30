@@ -26,6 +26,7 @@ export type SettingsResponse = {
 }
 export type DocumentConversion = { filename: string; mode: string; content: string }
 export type StreamEvent = { type: 'token' | 'think' | 'tool' | 'context' | 'done' | 'error'; content: string }
+export type ChatHistoryMessage = { role: 'assistant' | 'user'; content: string }
 export type ResearchEvent = {
   id: number
   task_id: string
@@ -121,6 +122,39 @@ export const login = (email: string, password: string) => request<AuthResponse>(
 })
 
 export const getMe = () => request<UserInfo>('/api/auth/me')
+
+function getChatSessionStorageKey(taskId: string, userId: number) {
+  return `${SESSION_KEY_PREFIX}${userId}.${taskId}`
+}
+
+function getStoredChatSession(taskId: string, userId: number) {
+  const scopedKey = getChatSessionStorageKey(taskId, userId)
+  const legacyKey = `${SESSION_KEY_PREFIX}${taskId}`
+  return {
+    scopedKey,
+    legacyKey,
+    sessionId: window.localStorage.getItem(scopedKey) ?? window.localStorage.getItem(legacyKey),
+  }
+}
+
+export async function getChatHistory(taskId: string, userId: number) {
+  const { scopedKey, legacyKey, sessionId } = getStoredChatSession(taskId, userId)
+  if (!sessionId) return []
+  try {
+    const history = await request<{ session_id: string; messages: ChatHistoryMessage[] }>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/history`,
+    )
+    window.localStorage.setItem(scopedKey, history.session_id)
+    return history.messages
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      window.localStorage.removeItem(scopedKey)
+      if (window.localStorage.getItem(legacyKey) === sessionId) window.localStorage.removeItem(legacyKey)
+      return []
+    }
+    throw error
+  }
+}
 
 export async function logout() {
   try { await request<{ status: string }>('/api/auth/logout', { method: 'POST' }) } finally { setToken(null) }
@@ -272,10 +306,11 @@ export async function streamTaskEvents(
 export async function streamChat(
   message: string,
   taskId: string,
+  userId: number,
   onEvent: (event: StreamEvent) => void,
 ) {
-  const sessionKey = `${SESSION_KEY_PREFIX}${taskId}`
-  let storedSession = window.localStorage.getItem(sessionKey)
+  const { scopedKey: sessionKey, legacyKey, sessionId: savedSessionId } = getStoredChatSession(taskId, userId)
+  let storedSession = savedSessionId
   const send = (sessionId: string | null) => fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken() ?? ''}` },
@@ -284,12 +319,13 @@ export async function streamChat(
   let response = await send(storedSession)
   if (response.status === 404 && storedSession) {
     window.localStorage.removeItem(sessionKey)
+    if (window.localStorage.getItem(legacyKey) === storedSession) window.localStorage.removeItem(legacyKey)
     storedSession = null
     response = await send(null)
   }
   if (!response.ok) throw new ApiError(await parseError(response), response.status)
-  const sessionId = response.headers.get('X-Session-Id')
-  if (sessionId) window.localStorage.setItem(sessionKey, sessionId)
+  const responseSessionId = response.headers.get('X-Session-Id')
+  if (responseSessionId) window.localStorage.setItem(sessionKey, responseSessionId)
   if (!response.body) throw new ApiError('浏览器未返回流式响应', 500)
 
   const reader = response.body.getReader()
