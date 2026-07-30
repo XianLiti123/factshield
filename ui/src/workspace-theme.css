@@ -77,6 +77,11 @@
 }
 
 .environment-pill > span { background: #35ad7f; }
+.sidebar .environment-pill.checking { color: #7b6b4d; background: #fff8e9; border-color: #ead9b8; }
+.sidebar .environment-pill.checking > span { background: #d49a38; animation: api-connection-pulse 1.2s ease-in-out infinite; }
+.sidebar .environment-pill.disconnected { color: #955158; background: #fff1f1; border-color: #eccdce; }
+.sidebar .environment-pill.disconnected > span { background: #d75b63; }
+@keyframes api-connection-pulse { 50% { opacity: .35; transform: scale(.78); } }
 .sidebar-section-label { padding: 0 10px 8px; color: #8b9a96; font-size: 10px; letter-spacing: 0; }
 .sidebar-nav { gap: 3px; }
 

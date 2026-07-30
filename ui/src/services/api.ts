@@ -191,6 +191,26 @@ export const login = (email: string, password: string) => request<AuthResponse>(
 
 export const getMe = () => request<UserInfo>('/api/auth/me')
 
+export async function checkApiHealth(timeout = 2500) {
+  const controller = new AbortController()
+  const timeoutId = window.setTimeout(() => controller.abort(), timeout)
+  try {
+    const response = await fetch('/api/health', {
+      method: 'GET',
+      cache: 'no-store',
+      headers: { Accept: 'application/json' },
+      signal: controller.signal,
+    })
+    if (!response.ok) return false
+    const payload = await response.json() as { status?: string }
+    return payload.status === 'ok'
+  } catch {
+    return false
+  } finally {
+    window.clearTimeout(timeoutId)
+  }
+}
+
 function getChatSessionStorageKey(taskId: string, userId: number) {
   return `${SESSION_KEY_PREFIX}${userId}.${taskId}`
 }

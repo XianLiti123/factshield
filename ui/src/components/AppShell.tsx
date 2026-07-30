@@ -21,7 +21,7 @@ import {
 import { Avatar, Button, Dropdown, Empty, Input, Modal, Popover, Slider, Spin, Tag, message } from 'antd'
 import type { MenuProps } from 'antd'
 import { useWorkspaceStore } from '../store'
-import { searchWorkspace, type UserInfo, type WorkspaceSearchResult } from '../services/api'
+import { checkApiHealth, searchWorkspace, type UserInfo, type WorkspaceSearchResult } from '../services/api'
 
 const PROFILE_STORAGE_PREFIX = 'factshield.profile.'
 const AVATAR_CROP_SIZE = 280
@@ -37,6 +37,8 @@ type CropImage = {
   width: number
   height: number
 }
+
+type ApiConnectionStatus = 'checking' | 'connected' | 'disconnected'
 
 function readLocalProfile(userId: number): LocalProfile {
   try {
@@ -97,6 +99,7 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
   const [searchLoading, setSearchLoading] = useState(false)
   const [searchError, setSearchError] = useState('')
   const [searchResult, setSearchResult] = useState<WorkspaceSearchResult | null>(null)
+  const [apiConnectionStatus, setApiConnectionStatus] = useState<ApiConnectionStatus>('checking')
   const avatarInputRef = useRef<HTMLInputElement>(null)
   const searchAnchorRef = useRef<HTMLDivElement>(null)
   const avatarDragDepthRef = useRef(0)
@@ -125,6 +128,43 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
   const avatarText = /^[a-z]$/i.test(avatarInitial) ? avatarInitial.toUpperCase() : avatarInitial
   const avatarSrc = localProfile.avatar
   const searchRequestRef = useRef(0)
+
+  useEffect(() => {
+    let active = true
+    let checking = false
+
+    const refreshApiConnection = async () => {
+      if (checking) return
+      checking = true
+      const connected = await checkApiHealth()
+      if (active) setApiConnectionStatus(connected ? 'connected' : 'disconnected')
+      checking = false
+    }
+
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') void refreshApiConnection()
+    }
+
+    void refreshApiConnection()
+    const timer = window.setInterval(() => { void refreshApiConnection() }, 5000)
+    window.addEventListener('online', refreshWhenVisible)
+    window.addEventListener('focus', refreshWhenVisible)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+
+    return () => {
+      active = false
+      window.clearInterval(timer)
+      window.removeEventListener('online', refreshWhenVisible)
+      window.removeEventListener('focus', refreshWhenVisible)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+    }
+  }, [])
+
+  const apiConnectionLabel = apiConnectionStatus === 'connected'
+    ? '已连接本地 FastAPI'
+    : apiConnectionStatus === 'disconnected'
+      ? '本地 FastAPI 未连接'
+      : '正在连接本地 FastAPI'
 
   const runSearch = async (query: string) => {
     const normalizedQuery = query.trim()
@@ -433,7 +473,14 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
           </div>
         </div>
 
-        <div className="environment-pill"><span /> 已连接本地 FastAPI</div>
+        <div
+          className={`environment-pill ${apiConnectionStatus}`}
+          role="status"
+          aria-live="polite"
+          title={apiConnectionStatus === 'disconnected' ? '每 5 秒自动重试，服务恢复后会自动连接' : '每 5 秒自动检测服务状态'}
+        >
+          <span aria-hidden="true" />{apiConnectionLabel}
+        </div>
 
         <div className="sidebar-section-label">工作区</div>
         <nav className="sidebar-nav" aria-label="主要导航">
