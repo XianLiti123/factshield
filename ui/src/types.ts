@@ -12,6 +12,7 @@ export interface Evidence {
   sourceType: string
   relation: 'support' | 'challenge'
   credibility: number
+  credibilityLevel: '高' | '中' | '低' | ''
 }
 
 export interface Claim {

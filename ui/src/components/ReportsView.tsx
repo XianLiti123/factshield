@@ -8,6 +8,7 @@ import { getActiveTask, useWorkspaceStore } from '../store'
 import { StatusBadge } from './StatusBadge'
 import { exportReport, getAuditLog, getHistoryAnalysis, getReport, type HistoryAnalysis, type ReportExportFormat } from '../services/api'
 import { getClaimDisplayStatement, getRewrittenClaimStatement, isClaimRemoved } from '../utils/claims'
+import { getConfidenceLevel, getConfidenceLevelClass } from '../utils/confidence'
 
 const reportMarkdownComponents: Components = {
   a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
@@ -52,16 +53,16 @@ function ReportClaimRow({ claim, reviewed }: { claim: Claim; reviewed: boolean }
         {rewrittenStatement && <small>原表述：{claim.statement}</small>}
         {removed && <small>原句仅保留供审计回查，不进入最终结论</small>}
       </div>
-      {claim.humanAction === 'rewrite'
-        ? <span className="manual-review-status adjusted"><CheckCircleFilled /> 已调整</span>
-        : removed
-          ? <span className="manual-review-status removed">已排除</span>
-          : reviewed
-            ? <span className="manual-review-status"><CheckCircleFilled /> 已人工复核</span>
-            : claim.status === 'verified'
-              ? <span className="auto-pass-status"><CheckCircleFilled /> 可信</span>
+      <div className="report-claim-status">
+        {claim.humanAction === 'rewrite'
+          ? <span className="manual-review-status adjusted"><CheckCircleFilled /> 已调整</span>
+          : removed
+            ? <span className="manual-review-status removed">已排除</span>
+            : reviewed
+              ? <span className="manual-review-status"><CheckCircleFilled /> 已人工复核</span>
               : <StatusBadge status={claim.status} compact />}
-      <strong>{Math.round(claim.confidence * 100)}%</strong>
+      </div>
+      <strong className={`claim-confidence-level ${getConfidenceLevelClass(claim.confidence)}`}>{getConfidenceLevel(claim.confidence)}</strong>
     </div>
   )
 }

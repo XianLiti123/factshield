@@ -34,6 +34,7 @@ import {
 } from '../services/api'
 import { StatusBadge } from './StatusBadge'
 import { getClaimDisplayStatement, getRewrittenClaimStatement, isClaimRemoved } from '../utils/claims'
+import { getConfidenceLevel, getConfidenceLevelClass } from '../utils/confidence'
 import {
   getStatusBeforeHumanReview,
   persistReopenedReviewIds,
@@ -262,7 +263,7 @@ function ClaimList({
                 : isClaimRemoved(claim)
                   ? <span className="claim-resolution-tag removed">已排除</span>
                   : <StatusBadge status={claim.status} compact />}
-              <span className="claim-score">{Math.round(claim.confidence * 100)}%</span>
+              <span className={`claim-score ${getConfidenceLevelClass(claim.confidence)}`}>{getConfidenceLevel(claim.confidence)}</span>
             </div>
             <p>{getClaimDisplayStatement(claim)}</p>
             <div className="claim-item-footer">
@@ -280,6 +281,8 @@ function ClaimList({
 }
 
 function EvidenceCard({ evidence, active, onClick }: { evidence: Evidence; active: boolean; onClick: () => void }) {
+  const credibilityLevel = ['高', '中', '低'].includes(evidence.credibilityLevel) ? evidence.credibilityLevel : '未标注'
+  const credibilityClass = credibilityLevel === '高' ? 'high' : credibilityLevel === '中' ? 'medium' : credibilityLevel === '低' ? 'low' : 'unknown'
   return (
     <button className={active ? 'evidence-card active' : 'evidence-card'} onClick={onClick}>
       <div className="evidence-source-icon"><FilePdfOutlined /></div>
@@ -290,7 +293,7 @@ function EvidenceCard({ evidence, active, onClick }: { evidence: Evidence; activ
         </div>
         <span>{evidence.publisher} · {evidence.locator}</span>
       </div>
-      <small>{Math.round(evidence.credibility * 100)}</small>
+      <small className={`source-credibility-level ${credibilityClass}`} title={`来源可信度：${credibilityLevel}`}>{credibilityLevel}</small>
     </button>
   )
 }
@@ -322,6 +325,10 @@ function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: E
   const [view, setView] = useState<EvidenceView>('text')
   const selectedEvidence = evidenceList.find((item) => item.id === selectedEvidenceId) ?? evidenceList[0]
   const selectedSourceUrl = selectedEvidence ? getEvidenceSourceUrl(selectedEvidence) : null
+  const selectedCredibilityLevel = selectedEvidence && ['高', '中', '低'].includes(selectedEvidence.credibilityLevel)
+    ? selectedEvidence.credibilityLevel
+    : '未标注'
+  const selectedCredibilityClass = selectedCredibilityLevel === '高' ? 'high' : selectedCredibilityLevel === '中' ? 'medium' : selectedCredibilityLevel === '低' ? 'low' : 'unknown'
 
   useEffect(() => {
     if (preferredEvidenceId && evidenceList.some((item) => item.id === preferredEvidenceId)) {
@@ -426,11 +433,10 @@ function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: E
               <SafetyCertificateOutlined />
               <div><strong>来源可信度</strong><span>根据来源层级、可访问性与引用完整性综合评估</span></div>
             </div>
-            <div className="source-quality-score">
-              <strong>{Math.round(selectedEvidence.credibility * 100)}<small>%</small></strong>
-              <span>已完成归档校验</span>
+            <div className={`source-quality-score ${selectedCredibilityClass}`}>
+              <strong>{selectedCredibilityLevel}</strong>
+              <span>来源可信度</span>
             </div>
-            <div className="source-quality-track"><i style={{ width: `${selectedEvidence.credibility * 100}%` }} /></div>
           </section>
         </div>
       </article>}
@@ -559,10 +565,9 @@ function VerdictPanel({ claim, evidenceList, onResolve, onUndo, draftResolution,
         <span>{removed ? '已排除表述' : rewrittenStatement ? '调整后的事实主张' : '当前事实主张'} · C{String(claim.index).padStart(2, '0')}</span>
         <p className={removed ? 'removed-statement' : ''}>{displayStatement}</p>
         {rewrittenStatement && <div className="claim-original-statement"><span>原表述</span><p>{claim.statement}</p></div>}
-        <div className="confidence-meter">
+        <div className="confidence-level-row">
           <span>综合可信度</span>
-          <div><i style={{ width: `${claim.confidence * 100}%` }} /></div>
-          <strong>{Math.round(claim.confidence * 100)}%</strong>
+          <strong className={getConfidenceLevelClass(claim.confidence)}>{getConfidenceLevel(claim.confidence)}</strong>
         </div>
       </div>
 
@@ -927,7 +932,10 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
         }
         if (title.includes('重新复核完成')) {
           void queryClient.invalidateQueries({ queryKey: ['research-run', run.id] }).then(() => {
-            const refreshedRun = queryClient.getQueryData<ResearchRun>(['research-run', run.id])
+            const refreshedRun = queryClient
+              .getQueriesData<ResearchRun>({ queryKey: ['research-run', run.id] })
+              .map(([, candidate]) => candidate)
+              .find((candidate) => candidate?.id === run.id && candidate.createdAt === run.createdAt)
             const refreshedClaim = refreshedRun?.claims.find((claim) => claim.id === current.claimId)
             const evidenceCount = refreshedClaim?.evidenceIds.length ?? current.evidenceCountBefore
             const addedCount = Math.max(0, evidenceCount - current.evidenceCountBefore)

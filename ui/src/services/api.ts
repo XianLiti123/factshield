@@ -381,6 +381,9 @@ export async function deleteTask(taskId: string) {
 
 export async function getTask(taskId: string) {
   const run = await request<ResearchRun>(`/api/tasks/${taskId}`)
+  if (run.id !== taskId) {
+    throw new ApiError(`任务详情返回了错误的任务编号：请求 ${taskId}，实际收到 ${run.id}`, 409)
+  }
   return { ...run, progress: rememberResearchProgress(taskId, run.progress) }
 }
 export const stopTask = (taskId: string) => request<{ status: string; task_id: string }>(`/api/tasks/${taskId}/stop`, { method: 'POST' })

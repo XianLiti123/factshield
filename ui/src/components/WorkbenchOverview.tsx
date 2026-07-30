@@ -6,6 +6,7 @@ import {
 import ReactECharts from 'echarts-for-react'
 import type { ResearchRun } from '../types'
 import { StatusBadge } from './StatusBadge'
+import { getConfidenceLevel, getConfidenceLevelClass } from '../utils/confidence'
 
 const workflowOption = {
   color: ['#0d6575', '#d39a43'],
@@ -46,7 +47,7 @@ const workflowOption = {
       data: [18, 42, 58, 76, 88, 94],
     },
     {
-      name: '结论可信度',
+      name: '结论形成进度',
       type: 'line',
       smooth: true,
       symbol: 'circle',
@@ -126,7 +127,7 @@ export function WorkbenchOverview({ run, onOpenClaim }: { run: ResearchRun; onOp
             <button className={`overview-claim-card ${claim.status}`} key={claim.id} onClick={() => onOpenClaim(claim.id)}>
               <div className="overview-claim-visual">
                 <span>C{String(claim.index).padStart(2, '0')}</span>
-                <strong>{Math.round(claim.confidence * 100)}%</strong>
+                <strong className={getConfidenceLevelClass(claim.confidence)}>{getConfidenceLevel(claim.confidence)}</strong>
               </div>
               <div className="overview-claim-copy">
                 <StatusBadge status={claim.status} compact />
