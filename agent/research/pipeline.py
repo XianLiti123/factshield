@@ -603,6 +603,10 @@ def _attachment_section(task_id: str) -> str:
     for e in payload["events"]:
         lines += ["", f"### {_clean(e['name'])}（{_clean(e['period'])}）", ""]
         lines.append("、".join(f"{p['t']}：{p['value']}{payload.get('unit', '')}" for p in e["points"]))
+        if e.get("sources"):
+            lines.append("")
+            lines.append("数据来源：" + "；".join(
+                f"[{_clean(s['title']) or s['url']}]({s['url']})" for s in e["sources"]))
     lines += ["", f"数据完整度：{payload['completeness'] * 100:.0f}%"]
     return "\n".join(lines)
 

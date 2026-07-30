@@ -109,6 +109,13 @@ def run_history_analysis(task_id: str, user_id: int, emit: Callable, config: dic
             f"{it.get('title', '')}: {it.get('content', '')}" for it in items)[:4000]
         if not search_text.strip():
             continue
+        #保留检索来源（标题+链接），随结果落库供前端展示与回查；数据抽取仍只用标题+正文
+        sources = []
+        for it in items:
+            url = str(it.get("url", ""))
+            if url and url not in {s["url"] for s in sources}:
+                sources.append({"title": str(it.get("title", "")), "url": url})
+        sources = sources[:5]
         try:
             data = _llm_json(llm, prompts.HISTORY_EXTRACT_PROMPT.format(
                 event_name=name, metric=metric, unit=unit or "数值",
@@ -133,7 +140,7 @@ def run_history_analysis(task_id: str, user_id: int, emit: Callable, config: dic
         total_points += len(points)
         events.append({"name": name, "period": str(e.get("period", "")),
                        "description": str(data.get("description", "")),
-                       "points": points})
+                       "points": points, "sources": sources})
     if not events:
         raise RuntimeError("未能从公开信源抽取到任何时序数据点")
 
