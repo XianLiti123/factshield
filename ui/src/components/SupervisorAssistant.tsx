@@ -18,6 +18,7 @@ import remarkGfm from 'remark-gfm'
 import type { ResearchRun } from '../types'
 import { getActiveTask, useWorkspaceStore } from '../store'
 import { getChatHistory, streamChat, uploadDocument } from '../services/api'
+import { ATTACHMENT_ACCEPT, mergeAttachmentFiles } from '../utils/attachments'
 
 type AssistantMessage = {
   id: number
@@ -170,6 +171,7 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
   const [open, setOpen] = useState(false)
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<File[]>([])
+  const [attachmentDragging, setAttachmentDragging] = useState(false)
   const [replyTarget, setReplyTarget] = useState<{ id: number; content: string } | null>(null)
   const [sending, setSending] = useState(false)
   const attachmentInputRef = useRef<HTMLInputElement>(null)
@@ -276,12 +278,12 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
     }
   }
 
-  const addAttachments = (files: FileList | null) => {
+  const addAttachments = (files: FileList | File[] | null) => {
     if (!files) return
     setAttachments((current) => {
-      const existing = new Set(current.map((file) => `${file.name}-${file.size}`))
-      const additions = Array.from(files).filter((file) => !existing.has(`${file.name}-${file.size}`))
-      return [...current, ...additions].slice(0, 5)
+      const result = mergeAttachmentFiles(current, Array.from(files))
+      if (result.rejected.length > 0) message.warning(result.rejected[0])
+      return result.files
     })
     if (attachmentInputRef.current) attachmentInputRef.current.value = ''
   }
@@ -399,7 +401,14 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
         </div>
 
         <div className="assistant-composer">
-          <div className="assistant-composer-box">
+          <div
+            className={`assistant-composer-box${attachmentDragging ? ' is-dragging' : ''}`}
+            onDragEnter={(event) => { event.preventDefault(); setAttachmentDragging(true) }}
+            onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setAttachmentDragging(true) }}
+            onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setAttachmentDragging(false) }}
+            onDrop={(event) => { event.preventDefault(); setAttachmentDragging(false); addAttachments(Array.from(event.dataTransfer.files)) }}
+          >
+            {attachmentDragging && <div className="assistant-attachment-drop-hint"><PaperClipOutlined /><span>松开即可添加附件</span></div>}
             {replyTarget && (
               <div className="assistant-reply-target-card">
                 <div>
@@ -440,7 +449,7 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
                 ref={attachmentInputRef}
                 type="file"
                 multiple
-                accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.png,.jpg,.jpeg"
+                accept={ATTACHMENT_ACCEPT}
                 onChange={(event) => addAttachments(event.target.files)}
               />
               <Button type="text" icon={<PaperClipOutlined />} aria-label="添加附件" onClick={() => attachmentInputRef.current?.click()}>添加附件</Button>

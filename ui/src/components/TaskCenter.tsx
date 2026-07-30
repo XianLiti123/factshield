@@ -15,7 +15,8 @@ import { Button, Form, Input, Modal, Progress, Radio, Select, Table, Tag, Toolti
 import { useQueryClient } from '@tanstack/react-query'
 import { getTaskProgress, useWorkspaceStore } from '../store'
 import type { ResearchTaskSession } from '../store'
-import { assertResearchReady, createTask as createPersistedTask, deleteTask as deletePersistedTask, stopTask as stopPersistedTask } from '../services/api'
+import { assertResearchReady, createTask as createPersistedTask, deleteTask as deletePersistedTask, stopTask as stopPersistedTask, uploadTaskAttachments } from '../services/api'
+import { ATTACHMENT_ACCEPT, attachmentKey, formatAttachmentSize, mergeAttachmentFiles } from '../utils/attachments'
 
 const taskTypeByValue: Record<string, string> = {
   company: 'company',
@@ -84,6 +85,7 @@ export function TaskCenter() {
   const [creating, setCreating] = useState(false)
   const [taskFilter, setTaskFilter] = useState<'all' | 'running' | 'review' | 'ready'>('all')
   const [createPreset, setCreatePreset] = useState<CreatePreset | null>(null)
+  const [taskAttachments, setTaskAttachments] = useState<File[]>([])
   const [form] = Form.useForm()
   const queryClient = useQueryClient()
   const topicValue = Form.useWatch('topic', form)
@@ -110,7 +112,16 @@ export function TaskCenter() {
 
   const openCreate = (preset: CreatePreset | null = null) => {
     setCreatePreset(preset)
+    setTaskAttachments([])
     setCreateOpen(true)
+  }
+
+  const addTaskAttachments = (incoming: File[]) => {
+    setTaskAttachments((current) => {
+      const result = mergeAttachmentFiles(current, incoming)
+      if (result.rejected.length > 0) message.warning(result.rejected[0])
+      return result.files
+    })
   }
 
   const openTask = (task: ResearchTaskSession) => {
@@ -144,12 +155,14 @@ export function TaskCenter() {
     setCreating(true)
     try {
       await assertResearchReady()
+      const uploaded = taskAttachments.length > 0 ? await uploadTaskAttachments(taskAttachments) : { uploads: [] }
       const task = await createPersistedTask({
         topic: values.topic.trim(),
         title: values.topic.trim(),
         company: values.company?.trim() || '待识别研究对象',
         researchType: taskTypeByValue[values.type] ?? 'company',
         preferredSources: values.sources ?? [],
+        attachmentIds: uploaded.uploads.map((item) => item.upload_id),
       })
       // 后端删除任务后可能复用同一个顺序号，先清掉这个编号曾经留下的详情缓存。
       queryClient.removeQueries({ queryKey: ['research-run', task.id] })
@@ -157,6 +170,7 @@ export function TaskCenter() {
       await queryClient.invalidateQueries({ queryKey: ['workspace-tasks'] })
       setCreateOpen(false)
       form.resetFields()
+      setTaskAttachments([])
       message.success('研究已启动，小盾正在后台处理')
     } catch (error) {
       message.error(error instanceof Error ? error.message : '任务创建失败')
@@ -351,14 +365,23 @@ export function TaskCenter() {
                 <div className="demo-question-match"><PlayCircleOutlined /><span><strong>已识别演示问题</strong>提交后会直接播放完整处理流程，不访问外部数据。</span></div>
               )}
 
-              <Form.Item className="research-material-field" name="attachments" label="任务附件（等待后端支持绑定）">
-                <Upload.Dragger disabled beforeUpload={() => false} multiple accept=".pdf,.xlsx,.xls,.docx,.txt">
+              <Form.Item className="research-material-field" label="任务附件">
+                <Upload.Dragger
+                  beforeUpload={(file) => { addTaskAttachments([file]); return Upload.LIST_IGNORE }}
+                  onDrop={(event) => { event.preventDefault(); addTaskAttachments(Array.from(event.dataTransfer.files)) }}
+                  showUploadList={false}
+                  multiple
+                  accept={ATTACHMENT_ACCEPT}
+                >
                   <p className="ant-upload-drag-icon"><CloudUploadOutlined /></p>
                   <div className="research-upload-copy">
-                    <strong>队友原生任务接口暂不接收附件</strong>
-                    <span>为避免材料串到其他任务，这里暂不上传</span>
+                    <strong>拖入文件，或点击从电脑选择</strong>
+                    <span>PDF、Word、Excel、TXT，最多 5 个，单个不超过 10MB</span>
                   </div>
                 </Upload.Dragger>
+                {taskAttachments.length > 0 && <div className="research-attachment-list">{taskAttachments.map((file) => (
+                  <div key={attachmentKey(file)}><FileTextOutlined /><span><strong>{file.name}</strong><small>{formatAttachmentSize(file.size)}</small></span><button type="button" aria-label={`移除附件 ${file.name}`} onClick={() => setTaskAttachments((current) => current.filter((item) => attachmentKey(item) !== attachmentKey(file)))}><DeleteOutlined /></button></div>
+                ))}</div>}
               </Form.Item>
 
               <details className="research-preferences">

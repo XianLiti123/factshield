@@ -279,6 +279,18 @@ export function uploadDocument(file: File, options: { mode?: 'normal' | 'ai'; sa
   return request<DocumentConversion>(`/api/documents/convert?${params}`, { method: 'POST', body })
 }
 
+export type TaskAttachmentUpload = {
+  upload_id: string
+  filename: string
+  chars: number
+}
+
+export function uploadTaskAttachments(files: File[]) {
+  const body = new FormData()
+  files.forEach((file) => body.append('files', file))
+  return request<{ uploads: TaskAttachmentUpload[] }>('/api/tasks/uploads', { method: 'POST', body })
+}
+
 const taskTypeLabels: Record<string, string> = {
   company: '企业研究',
   policy: '政策研究',
@@ -359,7 +371,7 @@ export const searchWorkspace = (query: string) => request<WorkspaceSearchResult>
   `/api/tasks/search?q=${encodeURIComponent(query.trim())}`,
 )
 
-export async function createTask(input: { topic: string; title?: string; company?: string; researchType?: string; preferredSources?: string[] }) {
+export async function createTask(input: { topic: string; title?: string; company?: string; researchType?: string; preferredSources?: string[]; attachmentIds?: string[] }) {
   const task = await request<ApiTask>('/api/tasks', {
     method: 'POST',
     body: JSON.stringify({
@@ -368,6 +380,7 @@ export async function createTask(input: { topic: string; title?: string; company
       company: input.company ?? '',
       research_type: input.researchType,
       preferred_sources: input.preferredSources ?? [],
+      attachment_ids: input.attachmentIds ?? [],
     }),
   })
   return toWorkspaceTask(task)
