@@ -4,15 +4,12 @@ import {
 } from '@ant-design/icons'
 import { Tag } from 'antd'
 import type { ResearchRun } from '../types'
-import { getActiveTask, useWorkspaceStore } from '../store'
+import { getActiveTask, getResearchRunPhase, useWorkspaceStore } from '../store'
 
 export function ResearchHeader({ run, preview = false }: { run: ResearchRun; preview?: boolean }) {
   const activeTask = useWorkspaceStore(getActiveTask)
   const setActiveView = useWorkspaceStore((state) => state.setActiveView)
-  const persistedRunPhase = (run.status === 'review' || run.status === 'ready')
-    && (run.progress < 100 || run.claims.length === 0)
-    ? 'running'
-    : run.status
+  const persistedRunPhase = getResearchRunPhase(run)
   const displayPhase = !preview && activeTask.persisted && persistedRunPhase ? persistedRunPhase : activeTask.phase
   const phaseCopy = preview
     ? 'UI 预览'

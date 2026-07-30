@@ -1,4 +1,4 @@
-import type { ResearchTaskSession, TaskPhase } from '../store'
+import { getResearchRunPhase, type ResearchTaskSession, type TaskPhase } from '../store'
 import type { ResearchRun } from '../types'
 
 const TOKEN_KEY = 'factshield.auth.token'
@@ -65,6 +65,38 @@ export type HistoryAnalysis = {
   unit: string
   events: HistoryAnalysisEvent[]
   completeness: number
+}
+
+export type WorkspaceSearchTask = {
+  task_id: string
+  title: string
+  company: string
+  status: string
+  updated_at: string
+}
+
+export type WorkspaceSearchClaim = {
+  id: string
+  task_id: string
+  statement: string
+  status: string
+  task_title: string
+}
+
+export type WorkspaceSearchEvidence = {
+  id: string
+  task_id: string
+  title: string
+  publisher: string
+  url: string
+  task_title: string
+}
+
+export type WorkspaceSearchResult = {
+  query: string
+  tasks: WorkspaceSearchTask[]
+  claims: WorkspaceSearchClaim[]
+  evidence: WorkspaceSearchEvidence[]
 }
 
 type ApiTask = {
@@ -245,14 +277,52 @@ function toWorkspaceTask(task: ApiTask): ResearchTaskSession {
     updatedAt: task.updatedAt,
     progress: displayProgress,
     claimCount: task.claimCount ?? 0,
+    phaseConfirmed: reportedPhase !== 'review',
     persisted: true,
   }
 }
 
 export async function listTasks() {
   const data = await request<ApiTask[]>('/api/tasks')
-  return data.map(toWorkspaceTask)
+  const tasks = data.map(toWorkspaceTask)
+
+  // 列表摘要只有 task.status，没有每条主张的 humanAction。对于已经跑完但仍被
+  // 后端摘要标成 review 的任务，必须补读详情才能区分“仍待复核”和“实际已完成”。
+  return Promise.all(tasks.map(async (task) => {
+    if (task.phase !== 'review' || (task.progress ?? 0) < 100 || (task.claimCount ?? 0) === 0) return task
+    try {
+      const run = await getTask(task.id)
+      const reviewClaimIds = run.claims
+        .filter((claim) => claim.status !== 'verified' || Boolean(claim.humanAction))
+        .map((claim) => claim.id)
+      const reviewedClaimIds = run.claims
+        .filter((claim) => Boolean(claim.humanAction))
+        .map((claim) => claim.id)
+      const phase = getResearchRunPhase(run)
+      return {
+        ...task,
+        phase,
+        phaseConfirmed: true,
+        reviewClaimIds,
+        reviewedClaimIds,
+        selectedClaimId: reviewClaimIds.find((claimId) => !reviewedClaimIds.includes(claimId))
+          ?? reviewClaimIds[0]
+          ?? run.claims[0]?.id
+          ?? '',
+        progress: Math.max(task.progress ?? 0, run.progress),
+        claimCount: run.claims.length,
+        isDemoRunning: phase === 'running',
+      }
+    } catch {
+      // 单条详情暂时不可用时仍展示任务列表；store 会保护已由详情确认的完成态。
+      return task
+    }
+  }))
 }
+
+export const searchWorkspace = (query: string) => request<WorkspaceSearchResult>(
+  `/api/tasks/search?q=${encodeURIComponent(query.trim())}`,
+)
 
 export async function createTask(input: { topic: string; title?: string; company?: string; researchType?: string; preferredSources?: string[] }) {
   const task = await request<ApiTask>('/api/tasks', {

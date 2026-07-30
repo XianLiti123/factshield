@@ -3,14 +3,67 @@ import { Button, Modal, Tag, message } from 'antd'
 import { useEffect, useState } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { ResearchRun } from '../types'
+import type { Claim, ResearchRun } from '../types'
 import { getActiveTask, useWorkspaceStore } from '../store'
 import { StatusBadge } from './StatusBadge'
 import { exportReport, getAuditLog, getHistoryAnalysis, getReport, type HistoryAnalysis, type ReportExportFormat } from '../services/api'
+import { getClaimDisplayStatement, getRewrittenClaimStatement, isClaimRemoved } from '../utils/claims'
 
 const reportMarkdownComponents: Components = {
   a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
   table: ({ children }) => <div className="report-markdown-table"><table>{children}</table></div>,
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function applyClaimResolutionsToReportMarkdown(content: string, claims: Claim[]) {
+  return claims.reduce((markdown, claim) => {
+    const rewrittenStatement = getRewrittenClaimStatement(claim)
+    const removed = isClaimRemoved(claim)
+    if (!rewrittenStatement && !removed) return markdown
+
+    const headingPattern = new RegExp(`^### \\[${escapeRegExp(claim.id)}\\].*$`, 'm')
+    if (!headingPattern.test(markdown)) return markdown
+
+    if (removed) {
+      return markdown.replace(
+        headingPattern,
+        `### [${claim.id}] 已排除表述（不进入最终结论）\n\n> 原表述：${claim.statement}`,
+      )
+    }
+
+    return markdown.replace(
+      headingPattern,
+      `### [${claim.id}] ${rewrittenStatement}\n\n> 原表述：${claim.statement}\n>\n> 人工处理：已按现有证据调整表述`,
+    )
+  }, content)
+}
+
+function ReportClaimRow({ claim, reviewed }: { claim: Claim; reviewed: boolean }) {
+  const rewrittenStatement = getRewrittenClaimStatement(claim)
+  const removed = isClaimRemoved(claim)
+  return (
+    <div className={`report-claim${rewrittenStatement ? ' adjusted' : ''}${removed ? ' removed' : ''}`}>
+      <span>C{String(claim.index).padStart(2, '0')}</span>
+      <div className="report-claim-copy">
+        <p>{getClaimDisplayStatement(claim)}</p>
+        {rewrittenStatement && <small>原表述：{claim.statement}</small>}
+        {removed && <small>原句仅保留供审计回查，不进入最终结论</small>}
+      </div>
+      {claim.humanAction === 'rewrite'
+        ? <span className="manual-review-status adjusted"><CheckCircleFilled /> 已调整</span>
+        : removed
+          ? <span className="manual-review-status removed">已排除</span>
+          : reviewed
+            ? <span className="manual-review-status"><CheckCircleFilled /> 已人工复核</span>
+            : claim.status === 'verified'
+              ? <span className="auto-pass-status"><CheckCircleFilled /> 可信</span>
+              : <StatusBadge status={claim.status} compact />}
+      <strong>{Math.round(claim.confidence * 100)}%</strong>
+    </div>
+  )
 }
 
 type WritableExportFile = {
@@ -104,7 +157,7 @@ export function ReportsView({ run }: { run: ResearchRun }) {
     }
     try {
       const report = await getReport(run.id)
-      setReportContent(report.content)
+      setReportContent(applyClaimResolutionsToReportMarkdown(report.content, run.claims))
       setReportOpen(true)
     } catch (error) {
       message.error(error instanceof Error ? error.message : '底稿加载失败')
@@ -177,7 +230,13 @@ export function ReportsView({ run }: { run: ResearchRun }) {
       <section className="page-card report-list-card">
         <div className="page-card-header"><div><span className="eyebrow">可审计交付物</span><h2>当前交付版本</h2><p>每条结论均附原始证据链和双层核验记录。</p></div></div>
         <div className="report-summary">
-          <div className="report-cover"><span>FACTSHIELD</span><SafetyLogo /><strong>金融研究事实核验底稿</strong><p>{run.title}</p><small>{run.id} · {run.createdAt}</small></div>
+          <div className="report-cover">
+            <span>FACTSHIELD</span>
+            <SafetyLogo />
+            <strong>金融研究事实核验底稿</strong>
+            <p>{run.title}</p>
+            <small className="report-cover-meta"><span>{run.id}</span><time>{run.createdAt}</time></small>
+          </div>
           <div className="report-details">
             <h3>{run.title}</h3>
             <p>当前交付内容包含 {deliveryParts.join('、')}。页面只展示该任务实际取得的内容，不补写固定样本或附件数量。</p>
@@ -195,19 +254,18 @@ export function ReportsView({ run }: { run: ResearchRun }) {
           </div>
         )}
         <div className="report-claims">
-          <div className="report-claims-title"><strong>结论目录</strong><span>按事实主张排序</span></div>
-          {run.claims.map((claim) => (
-            <div className="report-claim" key={claim.id}>
-              <span>C{String(claim.index).padStart(2, '0')}</span>
-              <p>{claim.statement}</p>
-              {reviewedClaimIds.includes(claim.id)
-                ? <span className="manual-review-status"><CheckCircleFilled /> 已人工复核</span>
-                : claim.status === 'verified'
-                  ? <span className="auto-pass-status"><CheckCircleFilled /> 可信</span>
-                  : <StatusBadge status={claim.status} compact />}
-              <strong>{Math.round(claim.confidence * 100)}%</strong>
-            </div>
+          <div className="report-claims-title"><strong>最终结论</strong><span>已排除表述不计入本目录</span></div>
+          {run.claims.filter((claim) => !isClaimRemoved(claim)).map((claim) => (
+            <ReportClaimRow key={claim.id} claim={claim} reviewed={reviewedClaimIds.includes(claim.id)} />
           ))}
+          {run.claims.some(isClaimRemoved) && (
+            <div className="report-excluded-claims">
+              <div className="report-claims-title"><strong>已排除表述</strong><span>仅保留供审计回查</span></div>
+              {run.claims.filter(isClaimRemoved).map((claim) => (
+                <ReportClaimRow key={claim.id} claim={claim} reviewed />
+              ))}
+            </div>
+          )}
         </div>
       </section>
       <aside className="page-card report-side-card">

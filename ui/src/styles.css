@@ -680,7 +680,7 @@ button { color: inherit; }
 .report-logo { margin: 43px 0 17px; width: 40px; height: 45px; border-radius: 8px 8px 13px 13px; display: grid; place-items: center; background: #2868eb; font-weight: 700; }
 .report-cover strong { display: block; font-size: 14px; line-height: 1.5; }
 .report-cover p { font-size: 9px; color: #a9b8d7; line-height: 1.6; }
-.report-cover small { position: absolute; bottom: 20px; left: 22px; color: #6480b8; font-size: 7px; }
+.report-cover small { position: absolute; right: 22px; bottom: 18px; left: 22px; color: #6480b8; font-size: 7px; }
 .report-details { padding-top: 16px; max-width: 570px; }
 .report-details h3 { font-size: 16px; color: #263149; margin: 0 0 12px; }
 .report-details > p { font-size: 10px; color: #798499; line-height: 1.8; }

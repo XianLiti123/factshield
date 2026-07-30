@@ -1,4 +1,4 @@
-import { useRef, useState, type ChangeEvent, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import {
   ApartmentOutlined,
   BarChartOutlined,
@@ -18,10 +18,10 @@ import {
   UserOutlined,
   WarningFilled,
 } from '@ant-design/icons'
-import { Avatar, Button, Dropdown, Input, Modal, Slider, Tag, message } from 'antd'
+import { Avatar, Button, Dropdown, Empty, Input, Modal, Popover, Slider, Spin, Tag, message } from 'antd'
 import type { MenuProps } from 'antd'
 import { useWorkspaceStore } from '../store'
-import type { UserInfo } from '../services/api'
+import { searchWorkspace, type UserInfo, type WorkspaceSearchResult } from '../services/api'
 
 const PROFILE_STORAGE_PREFIX = 'factshield.profile.'
 const AVATAR_CROP_SIZE = 280
@@ -92,7 +92,13 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
   const [cropOffset, setCropOffset] = useState({ x: 0, y: 0 })
   const [savingAvatar, setSavingAvatar] = useState(false)
   const [avatarDragging, setAvatarDragging] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchLoading, setSearchLoading] = useState(false)
+  const [searchError, setSearchError] = useState('')
+  const [searchResult, setSearchResult] = useState<WorkspaceSearchResult | null>(null)
   const avatarInputRef = useRef<HTMLInputElement>(null)
+  const searchAnchorRef = useRef<HTMLDivElement>(null)
   const avatarDragDepthRef = useRef(0)
   const cropDragRef = useRef<{
     pointerId: number
@@ -105,6 +111,7 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
   const setActiveView = useWorkspaceStore((state) => state.setActiveView)
   const tasks = useWorkspaceStore((state) => state.tasks)
   const openReviewQueue = useWorkspaceStore((state) => state.openReviewQueue)
+  const openSearchResult = useWorkspaceStore((state) => state.openSearchResult)
   const activeMeta = pageMeta[activeView]
   const pendingItems = tasks.flatMap((task) => task.phase === 'review'
     ? task.reviewClaimIds
@@ -117,6 +124,106 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
   const avatarInitial = Array.from(displayName)[0] || '研'
   const avatarText = /^[a-z]$/i.test(avatarInitial) ? avatarInitial.toUpperCase() : avatarInitial
   const avatarSrc = localProfile.avatar
+  const searchRequestRef = useRef(0)
+
+  const runSearch = async (query: string) => {
+    const normalizedQuery = query.trim()
+    if (!normalizedQuery) {
+      setSearchResult(null)
+      setSearchError('')
+      setSearchLoading(false)
+      return
+    }
+    const requestId = ++searchRequestRef.current
+    setSearchLoading(true)
+    setSearchError('')
+    try {
+      const result = await searchWorkspace(normalizedQuery)
+      if (requestId === searchRequestRef.current) setSearchResult(result)
+    } catch (error) {
+      if (requestId === searchRequestRef.current) {
+        setSearchResult(null)
+        setSearchError(error instanceof Error ? error.message : '搜索失败，请稍后重试')
+      }
+    } finally {
+      if (requestId === searchRequestRef.current) setSearchLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    const normalizedQuery = searchQuery.trim()
+    searchRequestRef.current += 1
+    if (!normalizedQuery) {
+      setSearchResult(null)
+      setSearchError('')
+      setSearchLoading(false)
+      return
+    }
+    const timer = window.setTimeout(() => { void runSearch(normalizedQuery) }, 280)
+    return () => window.clearTimeout(timer)
+  }, [searchQuery])
+
+  useEffect(() => {
+    if (!searchOpen) return
+    const closeSearchOutside = (event: PointerEvent) => {
+      const target = event.target
+      if (!(target instanceof Element)) return
+      if (searchAnchorRef.current?.contains(target) || target.closest('.workspace-search-popover')) return
+      setSearchOpen(false)
+    }
+    document.addEventListener('pointerdown', closeSearchOutside, true)
+    return () => document.removeEventListener('pointerdown', closeSearchOutside, true)
+  }, [searchOpen])
+
+  const chooseSearchResult = (taskId: string, claimId?: string, evidenceId?: string) => {
+    openSearchResult({ taskId, claimId, evidenceId })
+    setSearchOpen(false)
+  }
+
+  const searchResultCount = searchResult
+    ? searchResult.tasks.length + searchResult.claims.length + searchResult.evidence.length
+    : 0
+
+  const searchPanel = (
+    <div className="workspace-search-panel">
+      {!searchQuery.trim() ? (
+        <div className="workspace-search-hint"><SearchOutlined /><div><strong>搜索整个工作区</strong><span>输入任务名称、主张内容、证据标题或发布机构</span></div></div>
+      ) : searchLoading ? (
+        <div className="workspace-search-state"><Spin size="small" /><span>正在搜索“{searchQuery.trim()}”</span></div>
+      ) : searchError ? (
+        <div className="workspace-search-error"><WarningFilled /><span>{searchError}</span><Button size="small" onClick={() => void runSearch(searchQuery)}>重试</Button></div>
+      ) : searchResult && searchResultCount > 0 ? (
+        <div className="workspace-search-results">
+          {searchResult.tasks.length > 0 && <section>
+            <header><span>研究任务</span><em>{searchResult.tasks.length}</em></header>
+            {searchResult.tasks.map((task) => <button key={`task-${task.task_id}`} onClick={() => chooseSearchResult(task.task_id)}>
+              <i className="search-result-icon task"><RocketOutlined /></i>
+              <span><strong>{task.title}</strong><small>{task.task_id}{task.company ? ` · ${task.company}` : ''}</small></span>
+              <Tag>{task.status}</Tag>
+            </button>)}
+          </section>}
+          {searchResult.claims.length > 0 && <section>
+            <header><span>事实主张</span><em>{searchResult.claims.length}</em></header>
+            {searchResult.claims.map((claim) => <button key={`claim-${claim.task_id}-${claim.id}`} onClick={() => chooseSearchResult(claim.task_id, claim.id)}>
+              <i className="search-result-icon claim"><FileSearchOutlined /></i>
+              <span><strong>{claim.statement}</strong><small>{claim.task_title} · {claim.id}</small></span>
+              <Tag>{claim.status}</Tag>
+            </button>)}
+          </section>}
+          {searchResult.evidence.length > 0 && <section>
+            <header><span>原始证据</span><em>{searchResult.evidence.length}</em></header>
+            {searchResult.evidence.map((evidence) => <button key={`evidence-${evidence.task_id}-${evidence.id}`} onClick={() => chooseSearchResult(evidence.task_id, undefined, evidence.id)}>
+              <i className="search-result-icon evidence"><FileTextOutlined /></i>
+              <span><strong>{evidence.title}</strong><small>{evidence.task_title} · {evidence.publisher || '发布机构未注明'}</small></span>
+              <Tag>{evidence.id}</Tag>
+            </button>)}
+          </section>}
+        </div>
+      ) : searchResult ? (
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={`没有找到与“${searchResult.query}”相关的内容`} />
+      ) : null}
+    </div>
+  )
 
   const saveLocalProfile = (change: Partial<LocalProfile>) => {
     setLocalProfile((current) => {
@@ -369,7 +476,29 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
             <p>{activeMeta.subtitle}</p>
           </div>
           <div className="topbar-actions">
-            <Input className="workspace-search" prefix={<SearchOutlined />} placeholder="搜索任务、主张或证据" allowClear />
+            <div className="workspace-search-anchor" ref={searchAnchorRef}>
+              <Popover
+                arrow={false}
+                placement="bottomRight"
+                trigger={[]}
+                open={searchOpen}
+                content={searchPanel}
+                overlayClassName="workspace-search-popover"
+              >
+                <Input
+                  className="workspace-search"
+                  prefix={searchLoading ? <Spin size="small" /> : <SearchOutlined />}
+                  placeholder="搜索任务、主张或证据"
+                  value={searchQuery}
+                  allowClear
+                  onFocus={() => setSearchOpen(true)}
+                  onClick={() => setSearchOpen(true)}
+                  onChange={(event) => { setSearchQuery(event.target.value); setSearchOpen(true) }}
+                  onPressEnter={() => { setSearchOpen(true); void runSearch(searchQuery) }}
+                  onKeyDown={(event) => { if (event.key === 'Escape') setSearchOpen(false) }}
+                />
+              </Popover>
+            </div>
             <Dropdown
               trigger={['click']}
               placement="bottomRight"

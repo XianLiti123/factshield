@@ -21,8 +21,10 @@ import {
 import { Button, Drawer, Empty, Input, Modal, Progress, Segmented, Steps, message } from 'antd'
 import { useQueryClient } from '@tanstack/react-query'
 import type { Claim, Evidence, ResearchRun } from '../types'
-import { getActiveTask, useWorkspaceStore } from '../store'
+import { getActiveTask, getResearchRunPhase, useWorkspaceStore } from '../store'
 import {
+  assertResearchReady,
+  createTask as createPersistedTask,
   guideTask,
   resolveClaim as resolvePersistedClaim,
   retryClaim as retryPersistedClaim,
@@ -30,6 +32,7 @@ import {
   type ResearchEvent,
 } from '../services/api'
 import { StatusBadge } from './StatusBadge'
+import { getClaimDisplayStatement, getRewrittenClaimStatement, isClaimRemoved } from '../utils/claims'
 
 type ClaimVisibility = 'issues' | 'all'
 type EvidenceView = 'text' | 'source'
@@ -233,17 +236,27 @@ function ClaimList({
         {claims.map((claim) => (
           <button
             key={claim.id}
-            className={selectedClaimId === claim.id ? `claim-item selected ${claim.status}` : 'claim-item'}
+            className={[
+              'claim-item',
+              selectedClaimId === claim.id ? 'selected' : '',
+              claim.status,
+              claim.humanAction === 'rewrite' ? 'adjusted' : '',
+              isClaimRemoved(claim) ? 'removed' : '',
+            ].filter(Boolean).join(' ')}
             onClick={() => onSelectClaim(claim.id)}
           >
             <div className="claim-item-top">
               <span className="claim-index">C{String(claim.index).padStart(2, '0')}</span>
-              <StatusBadge status={claim.status} compact />
+              {claim.humanAction === 'rewrite'
+                ? <span className="claim-resolution-tag adjusted">已调整</span>
+                : isClaimRemoved(claim)
+                  ? <span className="claim-resolution-tag removed">已排除</span>
+                  : <StatusBadge status={claim.status} compact />}
               <span className="claim-score">{Math.round(claim.confidence * 100)}%</span>
             </div>
-            <p>{claim.statement}</p>
+            <p>{getClaimDisplayStatement(claim)}</p>
             <div className="claim-item-footer">
-              <span>{claim.issueType ?? claim.category}</span><span>{claim.evidenceIds.length} 条证据</span>
+              <span>{isClaimRemoved(claim) ? '不进入最终结论' : claim.issueType ?? claim.category}</span><span>{claim.evidenceIds.length} 条证据</span>
             </div>
           </button>
         ))}
@@ -294,17 +307,21 @@ function openEvidenceSource(sourceUrl: string) {
   if (!sourceWindow) message.warning('浏览器阻止了新窗口，请允许本站打开新标签页后重试')
 }
 
-function EvidenceViewer({ evidenceList }: { evidenceList: Evidence[] }) {
+function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: Evidence[]; preferredEvidenceId?: string }) {
   const [selectedEvidenceId, setSelectedEvidenceId] = useState(evidenceList[0]?.id ?? '')
   const [view, setView] = useState<EvidenceView>('text')
   const selectedEvidence = evidenceList.find((item) => item.id === selectedEvidenceId) ?? evidenceList[0]
   const selectedSourceUrl = selectedEvidence ? getEvidenceSourceUrl(selectedEvidence) : null
 
   useEffect(() => {
+    if (preferredEvidenceId && evidenceList.some((item) => item.id === preferredEvidenceId)) {
+      setSelectedEvidenceId(preferredEvidenceId)
+      return
+    }
     if (!evidenceList.some((item) => item.id === selectedEvidenceId)) {
       setSelectedEvidenceId(evidenceList[0]?.id ?? '')
     }
-  }, [evidenceList, selectedEvidenceId])
+  }, [evidenceList, preferredEvidenceId, selectedEvidenceId])
 
   if (!selectedEvidence) return <Empty description="该主张暂无证据" />
 
@@ -419,7 +436,7 @@ function EvidenceViewer({ evidenceList }: { evidenceList: Evidence[] }) {
 function VerdictPanel({ claim, evidenceList, onResolve, onRetry, persisted, retryProgress, onDismissRetry }: {
   claim: Claim
   evidenceList: Evidence[]
-  onResolve: (action: 'reject' | 'keep' | 'remove' | 'rewrite', decision: string) => void
+  onResolve: (action: 'reject' | 'keep' | 'remove' | 'rewrite', decision: string) => Promise<boolean>
   onRetry: () => Promise<void>
   persisted: boolean
   retryProgress: ClaimRetryProgress | null
@@ -427,17 +444,53 @@ function VerdictPanel({ claim, evidenceList, onResolve, onRetry, persisted, retr
 }) {
   const [auditOpen, setAuditOpen] = useState(false)
   const [retryOpen, setRetryOpen] = useState(false)
+  const [removeOpen, setRemoveOpen] = useState(false)
+  const [rewriteOpen, setRewriteOpen] = useState(false)
+  const [rewriteValue, setRewriteValue] = useState('')
+  const [resolutionSubmitting, setResolutionSubmitting] = useState(false)
   const currentRetry = retryProgress?.claimId === claim.id ? retryProgress : null
   const retryBusy = retryProgress?.status === 'starting' || retryProgress?.status === 'running'
+  const rewrittenStatement = getRewrittenClaimStatement(claim)
+  const displayStatement = getClaimDisplayStatement(claim)
+  const removed = isClaimRemoved(claim)
+  const rewriteError = !rewriteValue.trim()
+    ? '请填写调整后的完整表述'
+    : rewriteValue.trim().length < 5
+      ? '调整后的表述至少需要 5 个字'
+      : rewriteValue.trim() === claim.statement.trim()
+        ? '新表述与原表述相同，请先完成调整'
+        : ''
+
+  useEffect(() => {
+    setRemoveOpen(false)
+    setRewriteOpen(false)
+    setRewriteValue('')
+    setResolutionSubmitting(false)
+  }, [claim.id])
+
+  const submitResolution = async (action: 'remove' | 'rewrite', content: string) => {
+    setResolutionSubmitting(true)
+    try {
+      const resolved = await onResolve(action, content)
+      if (!resolved) return
+      setRemoveOpen(false)
+      setRewriteOpen(false)
+      setRewriteValue('')
+    } finally {
+      setResolutionSubmitting(false)
+    }
+  }
+
+  const openRewriteEditor = () => {
+    setRewriteValue(rewrittenStatement ?? '')
+    setRewriteOpen(true)
+  }
   const decisions = claim.status === 'conflict'
     ? [
         { label: '不采纳', action: 'reject' as const, result: '不采纳该主张' },
         { label: '保留并注明', action: 'keep' as const, result: '保留并标注疑点' },
       ]
-    : claim.status === 'review' ? [
-        { label: '删除该表述', action: 'remove' as const, result: '删除无法证实的表述' },
-        { label: '调整表述', action: 'rewrite' as const, result: '按现有证据调整表述' },
-      ] : []
+    : []
 
   const evidenceSummaries = evidenceList.reduce<Array<{
     key: string
@@ -491,8 +544,9 @@ function VerdictPanel({ claim, evidenceList, onResolve, onRetry, persisted, retr
         <StatusBadge status={claim.status} />
       </div>
       <div className="claim-focus">
-        <span>当前事实主张 · C{String(claim.index).padStart(2, '0')}</span>
-        <p>{claim.statement}</p>
+        <span>{removed ? '已排除表述' : rewrittenStatement ? '调整后的事实主张' : '当前事实主张'} · C{String(claim.index).padStart(2, '0')}</span>
+        <p className={removed ? 'removed-statement' : ''}>{displayStatement}</p>
+        {rewrittenStatement && <div className="claim-original-statement"><span>原表述</span><p>{claim.statement}</p></div>}
         <div className="confidence-meter">
           <span>综合可信度</span>
           <div><i style={{ width: `${claim.confidence * 100}%` }} /></div>
@@ -500,7 +554,16 @@ function VerdictPanel({ claim, evidenceList, onResolve, onRetry, persisted, retr
         </div>
       </div>
 
-      {claim.status === 'verified' ? (
+      {claim.humanAction ? (
+        <div className={`resolved-view-bar ${claim.humanAction}`}>
+          <CheckOutlined />
+          <div>
+            <strong>{removed ? '该表述已从最终结论排除' : rewrittenStatement ? '已采用调整后的表述' : claim.humanAction === 'rewrite' ? '尚未填写调整后的完整表述' : '人工复核已完成'}</strong>
+            <span>{removed ? '原句仍保留在全部核验结论和审计记录中' : rewrittenStatement ? '原句与调整结果均已留痕，可继续修改' : '处理动作已保留在审计记录中'}</span>
+          </div>
+          {claim.humanAction === 'rewrite' && <button onClick={openRewriteEditor}>{rewrittenStatement ? '重新调整' : '补充表述'}</button>}
+        </div>
+      ) : claim.status === 'verified' ? (
         <div className="verified-view-bar">
           <CheckOutlined />
           <div><strong>两级核验结论一致</strong><span>该绿色结论已自动通过，无需人工操作</span></div>
@@ -511,8 +574,13 @@ function VerdictPanel({ claim, evidenceList, onResolve, onRetry, persisted, retr
             <span>你的判断</span>
             <strong>{decisionSummary}</strong>
           </div>
-          {decisions.map((decision) => (
-            <button key={decision.label} onClick={() => onResolve(decision.action, decision.result)}>{decision.label}</button>
+          {claim.status === 'review' ? (
+            <>
+              <button onClick={() => setRemoveOpen(true)}>删除该表述</button>
+              <button onClick={openRewriteEditor}>调整表述</button>
+            </>
+          ) : decisions.map((decision) => (
+            <button key={decision.label} onClick={() => void onResolve(decision.action, decision.result)}>{decision.label}</button>
           ))}
           <button className="primary" disabled={retryBusy} onClick={() => setRetryOpen(true)}>
             <RetweetOutlined /> {currentRetry && retryBusy ? '取证中…' : retryBusy ? '其他主张取证中' : '重新取证'}
@@ -602,14 +670,66 @@ function VerdictPanel({ claim, evidenceList, onResolve, onRetry, persisted, retr
       </div>
 
       <Drawer title="当前主张核验详情" width={720} open={auditOpen} onClose={() => setAuditOpen(false)}>
-        <div className="audit-drawer-intro"><UnorderedListOutlined /><div><strong>C{String(claim.index).padStart(2, '0')} · {claim.statement}</strong><span>这里仅展示后端已经返回给当前主张的判断和证据，不再混入固定演示记录。</span></div></div>
+        <div className="audit-drawer-intro"><UnorderedListOutlined /><div><strong>C{String(claim.index).padStart(2, '0')} · {displayStatement}</strong><span>这里仅展示后端已经返回给当前主张的判断和证据，不再混入固定演示记录。</span></div></div>
         <div className="claim-audit-detail">
+          {claim.humanAction && <section><span>人工处理</span><p>{removed ? '已从最终结论中排除该表述，原句保留供审计回查。' : rewrittenStatement ? `调整后：${rewrittenStatement}` : claim.humanNote || '人工复核动作已记录。'}</p></section>}
+          {rewrittenStatement && <section><span>调整前原句</span><p>{claim.statement}</p></section>}
           <section><span>第一轮判断</span><p>{claim.supervisorVerdict || '后端未返回第一轮判断说明'}</p></section>
           <section><span>独立复核</span><p>{claim.reviewerVerdict || '后端未返回独立复核说明'}</p></section>
           <section><span>当前问题</span><p>{reviewExplanation}</p></section>
           <section><span>证据情况</span><p>当前共绑定 {evidenceList.length} 条原文证据。</p></section>
         </div>
       </Drawer>
+
+      <Modal
+        className="claim-remove-modal"
+        title="确认删除该表述？"
+        open={removeOpen}
+        onCancel={() => setRemoveOpen(false)}
+        onOk={() => void submitResolution('remove', '从最终结论中删除该表述')}
+        confirmLoading={resolutionSubmitting}
+        okText="确认排除"
+        cancelText="先不删除"
+        okButtonProps={{ danger: true }}
+        width={560}
+      >
+        <div className="claim-resolution-modal-copy">
+          <span>即将排除的原表述</span>
+          <p>{claim.statement}</p>
+          <small>确认后，这句话不会再作为最终结论展示；原句和本次删除动作仍会保留在“全部核验结论”与审计记录中。</small>
+        </div>
+      </Modal>
+
+      <Modal
+        className="claim-rewrite-modal"
+        title="调整表述"
+        open={rewriteOpen}
+        onCancel={() => setRewriteOpen(false)}
+        onOk={() => void submitResolution('rewrite', rewriteValue.trim())}
+        confirmLoading={resolutionSubmitting}
+        okButtonProps={{ disabled: Boolean(rewriteError) }}
+        okText="采用新表述"
+        cancelText="取消"
+        width={620}
+      >
+        <div className="claim-resolution-modal-copy original">
+          <span>原表述</span>
+          <p>{claim.statement}</p>
+        </div>
+        <label className="claim-rewrite-field">
+          <span>调整后的完整表述</span>
+          <Input.TextArea
+            value={rewriteValue}
+            onChange={(event) => setRewriteValue(event.target.value)}
+            autoSize={{ minRows: 4, maxRows: 8 }}
+            maxLength={600}
+            showCount
+            placeholder="根据现有证据，重新写出一条可以直接进入最终结论的完整表述…"
+            status={rewriteValue.length > 0 && rewriteError ? 'error' : undefined}
+          />
+          <small className={rewriteValue.length > 0 && rewriteError ? 'error' : ''}>{rewriteValue.length > 0 && rewriteError ? rewriteError : '提交后将以新表述作为最终结论，原句仍保留供审计回查。'}</small>
+        </label>
+      </Modal>
 
       <Modal
         title="发起第二轮取证"
@@ -651,6 +771,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   const [claimVisibility, setClaimVisibility] = useState<ClaimVisibility>('issues')
   const [previewSelectedClaimId, setPreviewSelectedClaimId] = useState('claim-3')
   const [previewReviewedClaimIds, setPreviewReviewedClaimIds] = useState<string[]>([])
+  const [localClaimResolutions, setLocalClaimResolutions] = useState<Record<string, { action: 'reject' | 'keep' | 'remove' | 'rewrite'; note: string }>>({})
   const [guidance, setGuidance] = useState('')
   const [guidanceHistory, setGuidanceHistory] = useState<GuidanceRecord[]>([])
   const [guidanceAttachments, setGuidanceAttachments] = useState<File[]>([])
@@ -661,15 +782,14 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   const [realGuidanceOpen, setRealGuidanceOpen] = useState(false)
   const [realGuidanceSubmitting, setRealGuidanceSubmitting] = useState(false)
   const [selectedBackendEventSeqs, setSelectedBackendEventSeqs] = useState<number[]>([])
+  const [restartingResearch, setRestartingResearch] = useState(false)
   const processListRef = useRef<HTMLDivElement>(null)
   const guidanceAttachmentInputRef = useRef<HTMLInputElement>(null)
   const activeTask = useWorkspaceStore(getActiveTask)
+  const searchFocus = useWorkspaceStore((state) => state.searchFocus)
   // 持久化任务在详情页以 ResearchRun 完整快照为准，避免任务列表摘要先一步
   // 切到 review，和上一轮仍在 running 的空主张明细拼成短暂空页。
-  const persistedRunPhase = (run.status === 'review' || run.status === 'ready')
-    && (run.progress < 100 || run.claims.length === 0)
-    ? 'running'
-    : run.status
+  const persistedRunPhase = getResearchRunPhase(run)
   const taskPhase = preview
     ? 'review'
     : activeTask.persisted && persistedRunPhase
@@ -678,18 +798,35 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   const researchTopic = preview ? run.title : activeTask.researchTopic
   const demoStep = preview ? 8 : activeTask.demoStep
   const isDemoRunning = preview ? false : activeTask.isDemoRunning
-  const selectedClaimId = preview ? previewSelectedClaimId : activeTask.selectedClaimId
+  const focusedEvidenceId = !preview && searchFocus?.taskId === run.id ? searchFocus.evidenceId : undefined
+  const focusedClaimId = !preview && searchFocus?.taskId === run.id
+    ? searchFocus.claimId ?? run.claims.find((claim) => focusedEvidenceId && claim.evidenceIds.includes(focusedEvidenceId))?.id
+    : undefined
+  const selectedClaimId = focusedClaimId ?? (preview ? previewSelectedClaimId : activeTask.selectedClaimId)
   const selectClaim = useWorkspaceStore((state) => state.selectClaim)
   const resolveClaim = useWorkspaceStore((state) => state.resolveClaim)
   const finishResearch = useWorkspaceStore((state) => state.finishResearch)
   const stopDemo = useWorkspaceStore((state) => state.stopDemo)
   const resumeDemo = useWorkspaceStore((state) => state.resumeDemo)
   const setActiveView = useWorkspaceStore((state) => state.setActiveView)
+  const addTask = useWorkspaceStore((state) => state.addTask)
   // 真实任务以完整后端快照为准：处理后的疑点可能被改成 verified，但 humanAction 会保留，
   // 因此“非 verified 或存在 humanAction”才是稳定的总疑点口径，不能复用可能残留的本地数组。
+  const effectiveClaims = activeTask.persisted && !preview
+    ? run.claims
+    : run.claims.map((claim) => {
+        const resolution = localClaimResolutions[claim.id]
+        if (!resolution) return claim
+        return {
+          ...claim,
+          humanAction: resolution.action,
+          humanNote: resolution.note,
+          status: resolution.action === 'rewrite' || resolution.action === 'keep' ? 'verified' as const : 'conflict' as const,
+        }
+      })
   const issueClaims = activeTask.persisted && !preview
-    ? run.claims.filter((claim) => claim.status !== 'verified' || Boolean(claim.humanAction))
-    : run.claims.filter((claim) => claim.status !== 'verified')
+    ? effectiveClaims.filter((claim) => claim.status !== 'verified' || Boolean(claim.humanAction))
+    : effectiveClaims.filter((claim) => claim.status !== 'verified' || Boolean(claim.humanAction))
   const reviewedIssueIds = activeTask.persisted && !preview
     ? issueClaims.filter((claim) => Boolean(claim.humanAction)).map((claim) => claim.id)
     : preview
@@ -697,7 +834,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
       : activeTask.reviewedClaimIds.filter((claimId) => issueClaims.some((claim) => claim.id === claimId))
   const pendingClaims = issueClaims.filter((claim) => !reviewedIssueIds.includes(claim.id))
   const reviewedIssueCount = issueClaims.length - pendingClaims.length
-  const visibleClaims = claimVisibility === 'all' ? run.claims : pendingClaims
+  const visibleClaims = focusedClaimId || claimVisibility === 'all' ? effectiveClaims : pendingClaims
   const selectedClaim = visibleClaims.find((claim) => claim.id === selectedClaimId)
     ?? visibleClaims[0]
     ?? (claimVisibility === 'all' ? run.claims[0] : undefined)
@@ -713,7 +850,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   useEffect(() => {
     const shouldObserveBackend = activeTask.persisted
       && !preview
-      && !['draft', 'stopped', 'failed'].includes(taskPhase)
+      && !['draft', 'failed'].includes(taskPhase)
     if (!shouldObserveBackend) {
       setBackendEvents([])
       setEventStreamStatus('idle')
@@ -804,7 +941,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   }, [activeTask.persisted, preview, queryClient, run.id, taskPhase])
 
   const handleResolve = async (action: 'reject' | 'keep' | 'remove' | 'rewrite', decision: string) => {
-    if (!selectedClaim) return
+    if (!selectedClaim) return false
     const nextClaim = pendingClaims.find((claim) => claim.id !== selectedClaim.id)
     if (activeTask.persisted && !preview) {
       try {
@@ -812,15 +949,18 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
         await queryClient.invalidateQueries({ queryKey: ['research-run', run.id] })
       } catch (error) {
         message.error(error instanceof Error ? error.message : '裁决提交失败')
-        return
+        return false
       }
     } else if (preview) {
+      setLocalClaimResolutions((current) => ({ ...current, [selectedClaim.id]: { action, note: decision } }))
       setPreviewReviewedClaimIds((current) => current.includes(selectedClaim.id) ? current : [...current, selectedClaim.id])
       if (nextClaim) setPreviewSelectedClaimId(nextClaim.id)
     } else {
+      setLocalClaimResolutions((current) => ({ ...current, [selectedClaim.id]: { action, note: decision } }))
       resolveClaim(selectedClaim.id, nextClaim?.id)
     }
     message.success(nextClaim ? `${decision}，已自动进入下一条` : `${decision}，所有疑点已处理`)
+    return true
   }
 
   const handleRetry = async () => {
@@ -1084,6 +1224,33 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
         </Modal>
       </div>
     )
+  }
+
+  const restartStoppedResearch = async () => {
+    if (!activeTask.persisted || taskPhase !== 'stopped') return
+    const researchType = activeTask.category === '政策研究'
+      ? 'policy'
+      : activeTask.category === '风险线索'
+        ? 'risk'
+        : 'company'
+    setRestartingResearch(true)
+    try {
+      await assertResearchReady()
+      const restartedTask = await createPersistedTask({
+        topic: researchTopic || run.title,
+        title: run.title,
+        company: run.company,
+        researchType,
+      })
+      addTask(restartedTask)
+      setActiveView('workbench')
+      await queryClient.invalidateQueries({ queryKey: ['workspace-tasks'] })
+      message.success('已创建新的同题研究，小盾正在重新检索和核验')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '重新开始研究失败')
+    } finally {
+      setRestartingResearch(false)
+    }
   }
 
   if (taskPhase === 'running') {
@@ -1391,7 +1558,72 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
     )
   }
 
-  if (taskPhase === 'ready' || (taskPhase === 'review' && issueClaims.length > 0 && pendingClaims.length === 0)) {
+  if (taskPhase === 'stopped' && activeTask.persisted) {
+    const recordedEvents = backendEvents.filter((event) => event.actor !== 'system' || event.kind !== 'stopped')
+    return (
+      <div className="research-stopped-page">
+        <div className="stopped-two-column-layout">
+          <section className="stopped-summary-card page-card">
+            <span className="stopped-status-icon"><PauseCircleOutlined /></span>
+            <span className="stopped-eyebrow">这次研究停在 {Math.round(run.progress)}%</span>
+            <h2>记录都还在，可以让小盾重新查一遍</h2>
+            <p>旧任务已经按你的操作终止，后端不会继续消费它的执行节点。重新开始会保留这条记录，同时创建一条同题新任务，从检索、核验到整理重新执行。</p>
+            <Progress percent={Math.round(run.progress)} showInfo={false} strokeColor="#9a7650" trailColor="#ebe5dd" />
+            <div className="stopped-progress-meta"><strong>{Math.round(run.progress)}%</strong><span>终止前进度</span></div>
+            <div className="stopped-preserved-summary">
+              <div><strong>{recordedEvents.length}</strong><span>条过程记录</span></div>
+              <div><strong>{run.claims.length}</strong><span>条已生成主张</span></div>
+              <div><strong>{run.evidence.length}</strong><span>份已绑定证据</span></div>
+            </div>
+            <div className="stopped-actions">
+              <Button type="primary" size="large" icon={<RetweetOutlined />} loading={restartingResearch} onClick={restartStoppedResearch}>重新开始研究</Button>
+              <Button size="large" onClick={() => setActiveView('tasks')}>返回任务列表</Button>
+            </div>
+            <small className="stopped-lineage-note">新任务会使用相同研究问题和研究对象；这条已终止任务不会被覆盖或删除。</small>
+          </section>
+
+          <section className="research-process-panel stopped-process-card">
+            <div className="process-panel-heading">
+              <div><strong>终止前的研究动态</strong><span>已经完成的思考、检索和工具记录仍可回看</span></div>
+              <span className="process-recording paused"><i /> 已停止记录</span>
+            </div>
+            <div className="research-process-list">
+              {recordedEvents.length === 0 ? (
+                <div className="process-stream-empty">
+                  <span><FileSearchOutlined /></span>
+                  <strong>这次终止发生得较早</strong>
+                  <p>后端还没写入可展示的研究动态，可以重新开始一条同题研究。</p>
+                </div>
+              ) : recordedEvents.map((event) => {
+                const details = event.payload.details ?? []
+                const metrics = event.payload.metrics ?? []
+                const speech = buildConversationalSpeech(event, recordedEvents)
+                const tone = event.payload.tone === 'danger' || event.kind === 'error'
+                  ? 'danger'
+                  : event.payload.tone === 'warning' || event.kind === 'warning'
+                    ? 'warning'
+                    : ''
+                return (
+                  <div className={`research-process-item backend-event${tone ? ` ${tone}` : ''}`} key={event.seq}>
+                    <span className="process-item-icon">{backendActorIcon(event.actor)}</span>
+                    <div className="process-item-content">
+                      <div className="process-item-title"><strong>{event.payload.title || '研究进度更新'}</strong><span>小盾 · {eventTime(event.ts)}</span></div>
+                      {speech && <TypewriterBroadcast text={speech} active={false} complete />}
+                      {details.length > 0 && <><div className="process-evidence-label">本步执行依据</div><ul>{details.map((detail, index) => <li key={`${detail.label}-${index}`}><b>{detail.label}</b><span>{detail.text}</span></li>)}</ul></>}
+                      {metrics.length > 0 && <div className="process-item-metrics">{metrics.map((metric, index) => <span key={`${metric.label}-${index}`}>{metric.label} {metric.value}</span>)}</div>}
+                    </div>
+                    <div className="process-item-controls"><small>已保留</small></div>
+                  </div>
+                )
+              })}
+            </div>
+          </section>
+        </div>
+      </div>
+    )
+  }
+
+  if (!focusedClaimId && (taskPhase === 'ready' || (taskPhase === 'review' && issueClaims.length > 0 && pendingClaims.length === 0))) {
     const autoVerifiedCount = run.claims.filter((claim) => claim.status === 'verified' && !claim.humanAction).length
     return (
       <div className="research-ready-page">
@@ -1434,7 +1666,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
             selectedClaimId={selectedClaimId}
             onSelectClaim={preview ? setPreviewSelectedClaimId : selectClaim}
           />
-          <EvidenceViewer key={selectedClaim.id} evidenceList={evidenceList} />
+          <EvidenceViewer key={selectedClaim.id} evidenceList={evidenceList} preferredEvidenceId={focusedEvidenceId} />
         </section>
         <VerdictPanel
           claim={selectedClaim}

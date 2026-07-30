@@ -4,6 +4,20 @@ import type { ResearchRun } from './types'
 export type ViewName = 'tasks' | 'workbench' | 'topology' | 'analytics' | 'reports' | 'settings'
 export type TaskPhase = 'draft' | 'running' | 'review' | 'ready' | 'stopped' | 'failed'
 
+export function getResearchRunPhase(run: ResearchRun): TaskPhase {
+  const supportedPhases: TaskPhase[] = ['running', 'review', 'ready', 'stopped', 'failed']
+  const reportedPhase = supportedPhases.includes(run.status as TaskPhase)
+    ? run.status as TaskPhase
+    : 'draft'
+  if ((reportedPhase === 'review' || reportedPhase === 'ready')
+    && (run.progress < 100 || run.claims.length === 0)) return 'running'
+  if (reportedPhase === 'review') {
+    const hasUnresolvedIssue = run.claims.some((claim) => claim.status !== 'verified' && !claim.humanAction)
+    if (!hasUnresolvedIssue) return 'ready'
+  }
+  return reportedPhase
+}
+
 export interface ResearchTaskSession {
   id: string
   title: string
@@ -20,8 +34,15 @@ export interface ResearchTaskSession {
   updatedAt: string
   progress?: number
   claimCount?: number
+  phaseConfirmed?: boolean
   persisted?: boolean
   isDemo?: boolean
+}
+
+export type SearchFocus = {
+  taskId: string
+  claimId?: string
+  evidenceId?: string
 }
 
 interface CreateTaskInput {
@@ -33,6 +54,7 @@ interface CreateTaskInput {
 interface WorkspaceStore {
   activeView: ViewName
   activeTaskId: string
+  searchFocus: SearchFocus | null
   tasks: ResearchTaskSession[]
   setActiveView: (view: ViewName) => void
   selectTask: (id: string) => void
@@ -41,6 +63,7 @@ interface WorkspaceStore {
   finishResearch: (firstPendingClaimId?: string) => void
   resolveClaim: (claimId: string, nextClaimId?: string) => void
   openReviewQueue: (claimId?: string, taskId?: string) => void
+  openSearchResult: (focus: SearchFocus) => void
   advanceRunningTasks: () => void
   stopDemo: () => void
   resumeDemo: () => void
@@ -142,9 +165,10 @@ const makeTaskId = () => `FS-2026-${String(Date.now()).slice(-6)}`
 export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   activeView: 'tasks',
   activeTaskId: 'FS-2026-0726-018',
+  searchFocus: null,
   tasks: initialTasks,
-  setActiveView: (activeView) => set({ activeView }),
-  selectTask: (activeTaskId) => set({ activeTaskId }),
+  setActiveView: (activeView) => set({ activeView, searchFocus: null }),
+  selectTask: (activeTaskId) => set({ activeTaskId, searchFocus: null }),
   createTask: ({ title, company = '待识别研究对象', category = '企业研究' }) => {
     const id = makeTaskId()
     const now = new Date().toLocaleString('zh-CN', { hour12: false })
@@ -169,6 +193,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     return id
   },
   selectClaim: (selectedClaimId) => set((state) => ({
+    searchFocus: null,
     tasks: updateTask(state.tasks, state.activeTaskId, (task) => ({ ...task, selectedClaimId })),
   })),
   finishResearch: (selectedClaimId) => set((state) => ({
@@ -202,10 +227,23 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     return {
       activeTaskId,
       activeView: 'workbench',
+      searchFocus: null,
       tasks: updateTask(state.tasks, activeTaskId, (task) => ({
         ...task,
         selectedClaimId: claimId ?? task.reviewClaimIds.find((id) => !task.reviewedClaimIds.includes(id)) ?? task.selectedClaimId,
       })),
+    }
+  }),
+  openSearchResult: (focus) => set((state) => {
+    const task = state.tasks.find((item) => item.id === focus.taskId)
+    const hasContentTarget = Boolean(focus.claimId || focus.evidenceId)
+    return {
+      activeTaskId: focus.taskId,
+      activeView: hasContentTarget ? 'workbench' : task?.phase === 'ready' ? 'reports' : 'workbench',
+      searchFocus: hasContentTarget ? focus : null,
+      tasks: focus.claimId
+        ? updateTask(state.tasks, focus.taskId, (item) => ({ ...item, selectedClaimId: focus.claimId! }))
+        : state.tasks,
     }
   }),
   advanceRunningTasks: () => set((state) => ({
@@ -252,19 +290,39 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       const current = state.tasks.find((item) => item.id === task.id)
       if (!current) return task
 
-      const merged = {
+      const incomingHasClaimDetail = Boolean(task.phaseConfirmed)
+      const preserveConfirmedReady = current.phase === 'ready'
+        && Boolean(current.phaseConfirmed)
+        && task.phase === 'review'
+        && !incomingHasClaimDetail
+
+      const merged: ResearchTaskSession = {
         ...task,
         selectedClaimId: current.selectedClaimId,
-        reviewClaimIds: current.reviewClaimIds,
-        reviewedClaimIds: current.reviewedClaimIds,
+        reviewClaimIds: incomingHasClaimDetail ? task.reviewClaimIds : current.reviewClaimIds,
+        reviewedClaimIds: incomingHasClaimDetail ? task.reviewedClaimIds : current.reviewedClaimIds,
+      }
+
+      // GET /tasks 只有任务摘要，无法判断 review 中的疑点是否已经全部人工处理。
+      // 一旦完整主张快照确认任务已完成，后续旧摘要不得把终态降回“待复核”。
+      if (preserveConfirmedReady) {
+        return {
+          ...merged,
+          phase: 'ready' as TaskPhase,
+          phaseConfirmed: true,
+          progress: Math.max(current.progress ?? 0, task.progress ?? 0),
+          claimCount: current.claimCount ?? task.claimCount,
+          isDemoRunning: false,
+        }
       }
 
       // 当前详情由 GET /tasks/:id 的完整快照驱动。任务列表只有摘要，不能在两次
       // 详情轮询之间抢先覆盖 phase，否则会把“运行中的空主张快照”误画成复核空页。
-      if (task.id === state.activeTaskId && current.persisted) {
+      if (task.id === state.activeTaskId && current.persisted && !incomingHasClaimDetail) {
         return {
           ...merged,
           phase: current.phase,
+          phaseConfirmed: current.phaseConfirmed,
           progress: current.progress,
           claimCount: current.claimCount,
           isDemoRunning: current.phase === 'running',
@@ -290,22 +348,16 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   syncTaskRun: (run) => set((state) => ({
     tasks: updateTask(state.tasks, run.id, (task) => {
       const reviewClaimIds = run.claims
-        .filter((claim) => claim.status !== 'verified')
+        .filter((claim) => claim.status !== 'verified' || Boolean(claim.humanAction))
         .map((claim) => claim.id)
       const reviewedClaimIds = run.claims
         .filter((claim) => Boolean(claim.humanAction))
         .map((claim) => claim.id)
-      const reportedPhase: TaskPhase = run.status === 'running' || run.status === 'review' || run.status === 'ready'
-        || run.status === 'stopped' || run.status === 'failed'
-        ? run.status
-        : task.phase
-      const phase: TaskPhase = (reportedPhase === 'review' || reportedPhase === 'ready')
-        && (run.progress < 100 || run.claims.length === 0)
-        ? 'running'
-        : reportedPhase
+      const phase = getResearchRunPhase(run)
       return {
         ...task,
         phase,
+        phaseConfirmed: true,
         progress: Math.max(task.progress ?? 0, run.progress),
         claimCount: run.claims.length,
         reviewClaimIds,
