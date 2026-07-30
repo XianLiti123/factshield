@@ -638,12 +638,13 @@ button { color: inherit; }
 .history-restriction-banner .ant-tag { margin: 0; font-size: 8px; }
 .history-config-card { min-height: 84px; padding: 14px 16px; display: grid; grid-template-columns: minmax(190px, 1.25fr) repeat(3, minmax(165px, 1fr)) auto; gap: 13px; align-items: end; }
 .history-analysis-config-card { grid-template-columns: minmax(200px, .9fr) minmax(280px, 1.35fr) minmax(250px, 1.05fr) minmax(130px, .5fr); gap: 12px; }
-.history-config-intro { grid-column: 1 / -1; min-height: 38px; display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; border-bottom: 1px solid #edf1ef; }
-.history-config-intro > div { min-width: 0; display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: 9px; }
-.history-config-intro > div > .anticon { grid-row: 1 / 3; width: 28px; height: 28px; display: grid; place-items: center; color: #3469ce; border-radius: 7px; background: #edf3ff; }
+.history-config-intro { grid-column: 1 / -1; min-height: 50px; padding-bottom: 11px; display: flex; align-items: center; justify-content: space-between; gap: 18px; border-bottom: 1px solid #edf1ef; }
+.history-config-intro > div { min-width: 0; display: flex; align-items: center; gap: 11px; }
+.history-config-intro > div > .anticon { width: 36px; height: 36px; display: grid; place-items: center; flex: 0 0 36px; color: #3469ce; border-radius: 8px; background: #edf3ff; font-size: 17px; line-height: 1; }
+.history-config-intro > div > span { min-width: 0; display: flex; flex-direction: column; justify-content: center; }
 .history-config-intro span, .history-config-intro strong, .history-config-intro small { display: block; }
-.history-config-intro strong { color: #344057; font-size: 10px; }
-.history-config-intro small { margin-top: 3px; color: #8792a5; font-size: 8px; font-weight: 400; }
+.history-config-intro strong { color: #344057; font-size: 12px; line-height: 17px; }
+.history-config-intro small { margin-top: 2px; color: #8792a5; font-size: 9px; font-weight: 400; line-height: 15px; }
 .history-config-intro > .ant-btn { height: 26px; padding: 0 7px; color: #637b75; font-size: 8px; }
 .history-config-field { min-width: 0; }
 .history-config-field > span { display: block; margin-bottom: 6px; color: #7c879b; font-size: 8px; }

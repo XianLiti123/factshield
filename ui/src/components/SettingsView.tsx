@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   ApiOutlined,
+  AppstoreOutlined,
   CheckCircleFilled,
   CloseOutlined,
+  CodeOutlined,
   CompressOutlined,
   DeleteOutlined,
   EyeInvisibleOutlined,
@@ -12,7 +14,7 @@ import {
   SearchOutlined,
   ThunderboltFilled,
 } from '@ant-design/icons'
-import { Button, Input, Modal, Select, Slider, Switch, Tag, message } from 'antd'
+import { Button, Input, Modal, Segmented, Select, Slider, Switch, Tag, message } from 'antd'
 import { getCapabilities, getSettings, saveModelConfig, type CapabilityStatus } from '../services/api'
 
 type ModelConfig = {
@@ -42,6 +44,9 @@ type SearchEngine = {
   apiKey: string
   requiresApiKey: boolean
 }
+
+type DataSourceMode = 'http' | 'python'
+type DataSourceConfig = { id: string; name: string; description: string; category: string; mode: DataSourceMode; specification: string; enabled: boolean }
 
 const initialSlots: ModelSlot[] = [
   {
@@ -95,6 +100,18 @@ const initialSearchEngines: SearchEngine[] = [
   { id: 'python', name: 'Python', description: '通过本地 Python 检索流程执行，无需 API Key', apiKey: '', requiresApiKey: false },
 ]
 
+const DATA_SOURCES_KEY = 'factshield.settings.data-sources'
+const presetDataSources: DataSourceConfig[] = [
+  { id: 'wind', name: '万得金融数据服务', description: '专业金融市场、公司与宏观数据', category: '金融数据库', mode: 'python', specification: "from WindPy import w\nw.start()\nresult = w.wsd('000001.SZ', 'close', '2026-01-01', '2026-01-31')", enabled: false },
+  { id: 'tushare', name: 'Tushare Pro', description: '证券、基金、期货与宏观数据接口', category: '金融数据库', mode: 'python', specification: "import tushare as ts\npro = ts.pro_api('YOUR_TOKEN')\ndf = pro.daily(ts_code='000001.SZ')", enabled: false },
+  { id: 'akshare', name: 'AKShare', description: '开源财经数据接口库', category: '金融数据库', mode: 'python', specification: "import akshare as ak\ndf = ak.stock_zh_a_hist(symbol='000001')", enabled: false },
+  { id: 'custom-http', name: '自定义 HTTP 数据源', description: '连接内部或第三方数据服务', category: '自定义', mode: 'http', specification: "GET https://api.example.com/v1/market/data\nAuthorization: Bearer ${API_KEY}\nQuery: symbol, start_date, end_date\nResponse data path: $.data", enabled: false },
+]
+function loadDataSources() {
+  try { const stored = JSON.parse(window.localStorage.getItem(DATA_SOURCES_KEY) ?? 'null'); return Array.isArray(stored) && stored.length ? stored as DataSourceConfig[] : presetDataSources }
+  catch { return presetDataSources }
+}
+
 const DEFAULT_CONTEXT_TRIGGER = 80
 const CONTEXT_PREFERENCE_KEY = 'factshield.settings.context-compaction'
 
@@ -130,6 +147,9 @@ export function SettingsView() {
   const [capabilities, setCapabilities] = useState<CapabilityStatus | null>(null)
   const [customContextTrigger, setCustomContextTrigger] = useState(initialContextPreference.custom)
   const [contextTrigger, setContextTrigger] = useState(initialContextPreference.trigger)
+  const [dataSources, setDataSources] = useState<DataSourceConfig[]>(loadDataSources)
+  const [dataSourceModalOpen, setDataSourceModalOpen] = useState(false)
+  const [activeDataSourceId, setActiveDataSourceId] = useState(presetDataSources[0].id)
 
   useEffect(() => {
     getSettings().then((settings) => {
@@ -160,6 +180,10 @@ export function SettingsView() {
     }))
   }, [contextTrigger, customContextTrigger])
 
+  useEffect(() => {
+    window.localStorage.setItem(DATA_SOURCES_KEY, JSON.stringify(dataSources))
+  }, [dataSources])
+
   const activeSlot = useMemo(
     () => slots.find((slot) => slot.id === activeSlotId) ?? slots[0],
     [activeSlotId, slots],
@@ -173,6 +197,13 @@ export function SettingsView() {
     [activeSearchEngineId, searchEngines],
   )
   const isPersonalSlot = activeSlot.id === 'primary' || activeSlot.id === 'vision'
+  const activeDataSource = dataSources.find((source) => source.id === activeDataSourceId) ?? dataSources[0]
+  const updateActiveDataSource = (patch: Partial<DataSourceConfig>) => setDataSources((current) => current.map((source) => source.id === activeDataSourceId ? { ...source, ...patch } : source))
+  const addCustomDataSource = () => {
+    const id = `source-${Date.now()}`
+    setDataSources((current) => [...current, { id, name: '未命名数据源', description: '填写接口规范后交由服务端连接', category: '自定义', mode: 'http', specification: '', enabled: false }])
+    setActiveDataSourceId(id)
+  }
 
   const updateSelectedModel = (key: keyof ModelConfig, value: string) => {
     setSlots((current) => current.map((slot) => slot.id === activeSlotId
@@ -249,6 +280,7 @@ export function SettingsView() {
 
   return (
     <div className="settings-page">
+      <aside className="settings-side-column">
       <section className="settings-model-panel page-card">
         <div className="settings-panel-heading">
           <div><span>独立模型分配</span><strong>模型用途</strong></div>
@@ -276,6 +308,10 @@ export function SettingsView() {
           <span>主 LLM 与视觉模型按账号加密保存；Embedding 和 Reranker 由服务端统一配置。</span>
         </div>
       </section>
+      <button type="button" className="settings-data-source-entry page-card" onClick={() => setDataSourceModalOpen(true)}>
+        <span><AppstoreOutlined /></span><div><strong>数据源管理</strong><small>{dataSources.filter((source) => source.enabled).length} 个已启用 · HTTP / Python SDK</small></div><i>管理</i>
+      </button>
+      </aside>
 
       <div className="settings-content-column">
         <section className="settings-form-card page-card">
@@ -284,7 +320,16 @@ export function SettingsView() {
               <span>{activeSlot.mark}</span>
               <div><strong>{activeSlot.name}</strong><small>{activeSlot.description}</small></div>
             </div>
-            <Tag icon={<CheckCircleFilled />}>独立配置</Tag>
+            <div className="settings-form-header-actions">
+              {activeSlot.id === 'primary' && (
+                <label className="settings-inline-thinking">
+                  <span><ThunderboltFilled /></span>
+                  <div><strong>深度思考</strong><small>支持推理模式时启用</small></div>
+                  <Switch size="small" checked={deepThinking} onChange={setDeepThinking} />
+                </label>
+              )}
+              <Tag icon={<CheckCircleFilled />}>独立配置</Tag>
+            </div>
           </div>
 
           <div className="settings-model-selector-row">
@@ -326,6 +371,36 @@ export function SettingsView() {
               />
             </label>
           </div>
+
+          {activeSlot.id === 'primary' && (
+            <div className={`settings-inline-context${customContextTrigger ? ' custom' : ''}`}>
+              <div className="settings-inline-context-copy">
+                <span><CompressOutlined /></span>
+                <div><strong>上下文自动整理</strong><p>接近窗口上限时整理较早内容，保留关键结论和未完成事项。</p></div>
+              </div>
+              <div className="settings-inline-context-control">
+                <div className="settings-context-toggle">
+                  <div>
+                    <strong>自定义触发比例</strong>
+                    <span>{customContextTrigger ? `达到 ${contextTrigger}% 时开始整理` : `使用系统默认 ${DEFAULT_CONTEXT_TRIGGER}%`}</span>
+                  </div>
+                  <Switch size="small" checked={customContextTrigger} onChange={setCustomContextTrigger} />
+                </div>
+                <div className="settings-context-slider">
+                  <div><span>触发比例</span><strong>{customContextTrigger ? contextTrigger : DEFAULT_CONTEXT_TRIGGER}%</strong></div>
+                  <Slider
+                    min={0}
+                    max={100}
+                    value={customContextTrigger ? contextTrigger : DEFAULT_CONTEXT_TRIGGER}
+                    disabled={!customContextTrigger}
+                    onChange={setContextTrigger}
+                    tooltip={{ formatter: (value) => `${value ?? 0}%` }}
+                    marks={{ 0: '0%', 50: '50%', 80: '80%', 100: '100%' }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="settings-save-row">
             <span><CheckCircleFilled /> {isPersonalSlot ? `当前正在编辑：${activeSlot.name} · ${selectedModel.name}` : `${activeSlot.name}由服务端环境统一管理`}</span>
@@ -373,45 +448,6 @@ export function SettingsView() {
           </div>
         </section>
 
-        <section className="settings-preference-card page-card">
-          <div className="settings-preference-copy">
-            <span><ThunderboltFilled /></span>
-            <div><strong>深度思考</strong><p>仅作用于支持推理模式的主 LLM；不会改变视觉、Embedding 或 Reranker 配置。</p></div>
-          </div>
-          <Switch checked={deepThinking} onChange={setDeepThinking} />
-        </section>
-
-        <section className={`settings-context-card page-card${customContextTrigger ? ' custom' : ''}`}>
-          <div className="settings-context-heading">
-            <span><CompressOutlined /></span>
-            <div>
-              <strong>上下文自动整理</strong>
-              <p>对话内容接近窗口上限时，把较早内容整理成摘要，保留关键结论和未完成事项。</p>
-            </div>
-          </div>
-          <div className="settings-context-controls">
-            <div className="settings-context-toggle">
-              <div>
-                <strong>自定义触发比例</strong>
-                <span>{customContextTrigger ? `达到 ${contextTrigger}% 时开始整理` : `使用系统默认 ${DEFAULT_CONTEXT_TRIGGER}%`}</span>
-              </div>
-              <Switch checked={customContextTrigger} onChange={setCustomContextTrigger} />
-            </div>
-            <div className="settings-context-slider">
-              <div><span>触发比例</span><strong>{customContextTrigger ? contextTrigger : DEFAULT_CONTEXT_TRIGGER}%</strong></div>
-              <Slider
-                min={0}
-                max={100}
-                value={customContextTrigger ? contextTrigger : DEFAULT_CONTEXT_TRIGGER}
-                disabled={!customContextTrigger}
-                onChange={setContextTrigger}
-                tooltip={{ formatter: (value) => `${value ?? 0}%` }}
-                marks={{ 0: '0%', 50: '50%', 80: '80%', 100: '100%' }}
-              />
-            </div>
-            <small>设置会保存在当前浏览器；后端接入后可读取该偏好并实际执行。</small>
-          </div>
-        </section>
       </div>
 
       <Modal
@@ -431,6 +467,25 @@ export function SettingsView() {
           <span>配置名称</span>
           <Input value={newModelName} onChange={(event) => setNewModelName(event.target.value)} onPressEnter={addModel} placeholder="例如：自建模型服务" autoFocus />
           <small>新配置只会加入当前的“{activeSlot.name}”槽位。</small>
+        </div>
+      </Modal>
+
+      <Modal className="data-source-modal" title="数据源管理" open={dataSourceModalOpen} width={900} footer={null} onCancel={() => setDataSourceModalOpen(false)} closeIcon={<CloseOutlined />}>
+        <div className="data-source-manager">
+          <aside className="data-source-list">
+            <header><div><strong>金融与研究数据源</strong><small>选择预设或创建自己的连接</small></div><Button type="text" icon={<PlusOutlined />} onClick={addCustomDataSource}>新建</Button></header>
+            <div>{dataSources.map((source) => <button type="button" className={source.id === activeDataSource?.id ? 'active' : ''} key={source.id} onClick={() => setActiveDataSourceId(source.id)}><span>{source.mode === 'http' ? <ApiOutlined /> : <CodeOutlined />}</span><div><strong>{source.name}</strong><small>{source.description}</small></div><i className={source.enabled ? 'enabled' : ''} /></button>)}</div>
+          </aside>
+          {activeDataSource && <section className="data-source-editor">
+            <header><div><span>{activeDataSource.mode === 'http' ? <ApiOutlined /> : <CodeOutlined />}</span><div><strong>{activeDataSource.name}</strong><small>{activeDataSource.category}</small></div></div><label><span>{activeDataSource.enabled ? '已启用' : '未启用'}</span><Switch checked={activeDataSource.enabled} onChange={(enabled) => updateActiveDataSource({ enabled })} /></label></header>
+            <div className="data-source-fields">
+              <label><span>数据源名称</span><Input value={activeDataSource.name} onChange={(event) => updateActiveDataSource({ name: event.target.value })} /></label>
+              <label><span>用途说明</span><Input value={activeDataSource.description} onChange={(event) => updateActiveDataSource({ description: event.target.value })} /></label>
+              <div className="data-source-mode-field"><span>连接方式</span><Segmented block value={activeDataSource.mode} options={[{ label: 'HTTP 接口规范', value: 'http', icon: <ApiOutlined /> }, { label: 'Python SDK', value: 'python', icon: <CodeOutlined /> }]} onChange={(mode) => updateActiveDataSource({ mode: mode as DataSourceMode })} /></div>
+              <label className="data-source-spec-field"><span>{activeDataSource.mode === 'http' ? 'HTTP 接口规范' : 'Python SDK 调用代码'}</span><Input.TextArea value={activeDataSource.specification} onChange={(event) => updateActiveDataSource({ specification: event.target.value })} placeholder={activeDataSource.mode === 'http' ? '填写请求方法、URL、鉴权头、参数与响应数据路径…' : '填写 import、客户端初始化及查询调用示例…'} autoSize={{ minRows: 10, maxRows: 16 }} spellCheck={false} /></label>
+            </div>
+            <footer><span><SafetyCertificateOutlined /> 配置保存在本机，不会在浏览器中执行代码；需由服务端连接器审核后接入研究流程。</span><Button type="primary" onClick={() => message.success('数据源配置已保存到当前浏览器')}>保存配置</Button></footer>
+          </section>}
         </div>
       </Modal>
     </div>

@@ -24,7 +24,6 @@ import {
   attachHistoryAnalysis,
   getHistoryAnalysis,
   startHistoryAnalysis,
-  supportsCustomHistoryAnalysis,
   type HistoryAnalysis,
   type HistoryAnalysisEvent,
   type HistoryAnalysisPoint,
@@ -36,7 +35,6 @@ const POLL_LIMIT = 72
 
 type DisplayMode = 'relative' | 'raw'
 type TimeGranularity = 'month' | 'quarter' | 'year' | 'unknown'
-type CustomAnalysisCapability = 'checking' | 'supported' | 'unsupported'
 
 type PreparedPoint = HistoryAnalysisPoint & {
   month: number | null
@@ -239,7 +237,6 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
   const [displayMode, setDisplayMode] = useState<DisplayMode>('relative')
   const [loading, setLoading] = useState(false)
   const [attaching, setAttaching] = useState(false)
-  const [customCapability, setCustomCapability] = useState<CustomAnalysisCapability>('checking')
   const running = Boolean(historyAnalysisJob)
   const normalizedConfig = normalizeHistoryAnalysisConfig(historyAnalysisConfig)
   const customMode = isCustomHistoryAnalysis(normalizedConfig)
@@ -247,15 +244,6 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
   const updateConfig = <K extends keyof HistoryAnalysisConfig>(key: K, value: HistoryAnalysisConfig[K]) => {
     setHistoryAnalysisConfig(run.id, { ...historyAnalysisConfig, [key]: value })
   }
-
-  useEffect(() => {
-    let cancelled = false
-    setCustomCapability('checking')
-    supportsCustomHistoryAnalysis().then((supported) => {
-      if (!cancelled) setCustomCapability(supported ? 'supported' : 'unsupported')
-    })
-    return () => { cancelled = true }
-  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -316,15 +304,6 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
     if (normalizedConfig.start && normalizedConfig.end && normalizedConfig.start > normalizedConfig.end) {
       message.warning('开始时间不能晚于结束时间')
       return
-    }
-    if (customMode) {
-      const supported = customCapability === 'supported'
-        || (customCapability === 'checking' && await supportsCustomHistoryAnalysis())
-      setCustomCapability(supported ? 'supported' : 'unsupported')
-      if (!supported) {
-        message.error('你的比较要求已保存，但当前后端还不接收自定义复盘口径，暂不能按这些条件执行；清空条件后仍可使用系统推荐。')
-        return
-      }
     }
     const baselineAnalysisId = analysis?.id ?? null
     startHistoryAnalysisJob(run.id, baselineAnalysisId, normalizedConfig)
@@ -476,9 +455,7 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
       <section className="page-card history-trigger-card">
         <div className="history-trigger-task"><span>当前研究</span><strong>{run.title}</strong></div>
         <div className="history-trigger-method"><AimOutlined /><div><strong>{customMode ? '优先采用你填写的比较口径' : '未填写条件，由系统推荐比较口径'}</strong><span>{customMode ? '指标、场景、时间范围和频率会随启动请求一并提交。' : '系统会根据当前研究主题与已核查主张选择可比较的历史路径。'}</span></div></div>
-        <span className={`history-capability-status ${customCapability}`}>
-          {customCapability === 'checking' ? '正在确认接口能力' : customCapability === 'supported' ? '自定义口径可用' : '自动模式可用'}
-        </span>
+        <span className="history-capability-status supported">自定义口径已接入</span>
       </section>
 
       <section className="page-card history-config-card history-analysis-config-card">
@@ -526,7 +503,6 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
           <Button type="primary" icon={running ? <ReloadOutlined spin /> : <PlayCircleOutlined />} loading={running} onClick={startAnalysis}>
             {running ? '复盘生成中' : customMode ? '按我的要求开始' : analysis ? '按系统推荐重新生成' : '按系统推荐开始'}
           </Button>
-          {customMode && customCapability === 'unsupported' && <small>当前后端尚未接收这些字段，配置会保留，但不会假装已经执行。</small>}
         </div>
       </section>
 

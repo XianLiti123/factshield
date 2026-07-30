@@ -30,8 +30,10 @@ import {
   resolveClaim as resolvePersistedClaim,
   retryClaim as retryPersistedClaim,
   streamTaskEvents,
+  uploadDocument,
   type ResearchEvent,
 } from '../services/api'
+import { ATTACHMENT_ACCEPT, mergeAttachmentFiles } from '../utils/attachments'
 import { StatusBadge } from './StatusBadge'
 import { getClaimDisplayStatement, getRewrittenClaimStatement, isClaimRemoved } from '../utils/claims'
 import { getConfidenceLevel, getConfidenceLevelClass } from '../utils/confidence'
@@ -800,6 +802,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   const [guidance, setGuidance] = useState('')
   const [guidanceHistory, setGuidanceHistory] = useState<GuidanceRecord[]>([])
   const [guidanceAttachments, setGuidanceAttachments] = useState<File[]>([])
+  const [guidanceAttachmentDragging, setGuidanceAttachmentDragging] = useState(false)
   const [suspectedEventSteps, setSuspectedEventSteps] = useState<number[]>([])
   const [backendEvents, setBackendEvents] = useState<ResearchEvent[]>([])
   const [eventStreamStatus, setEventStreamStatus] = useState<EventStreamStatus>('idle')
@@ -812,6 +815,16 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   const guidanceAttachmentInputRef = useRef<HTMLInputElement>(null)
   const activeTask = useWorkspaceStore(getActiveTask)
   const searchFocus = useWorkspaceStore((state) => state.searchFocus)
+
+  const addGuidanceAttachments = (files: FileList | File[] | null) => {
+    if (!files) return
+    setGuidanceAttachments((current) => {
+      const result = mergeAttachmentFiles(current, Array.from(files))
+      if (result.rejected.length > 0) message.warning(result.rejected[0])
+      return result.files
+    })
+    if (guidanceAttachmentInputRef.current) guidanceAttachmentInputRef.current.value = ''
+  }
 
   useEffect(() => {
     setLocalClaimResolutions(readReviewDrafts(run.id))
@@ -1125,18 +1138,24 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   const submitRealGuidance = async () => {
     const content = guidance.trim()
     const selectedEvents = backendEvents.filter((event) => selectedBackendEventSeqs.includes(event.seq))
-    if (!content && selectedEvents.length === 0) {
-      message.warning('请写下要调整的内容，或先选择一个有问题的研究步骤')
+    if (!content && selectedEvents.length === 0 && guidanceAttachments.length === 0) {
+      message.warning('请写下要调整的内容、选择研究步骤，或添加补充附件')
       return
     }
     const stageContext = selectedEvents.length > 0
       ? `请重点重新检查这些步骤：${selectedEvents.map((event) => `「${event.payload.title || '研究进度更新'}」`).join('、')}。`
       : ''
-    const instruction = [stageContext, content].filter(Boolean).join('\n')
     setRealGuidanceSubmitting(true)
     try {
+      const converted = []
+      for (const file of guidanceAttachments) converted.push(await uploadDocument(file, { save: false }))
+      const attachmentContext = converted.length > 0
+        ? `补充材料：\n${converted.map((item) => `【${item.filename}】\n${item.content}`).join('\n\n')}`
+        : ''
+      const instruction = [stageContext, content || (converted.length > 0 ? '请结合补充材料继续核验。' : ''), attachmentContext].filter(Boolean).join('\n\n')
       await guideTask(run.id, instruction)
       setGuidance('')
+      setGuidanceAttachments([])
       setSelectedBackendEventSeqs([])
       setRealGuidanceOpen(false)
       message.success('小盾记下了，会在当前研究的下一个核验点按你的要求调整')
@@ -1335,6 +1354,18 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
               autoSize={{ minRows: 4, maxRows: 7 }}
               placeholder="例如：先不要采用媒体转述，优先回到公司公告核对；收入和利润请统一按同一报告期比较……"
             />
+            <div
+              className={`guidance-attachment-dropzone${guidanceAttachmentDragging ? ' is-dragging' : ''}`}
+              onDragEnter={(event) => { event.preventDefault(); setGuidanceAttachmentDragging(true) }}
+              onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setGuidanceAttachmentDragging(true) }}
+              onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setGuidanceAttachmentDragging(false) }}
+              onDrop={(event) => { event.preventDefault(); setGuidanceAttachmentDragging(false); addGuidanceAttachments(Array.from(event.dataTransfer.files)) }}
+              onClick={() => guidanceAttachmentInputRef.current?.click()}
+            >
+              <input ref={guidanceAttachmentInputRef} type="file" multiple accept={ATTACHMENT_ACCEPT} onChange={(event) => addGuidanceAttachments(event.target.files)} />
+              <PaperClipOutlined /><span>{guidanceAttachmentDragging ? '松开即可添加' : '拖入附件，或点击选择文件'}</span><small>PDF、Word、Excel、TXT · 最多 5 个 · 单个 10MB</small>
+            </div>
+            {guidanceAttachments.length > 0 && <div className="guidance-pending-attachments">{guidanceAttachments.map((file, index) => <span key={`${file.name}-${file.size}`}><PaperClipOutlined /><em>{file.name}</em><button type="button" aria-label={`移除附件 ${file.name}`} onClick={(event) => { event.stopPropagation(); setGuidanceAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index)) }}><CloseOutlined /></button></span>)}</div>}
           </div>
         </Modal>
       </div>
@@ -1523,15 +1554,6 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
       resumeDemo()
       message.success('小盾记下了，会从当前进度继续查')
     }
-    const addGuidanceAttachments = (files: FileList | null) => {
-      if (!files) return
-      setGuidanceAttachments((current) => {
-        const existing = new Set(current.map((file) => `${file.name}-${file.size}`))
-        const additions = Array.from(files).filter((file) => !existing.has(`${file.name}-${file.size}`))
-        return [...current, ...additions].slice(0, 5)
-      })
-      if (guidanceAttachmentInputRef.current) guidanceAttachmentInputRef.current.value = ''
-    }
     return (
       <div className="research-running-page">
         <div className="running-two-column-layout">
@@ -1616,7 +1638,14 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
             </div>
 
             {!isDemoRunning && (
-              <div className="process-guidance-box">
+              <div
+                className={`process-guidance-box${guidanceAttachmentDragging ? ' is-dragging' : ''}`}
+                onDragEnter={(event) => { event.preventDefault(); setGuidanceAttachmentDragging(true) }}
+                onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setGuidanceAttachmentDragging(true) }}
+                onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setGuidanceAttachmentDragging(false) }}
+                onDrop={(event) => { event.preventDefault(); setGuidanceAttachmentDragging(false); addGuidanceAttachments(Array.from(event.dataTransfer.files)) }}
+              >
+                {guidanceAttachmentDragging && <div className="process-guidance-drop-hint"><PaperClipOutlined /><span>松开即可添加附件</span></div>}
                 <div><strong>{suspectedEvents.length > 0 ? `处理 ${suspectedEvents.length} 个怀疑环节` : '调整研究方向'}</strong><span>{suspectedEvents.length > 0 ? '补充说明或材料后，小盾会把这些环节重新检查一遍。' : '可以直接继续，也可以补充要求、附件或标记有问题的环节。'}</span></div>
                 {suspectedEvents.length > 0 && (
                   <div className="suspected-stage-chips">
@@ -1657,7 +1686,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
                       ref={guidanceAttachmentInputRef}
                       type="file"
                       multiple
-                      accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.png,.jpg,.jpeg"
+                      accept={ATTACHMENT_ACCEPT}
                       onChange={(event) => addGuidanceAttachments(event.target.files)}
                     />
                     <Button type="text" icon={<PaperClipOutlined />} onClick={() => guidanceAttachmentInputRef.current?.click()}>添加附件</Button>

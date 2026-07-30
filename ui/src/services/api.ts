@@ -279,6 +279,18 @@ export function uploadDocument(file: File, options: { mode?: 'normal' | 'ai'; sa
   return request<DocumentConversion>(`/api/documents/convert?${params}`, { method: 'POST', body })
 }
 
+export type TaskAttachmentUpload = {
+  upload_id: string
+  filename: string
+  chars: number
+}
+
+export function uploadTaskAttachments(files: File[]) {
+  const body = new FormData()
+  files.forEach((file) => body.append('files', file))
+  return request<{ uploads: TaskAttachmentUpload[] }>('/api/tasks/uploads', { method: 'POST', body })
+}
+
 const taskTypeLabels: Record<string, string> = {
   company: '企业研究',
   policy: '政策研究',
@@ -359,7 +371,7 @@ export const searchWorkspace = (query: string) => request<WorkspaceSearchResult>
   `/api/tasks/search?q=${encodeURIComponent(query.trim())}`,
 )
 
-export async function createTask(input: { topic: string; title?: string; company?: string; researchType?: string; preferredSources?: string[] }) {
+export async function createTask(input: { topic: string; title?: string; company?: string; researchType?: string; preferredSources?: string[]; attachmentIds?: string[] }) {
   const task = await request<ApiTask>('/api/tasks', {
     method: 'POST',
     body: JSON.stringify({
@@ -368,6 +380,7 @@ export async function createTask(input: { topic: string; title?: string; company
       company: input.company ?? '',
       research_type: input.researchType,
       preferred_sources: input.preferredSources ?? [],
+      attachment_ids: input.attachmentIds ?? [],
     }),
   })
   return toWorkspaceTask(task)
@@ -460,26 +473,6 @@ export async function exportReport(taskId: string, format: ReportExportFormat) {
 }
 
 export const getAuditLog = (taskId: string) => request<{ task_id: string; events: unknown[]; resolutions: unknown[] }>(`/api/tasks/${taskId}/audit-log`)
-
-let historyAnalysisCapabilityPromise: Promise<boolean> | null = null
-
-export function supportsCustomHistoryAnalysis() {
-  if (!historyAnalysisCapabilityPromise) {
-    historyAnalysisCapabilityPromise = fetch('/api/openapi.json')
-      .then(async (response) => {
-        if (!response.ok) return false
-        const schema = await response.json() as {
-          paths?: Record<string, { post?: { requestBody?: unknown } }>
-        }
-        const route = Object.entries(schema.paths ?? {}).find(([path]) => (
-          path.endsWith('/tasks/{task_id}/history-analysis')
-        ))?.[1]
-        return Boolean(route?.post?.requestBody)
-      })
-      .catch(() => false)
-  }
-  return historyAnalysisCapabilityPromise
-}
 
 export const startHistoryAnalysis = (taskId: string, options?: HistoryAnalysisRequest) => request<{ status: string; task_id: string }>(
   `/api/tasks/${taskId}/history-analysis`, {
