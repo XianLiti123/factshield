@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { ResearchRun } from './types'
+import { readReopenedReviewIds } from './utils/reviewDrafts'
 
 export type ViewName = 'tasks' | 'workbench' | 'topology' | 'analytics' | 'reports' | 'settings'
 export type TaskPhase = 'draft' | 'running' | 'review' | 'ready' | 'stopped' | 'failed'
@@ -11,6 +12,7 @@ export function getResearchRunPhase(run: ResearchRun): TaskPhase {
     : 'draft'
   if ((reportedPhase === 'review' || reportedPhase === 'ready')
     && (run.progress < 100 || run.claims.length === 0)) return 'running'
+  if (readReopenedReviewIds(run.id).length > 0) return 'review'
   if (reportedPhase === 'review') {
     const hasUnresolvedIssue = run.claims.some((claim) => claim.status !== 'verified' && !claim.humanAction)
     if (!hasUnresolvedIssue) return 'ready'
@@ -413,11 +415,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   })),
   syncTaskRun: (run) => set((state) => ({
     tasks: updateTask(state.tasks, run.id, (task) => {
+      const reopenedReviewIds = readReopenedReviewIds(run.id)
       const reviewClaimIds = run.claims
         .filter((claim) => claim.status !== 'verified' || Boolean(claim.humanAction))
         .map((claim) => claim.id)
       const reviewedClaimIds = run.claims
-        .filter((claim) => Boolean(claim.humanAction))
+        .filter((claim) => Boolean(claim.humanAction) && !reopenedReviewIds.includes(claim.id))
         .map((claim) => claim.id)
       const phase = getResearchRunPhase(run)
       return {
@@ -428,9 +431,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         claimCount: run.claims.length,
         reviewClaimIds,
         reviewedClaimIds,
-        selectedClaimId: run.claims.some((claim) => claim.id === task.selectedClaimId)
+        selectedClaimId: reopenedReviewIds.find((claimId) => reviewClaimIds.includes(claimId))
+          ?? (run.claims.some((claim) => claim.id === task.selectedClaimId)
           ? task.selectedClaimId
-          : (reviewClaimIds[0] ?? run.claims[0]?.id ?? ''),
+          : (reviewClaimIds[0] ?? run.claims[0]?.id ?? '')),
         isDemoRunning: phase === 'running',
       }
     }),

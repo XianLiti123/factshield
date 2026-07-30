@@ -120,7 +120,12 @@ export function TaskCenter() {
       return
     }
     selectTask(task.id)
-    setActiveView(task.phase === 'ready' ? 'reports' : 'workbench')
+    setActiveView('workbench')
+  }
+
+  const openReport = (task: ResearchTaskSession) => {
+    selectTask(task.id)
+    setActiveView('reports')
   }
 
   const submitTask = async () => {
@@ -238,7 +243,7 @@ export function TaskCenter() {
               {
                 title: '进度',
                 key: 'progress',
-                width: 150,
+                width: 178,
                 render: (_, { task }) => (
                   <div className="task-progress-cell"><Progress percent={getTaskProgress(task)} size={[82, 6]} showInfo={false} /><strong>{getTaskProgress(task)}%</strong></div>
                 ),
@@ -262,7 +267,8 @@ export function TaskCenter() {
                 fixed: 'right',
                 render: (_, { task }) => (
                   <div className="task-row-actions">
-                    {task.phase !== 'draft' && <Button type="link" onClick={() => openTask(task)}>{task.phase === 'ready' ? '查看底稿' : '打开'}</Button>}
+                    {task.phase !== 'draft' && <Button type="link" onClick={() => openTask(task)}>{task.phase === 'ready' ? '查看复核' : '打开'}</Button>}
+                    {task.phase === 'ready' && <Tooltip title="查看研究底稿"><Button aria-label="查看研究底稿" icon={<FileTextOutlined />} onClick={() => openReport(task)} /></Tooltip>}
                     {task.phase === 'running' && (
                       <Tooltip title={task.persisted ? '终止任务' : task.isDemoRunning ? '暂停演示' : '继续演示'}>
                         <Button

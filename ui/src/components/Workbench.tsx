@@ -15,6 +15,7 @@ import {
   SendOutlined,
   SwapOutlined,
   RetweetOutlined,
+  RollbackOutlined,
   UnorderedListOutlined,
   CloseOutlined,
 } from '@ant-design/icons'
@@ -33,6 +34,15 @@ import {
 } from '../services/api'
 import { StatusBadge } from './StatusBadge'
 import { getClaimDisplayStatement, getRewrittenClaimStatement, isClaimRemoved } from '../utils/claims'
+import {
+  getStatusBeforeHumanReview,
+  persistReopenedReviewIds,
+  persistReviewDrafts,
+  readReopenedReviewIds,
+  readReviewDrafts,
+  type ReviewAction,
+  type ReviewResolution,
+} from '../utils/reviewDrafts'
 
 type ClaimVisibility = 'issues' | 'all'
 type EvidenceView = 'text' | 'source'
@@ -433,10 +443,12 @@ function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: E
   )
 }
 
-function VerdictPanel({ claim, evidenceList, onResolve, onRetry, persisted, retryProgress, onDismissRetry }: {
+function VerdictPanel({ claim, evidenceList, onResolve, onUndo, draftResolution, onRetry, persisted, retryProgress, onDismissRetry }: {
   claim: Claim
   evidenceList: Evidence[]
-  onResolve: (action: 'reject' | 'keep' | 'remove' | 'rewrite', decision: string) => Promise<boolean>
+  onResolve: (action: ReviewAction, decision: string) => Promise<boolean>
+  onUndo: () => void
+  draftResolution: boolean
   onRetry: () => Promise<void>
   persisted: boolean
   retryProgress: ClaimRetryProgress | null
@@ -555,13 +567,18 @@ function VerdictPanel({ claim, evidenceList, onResolve, onRetry, persisted, retr
       </div>
 
       {claim.humanAction ? (
-        <div className={`resolved-view-bar ${claim.humanAction}`}>
+        <div className={`resolved-view-bar ${claim.humanAction}${draftResolution ? ' draft' : ''}`}>
           <CheckOutlined />
           <div>
-            <strong>{removed ? '该表述已从最终结论排除' : rewrittenStatement ? '已采用调整后的表述' : claim.humanAction === 'rewrite' ? '尚未填写调整后的完整表述' : '人工复核已完成'}</strong>
-            <span>{removed ? '原句仍保留在全部核验结论和审计记录中' : rewrittenStatement ? '原句与调整结果均已留痕，可继续修改' : '处理动作已保留在审计记录中'}</span>
+            <strong>{draftResolution
+              ? removed ? '已暂定排除该表述' : rewrittenStatement ? '调整后的表述已暂存' : '复核判断已暂存'
+              : removed ? '该表述已从最终结论排除' : rewrittenStatement ? '已采用调整后的表述' : claim.humanAction === 'rewrite' ? '尚未填写调整后的完整表述' : '人工复核已完成'}</strong>
+            <span>{draftResolution ? '当前只保存在复核草稿中，确认“研究完成”后才会提交' : removed ? '原句仍保留在全部核验结论和审计记录中' : rewrittenStatement ? '原句与调整结果均已留痕，可继续修改' : '处理动作已保留在审计记录中'}</span>
           </div>
-          {claim.humanAction === 'rewrite' && <button onClick={openRewriteEditor}>{rewrittenStatement ? '重新调整' : '补充表述'}</button>}
+          <div className="resolved-view-actions">
+            {claim.humanAction === 'rewrite' && <button onClick={openRewriteEditor}>{rewrittenStatement ? '重新调整' : '补充表述'}</button>}
+            <button className="undo" onClick={onUndo}><RollbackOutlined />{draftResolution ? '撤回' : '撤回复核'}</button>
+          </div>
         </div>
       ) : claim.status === 'verified' ? (
         <div className="verified-view-bar">
@@ -770,8 +787,11 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   const queryClient = useQueryClient()
   const [claimVisibility, setClaimVisibility] = useState<ClaimVisibility>('issues')
   const [previewSelectedClaimId, setPreviewSelectedClaimId] = useState('claim-3')
-  const [previewReviewedClaimIds, setPreviewReviewedClaimIds] = useState<string[]>([])
-  const [localClaimResolutions, setLocalClaimResolutions] = useState<Record<string, { action: 'reject' | 'keep' | 'remove' | 'rewrite'; note: string }>>({})
+  const [localClaimResolutions, setLocalClaimResolutions] = useState<Record<string, ReviewResolution>>(() => readReviewDrafts(run.id))
+  const [reopenedReviewIds, setReopenedReviewIds] = useState<string[]>(() => readReopenedReviewIds(run.id))
+  const [completionReviewing, setCompletionReviewing] = useState(false)
+  const [completeResearchOpen, setCompleteResearchOpen] = useState(false)
+  const [completingResearch, setCompletingResearch] = useState(false)
   const [guidance, setGuidance] = useState('')
   const [guidanceHistory, setGuidanceHistory] = useState<GuidanceRecord[]>([])
   const [guidanceAttachments, setGuidanceAttachments] = useState<File[]>([])
@@ -787,6 +807,14 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   const guidanceAttachmentInputRef = useRef<HTMLInputElement>(null)
   const activeTask = useWorkspaceStore(getActiveTask)
   const searchFocus = useWorkspaceStore((state) => state.searchFocus)
+
+  useEffect(() => {
+    setLocalClaimResolutions(readReviewDrafts(run.id))
+    setReopenedReviewIds(readReopenedReviewIds(run.id))
+    setCompletionReviewing(false)
+    setCompleteResearchOpen(false)
+    setCompletingResearch(false)
+  }, [run.id])
   // 持久化任务在详情页以 ResearchRun 完整快照为准，避免任务列表摘要先一步
   // 切到 review，和上一轮仍在 running 的空主张明细拼成短暂空页。
   const persistedRunPhase = getResearchRunPhase(run)
@@ -812,28 +840,27 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   const addTask = useWorkspaceStore((state) => state.addTask)
   // 真实任务以完整后端快照为准：处理后的疑点可能被改成 verified，但 humanAction 会保留，
   // 因此“非 verified 或存在 humanAction”才是稳定的总疑点口径，不能复用可能残留的本地数组。
-  const effectiveClaims = activeTask.persisted && !preview
-    ? run.claims
-    : run.claims.map((claim) => {
+  const effectiveClaims = run.claims.map((claim) => {
         const resolution = localClaimResolutions[claim.id]
-        if (!resolution) return claim
-        return {
+        if (resolution) return {
+            ...claim,
+            humanAction: resolution.action,
+            humanNote: resolution.note,
+            status: resolution.action === 'rewrite' || resolution.action === 'keep' ? 'verified' as const : 'conflict' as const,
+          }
+        if (reopenedReviewIds.includes(claim.id) && claim.humanAction) return {
           ...claim,
-          humanAction: resolution.action,
-          humanNote: resolution.note,
-          status: resolution.action === 'rewrite' || resolution.action === 'keep' ? 'verified' as const : 'conflict' as const,
+          humanAction: null,
+          humanNote: null,
+          status: getStatusBeforeHumanReview(claim.humanAction),
         }
+        return claim
       })
-  const issueClaims = activeTask.persisted && !preview
-    ? effectiveClaims.filter((claim) => claim.status !== 'verified' || Boolean(claim.humanAction))
-    : effectiveClaims.filter((claim) => claim.status !== 'verified' || Boolean(claim.humanAction))
-  const reviewedIssueIds = activeTask.persisted && !preview
-    ? issueClaims.filter((claim) => Boolean(claim.humanAction)).map((claim) => claim.id)
-    : preview
-      ? previewReviewedClaimIds.filter((claimId) => issueClaims.some((claim) => claim.id === claimId))
-      : activeTask.reviewedClaimIds.filter((claimId) => issueClaims.some((claim) => claim.id === claimId))
+  const issueClaims = effectiveClaims.filter((claim) => claim.status !== 'verified' || Boolean(claim.humanAction))
+  const reviewedIssueIds = issueClaims.filter((claim) => Boolean(claim.humanAction)).map((claim) => claim.id)
   const pendingClaims = issueClaims.filter((claim) => !reviewedIssueIds.includes(claim.id))
   const reviewedIssueCount = issueClaims.length - pendingClaims.length
+  const draftReviewCount = issueClaims.filter((claim) => Boolean(localClaimResolutions[claim.id])).length
   const visibleClaims = focusedClaimId || claimVisibility === 'all' ? effectiveClaims : pendingClaims
   const selectedClaim = visibleClaims.find((claim) => claim.id === selectedClaimId)
     ?? visibleClaims[0]
@@ -940,27 +967,107 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
     }
   }, [activeTask.persisted, preview, queryClient, run.id, taskPhase])
 
-  const handleResolve = async (action: 'reject' | 'keep' | 'remove' | 'rewrite', decision: string) => {
+  const updateReviewDrafts = (updater: (current: Record<string, ReviewResolution>) => Record<string, ReviewResolution>) => {
+    setLocalClaimResolutions((current) => {
+      const next = updater(current)
+      persistReviewDrafts(run.id, next)
+      return next
+    })
+  }
+
+  const updateReopenedReviewIds = (updater: (current: string[]) => string[]) => {
+    setReopenedReviewIds((current) => {
+      const next = updater(current)
+      persistReopenedReviewIds(run.id, next)
+      return next
+    })
+  }
+
+  const handleResolve = async (action: ReviewAction, decision: string) => {
     if (!selectedClaim) return false
     const nextClaim = pendingClaims.find((claim) => claim.id !== selectedClaim.id)
-    if (activeTask.persisted && !preview) {
-      try {
-        await resolvePersistedClaim(run.id, selectedClaim.id, action, decision)
-        await queryClient.invalidateQueries({ queryKey: ['research-run', run.id] })
-      } catch (error) {
-        message.error(error instanceof Error ? error.message : '裁决提交失败')
-        return false
-      }
-    } else if (preview) {
-      setLocalClaimResolutions((current) => ({ ...current, [selectedClaim.id]: { action, note: decision } }))
-      setPreviewReviewedClaimIds((current) => current.includes(selectedClaim.id) ? current : [...current, selectedClaim.id])
-      if (nextClaim) setPreviewSelectedClaimId(nextClaim.id)
+    updateReviewDrafts((current) => ({ ...current, [selectedClaim.id]: { action, note: decision } }))
+    if (nextClaim) {
+      if (preview) setPreviewSelectedClaimId(nextClaim.id)
+      else selectClaim(nextClaim.id)
     } else {
-      setLocalClaimResolutions((current) => ({ ...current, [selectedClaim.id]: { action, note: decision } }))
-      resolveClaim(selectedClaim.id, nextClaim?.id)
+      setCompletionReviewing(false)
     }
-    message.success(nextClaim ? `${decision}，已自动进入下一条` : `${decision}，所有疑点已处理`)
+    message.success(nextClaim ? `${decision}，已暂存并进入下一条` : `${decision}，所有判断已暂存，请确认研究完成`)
     return true
+  }
+
+  const handleUndoResolution = () => {
+    if (!selectedClaim) return
+    const claimId = selectedClaim.id
+    if (localClaimResolutions[claimId]) {
+      updateReviewDrafts((current) => {
+        const { [claimId]: _removed, ...rest } = current
+        return rest
+      })
+    } else {
+      const submittedClaim = run.claims.find((claim) => claim.id === claimId)
+      if (!submittedClaim?.humanAction) return
+      updateReopenedReviewIds((current) => current.includes(claimId) ? current : [...current, claimId])
+    }
+    setCompletionReviewing(true)
+    void queryClient.invalidateQueries({ queryKey: ['workspace-tasks'] })
+    message.success('已撤回这条复核判断，可以重新处理')
+  }
+
+  const reviewCompletedResolutions = () => {
+    const firstDraftClaim = issueClaims.find((claim) => Boolean(localClaimResolutions[claim.id])) ?? issueClaims[0]
+    setClaimVisibility('all')
+    if (firstDraftClaim) {
+      if (preview) setPreviewSelectedClaimId(firstDraftClaim.id)
+      else selectClaim(firstDraftClaim.id)
+    }
+    setCompletionReviewing(true)
+  }
+
+  const handleCompleteResearch = async () => {
+    if (pendingClaims.length > 0) {
+      message.warning(`还有 ${pendingClaims.length} 条疑点尚未处理`)
+      return
+    }
+    const drafts = Object.entries(localClaimResolutions)
+      .filter(([claimId]) => issueClaims.some((claim) => claim.id === claimId))
+    setCompletingResearch(true)
+    try {
+      if (activeTask.persisted && !preview) {
+        const failed: string[] = []
+        const submitted: string[] = []
+        for (const [claimId, resolution] of drafts) {
+          try {
+            await resolvePersistedClaim(run.id, claimId, resolution.action, resolution.note)
+            submitted.push(claimId)
+          } catch {
+            failed.push(claimId)
+          }
+        }
+        if (submitted.length > 0) {
+          updateReviewDrafts((current) => Object.fromEntries(
+            Object.entries(current).filter(([claimId]) => !submitted.includes(claimId)),
+          ))
+          updateReopenedReviewIds((current) => current.filter((claimId) => !submitted.includes(claimId)))
+          await queryClient.invalidateQueries({ queryKey: ['research-run', run.id] })
+          await queryClient.invalidateQueries({ queryKey: ['workspace-tasks'] })
+        }
+        if (failed.length > 0) {
+          message.error(`${failed.length} 条复核判断提交失败，成功项已保留，其余仍在草稿中`)
+          return
+        }
+      } else if (!preview) {
+        drafts.forEach(([claimId]) => resolveClaim(claimId))
+        updateReviewDrafts(() => ({}))
+        updateReopenedReviewIds(() => [])
+      }
+      setCompleteResearchOpen(false)
+      message.success('研究已完成，正在打开研究底稿')
+      setActiveView('reports')
+    } finally {
+      setCompletingResearch(false)
+    }
   }
 
   const handleRetry = async () => {
@@ -1623,21 +1730,55 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
     )
   }
 
-  if (!focusedClaimId && (taskPhase === 'ready' || (taskPhase === 'review' && issueClaims.length > 0 && pendingClaims.length === 0))) {
+  if (!focusedClaimId && !completionReviewing && (
+    (taskPhase === 'ready' && pendingClaims.length === 0)
+    || (taskPhase === 'review' && issueClaims.length > 0 && pendingClaims.length === 0)
+  )) {
     const autoVerifiedCount = run.claims.filter((claim) => claim.status === 'verified' && !claim.humanAction).length
+    const awaitingFinalConfirmation = draftReviewCount > 0
     return (
       <div className="research-ready-page">
         <section className="ready-focus-card">
           <div className="ready-icon"><CheckOutlined /></div>
-          <span>研究已完成</span>
-          <h2>疑点已全部处理，底稿可以交付。</h2>
-          <p>{run.claims.length} 条事实主张、{run.evidence.length} 份原始证据与双层核验记录已经整理完毕。</p>
+          <span>{awaitingFinalConfirmation ? '复核已完成' : '研究已完成'}</span>
+          <h2>{awaitingFinalConfirmation ? '所有疑点都已处理，确认后完成研究。' : '疑点已全部处理，底稿可以交付。'}</h2>
+          <p>{awaitingFinalConfirmation
+            ? `${draftReviewCount} 条人工判断仍是可撤回的复核草稿；确认“研究完成”后才会提交并写入最终底稿。`
+            : `${run.claims.length} 条事实主张、${run.evidence.length} 份原始证据与双层核验记录已经整理完毕。`}</p>
           <div className="ready-summary"><span><strong>{autoVerifiedCount}</strong>自动归档</span><span><strong>{reviewedIssueCount}</strong>人工复核</span><span><strong>{run.evidence.length}</strong>原始证据</span></div>
           <div className="ready-actions">
-            <Button type="primary" size="large" icon={<CloudDownloadOutlined />} onClick={() => setActiveView('reports')}>查看并导出底稿</Button>
-            <Button size="large" onClick={() => setActiveView('tasks')}>返回任务列表</Button>
+            {awaitingFinalConfirmation ? (
+              <>
+                <Button type="primary" size="large" icon={<CheckOutlined />} onClick={() => setCompleteResearchOpen(true)}>研究完成</Button>
+                <Button size="large" icon={<RollbackOutlined />} onClick={reviewCompletedResolutions}>返回检查</Button>
+              </>
+            ) : (
+              <>
+                <Button type="primary" size="large" icon={<CloudDownloadOutlined />} onClick={() => setActiveView('reports')}>查看并导出底稿</Button>
+                <Button size="large" icon={<FileSearchOutlined />} onClick={reviewCompletedResolutions}>查看复核记录</Button>
+                <Button size="large" onClick={() => setActiveView('tasks')}>返回任务列表</Button>
+              </>
+            )}
           </div>
         </section>
+        <Modal
+          title="确认完成这项研究？"
+          open={completeResearchOpen}
+          onCancel={() => setCompleteResearchOpen(false)}
+          onOk={() => void handleCompleteResearch()}
+          confirmLoading={completingResearch}
+          okText="确认研究完成"
+          cancelText="返回检查"
+          width={560}
+        >
+          <div className="research-complete-confirm">
+            <CheckOutlined />
+            <div>
+              <strong>{draftReviewCount} 条人工复核判断将正式提交</strong>
+              <p>提交成功后，系统会按最终判断更新结论与底稿。确认前仍可返回逐条检查或撤回。</p>
+            </div>
+          </div>
+        </Modal>
       </div>
     )
   }
@@ -1653,8 +1794,11 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   return (
     <div className="workbench-shell">
       <div className="review-queue-header">
-        <div><span>系统已完成自动核验</span><h2>只需处理 {pendingClaims.length} 条疑点</h2><p>左侧选疑点，中间看原文，右侧做一次判断。处理后自动进入下一条。</p></div>
-        <div className="review-progress"><strong>{reviewedIssueCount} / {issueClaims.length}</strong><span>已处理</span></div>
+        <div><span>系统已完成自动核验</span><h2>只需处理 {pendingClaims.length} 条疑点</h2><p>判断会先暂存，完成研究前可随时撤回；处理后自动进入下一条。</p></div>
+        <div className="review-header-actions">
+          {pendingClaims.length === 0 && draftReviewCount > 0 && <Button type="primary" icon={<CheckOutlined />} onClick={() => setCompletionReviewing(false)}>返回完成确认</Button>}
+          <div className="review-progress"><strong>{reviewedIssueCount} / {issueClaims.length}</strong><span>已处理</span></div>
+        </div>
       </div>
       <div className="workbench-grid">
         <section className="panel evidence-workspace">
@@ -1672,6 +1816,8 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
           claim={selectedClaim}
           evidenceList={evidenceList}
           onResolve={handleResolve}
+          onUndo={handleUndoResolution}
+          draftResolution={Boolean(localClaimResolutions[selectedClaim.id])}
           onRetry={handleRetry}
           persisted={Boolean(activeTask.persisted && !preview)}
           retryProgress={retryProgress}

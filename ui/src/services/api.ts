@@ -1,5 +1,6 @@
 import { getResearchRunPhase, type ResearchTaskSession, type TaskPhase } from '../store'
 import type { ResearchRun } from '../types'
+import { readReopenedReviewIds } from '../utils/reviewDrafts'
 
 const TOKEN_KEY = 'factshield.auth.token'
 const SESSION_KEY_PREFIX = 'factshield.chat.session.'
@@ -320,23 +321,26 @@ export async function listTasks() {
   // 列表摘要只有 task.status，没有每条主张的 humanAction。对于已经跑完但仍被
   // 后端摘要标成 review 的任务，必须补读详情才能区分“仍待复核”和“实际已完成”。
   return Promise.all(tasks.map(async (task) => {
-    if (task.phase !== 'review' || (task.progress ?? 0) < 100 || (task.claimCount ?? 0) === 0) return task
+    const reopenedReviewIds = readReopenedReviewIds(task.id)
+    const shouldReadReviewDetail = task.phase === 'review' || (task.phase === 'ready' && reopenedReviewIds.length > 0)
+    if (!shouldReadReviewDetail || (task.progress ?? 0) < 100 || (task.claimCount ?? 0) === 0) return task
     try {
       const run = await getTask(task.id)
       const reviewClaimIds = run.claims
         .filter((claim) => claim.status !== 'verified' || Boolean(claim.humanAction))
         .map((claim) => claim.id)
       const reviewedClaimIds = run.claims
-        .filter((claim) => Boolean(claim.humanAction))
+        .filter((claim) => Boolean(claim.humanAction) && !reopenedReviewIds.includes(claim.id))
         .map((claim) => claim.id)
-      const phase = getResearchRunPhase(run)
+      const phase = reopenedReviewIds.length > 0 ? 'review' : getResearchRunPhase(run)
       return {
         ...task,
         phase,
         phaseConfirmed: true,
         reviewClaimIds,
         reviewedClaimIds,
-        selectedClaimId: reviewClaimIds.find((claimId) => !reviewedClaimIds.includes(claimId))
+        selectedClaimId: reopenedReviewIds.find((claimId) => reviewClaimIds.includes(claimId))
+          ?? reviewClaimIds.find((claimId) => !reviewedClaimIds.includes(claimId))
           ?? reviewClaimIds[0]
           ?? run.claims[0]?.id
           ?? '',
