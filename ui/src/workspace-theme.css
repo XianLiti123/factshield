@@ -381,8 +381,8 @@
 .metric-card span, .metric-card small { display: block; }
 .metric-card span { color: #70817d; font-size: 9px; }
 .metric-card strong { display: block; margin: 6px 0 4px; color: #1b312f; font-size: 22px; line-height: 1; }
-.metric-card small { color: #8b9996; font-size: 8px; }
-.metric-card small i { display: inline-block; width: 6px; height: 6px; margin-right: 4px; border-radius: 50%; background: #3aa67e; }
+.metric-card small { display: inline-flex; align-items: center; gap: 7px; color: #8b9996; font-size: 8px; line-height: 1.35; }
+.metric-card small i { width: 6px; height: 6px; margin: 0; display: block; flex: 0 0 6px; border-radius: 50%; background: #3aa67e; }
 .metric-card small i.warn { background: var(--fs-amber); }
 .metric-card > .anticon { width: 30px; height: 30px; display: grid; place-items: center; color: var(--fs-teal-700); background: #eaf4f1; border-radius: 7px; font-size: 14px; }
 
@@ -514,7 +514,9 @@
 .research-title-row { margin-top: 0; align-items: flex-end; }
 .title-line { gap: 9px; }
 .title-line h1 { color: var(--fs-text); font-size: 18px; letter-spacing: 0; }
-.running-tag { color: #1e725a !important; border-color: #b9ded2 !important; background: #edf8f4 !important; }
+.running-tag { min-height: 24px; padding: 1px 8px !important; display: inline-flex !important; align-items: center; gap: 7px; color: #1e725a !important; border-color: #b9ded2 !important; background: #edf8f4 !important; line-height: 1.2 !important; }
+.running-tag .ant-tag-icon { margin-inline-end: 0 !important; display: inline-flex; align-items: center; justify-content: center; line-height: 1; }
+.running-tag .pulse-dot { margin: 0; display: block; flex: 0 0 6px; }
 .research-meta { color: #596e68; font-size: 11px; }
 .run-overview { min-height: 72px; margin: 11px 0 0; display: grid; grid-template-columns: minmax(280px, 1.65fr) repeat(5, minmax(76px, .58fr)); gap: 9px; border: 0; background: transparent; border-radius: 0; box-shadow: none; }
 .progress-block { padding: 11px 14px; background: #fff; border: 1px solid var(--fs-border); border-radius: 8px; }
