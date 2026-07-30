@@ -114,7 +114,8 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
   const pendingCount = pendingItems.length
   const nextPendingItem = pendingItems[0]
   const displayName = localProfile.displayName?.trim() || user.display_name?.trim() || user.email.split('@')[0] || '研究员'
-  const avatarText = Array.from(displayName)[0] || '研'
+  const avatarInitial = Array.from(displayName)[0] || '研'
+  const avatarText = /^[a-z]$/i.test(avatarInitial) ? avatarInitial.toUpperCase() : avatarInitial
   const avatarSrc = localProfile.avatar
 
   const saveLocalProfile = (change: Partial<LocalProfile>) => {
@@ -378,7 +379,7 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
               overlayClassName="account-dropdown"
             >
               <button className={accountMenuOpen ? 'profile-chip open' : 'profile-chip'} aria-label="打开账户菜单" aria-expanded={accountMenuOpen}>
-                <Avatar size={40} className="user-avatar" src={avatarSrc}>{avatarText}</Avatar>
+                <Avatar size={40} className="user-avatar" src={avatarSrc}><span className="avatar-glyph">{avatarText}</span></Avatar>
                 <div className="profile-chip-copy"><strong>{displayName}</strong><span>{user.email}</span></div>
                 <DownOutlined />
               </button>
@@ -398,7 +399,7 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
         footer={<Button type="primary" onClick={() => setProfileOpen(false)}>知道了</Button>}
       >
         <div className="account-profile-hero">
-          <Avatar size={58} src={avatarSrc}>{avatarText}</Avatar>
+          <Avatar size={58} src={avatarSrc}><span className="avatar-glyph">{avatarText}</span></Avatar>
           <div>
             <span>当前登录账号</span>
             <strong>{displayName}</strong>

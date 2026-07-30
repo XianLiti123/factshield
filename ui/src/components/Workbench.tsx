@@ -18,7 +18,7 @@ import {
   UnorderedListOutlined,
   CloseOutlined,
 } from '@ant-design/icons'
-import { Button, Drawer, Empty, Input, Modal, Progress, Segmented, Steps, Table, Tag, message } from 'antd'
+import { Button, Drawer, Empty, Input, Modal, Progress, Segmented, Steps, message } from 'antd'
 import { useQueryClient } from '@tanstack/react-query'
 import type { Claim, Evidence, ResearchRun } from '../types'
 import { getActiveTask, useWorkspaceStore } from '../store'
@@ -43,6 +43,15 @@ type GuidanceRecord = {
 }
 
 type EventStreamStatus = 'idle' | 'connecting' | 'live' | 'ended' | 'error'
+
+type ClaimRetryProgress = {
+  claimId: string
+  status: 'starting' | 'running' | 'success' | 'error'
+  title: string
+  detail: string
+  afterSeq: number
+  evidenceCountBefore: number
+}
 
 function backendActorIcon(actor: string) {
   if (actor === 'collector') return <CloudDownloadOutlined />
@@ -373,14 +382,19 @@ function EvidenceViewer({ evidenceList }: { evidenceList: Evidence[] }) {
   )
 }
 
-function VerdictPanel({ claim, onResolve, onRetry, persisted }: {
+function VerdictPanel({ claim, evidenceList, onResolve, onRetry, persisted, retryProgress, onDismissRetry }: {
   claim: Claim
+  evidenceList: Evidence[]
   onResolve: (action: 'reject' | 'keep' | 'remove' | 'rewrite', decision: string) => void
   onRetry: () => Promise<void>
   persisted: boolean
+  retryProgress: ClaimRetryProgress | null
+  onDismissRetry: () => void
 }) {
   const [auditOpen, setAuditOpen] = useState(false)
   const [retryOpen, setRetryOpen] = useState(false)
+  const currentRetry = retryProgress?.claimId === claim.id ? retryProgress : null
+  const retryBusy = retryProgress?.status === 'starting' || retryProgress?.status === 'running'
   const decisions = claim.status === 'conflict'
     ? [
         { label: '不采纳', action: 'reject' as const, result: '不采纳该主张' },
@@ -388,22 +402,53 @@ function VerdictPanel({ claim, onResolve, onRetry, persisted }: {
       ]
     : claim.status === 'review' ? [
         { label: '删除该表述', action: 'remove' as const, result: '删除无法证实的表述' },
-        { label: '改为计划投产', action: 'rewrite' as const, result: '改写为计划投产' },
+        { label: '调整表述', action: 'rewrite' as const, result: '按现有证据调整表述' },
       ] : []
 
-  const comparisonRows = [
-    { key: '1', source: '2025 年年度报告', value: '原材料降本', basis: '营业成本分析', stance: '支持原料影响', type: '公司公告' },
-    { key: '2', source: '上海有色网 SMM', value: '均价 -21.4%', basis: '电池级碳酸锂年度均价', stance: '支持原料影响', type: '行业数据' },
-    { key: '3', source: '投资者关系记录', value: '多因素共同作用', basis: '技术、结构、海外、原料', stance: '质疑单一归因', type: '监管披露' },
-  ]
-
-  const auditRows = [
-    { key: '1', time: '14:41:26', actor: '独立复核', action: '完成二级复核', input: '小盾的一级汇总 v0.2', output: '标记“归因冲突”，建议重新取证', evidence: 'EV-04 / EV-05 / EV-06' },
-    { key: '2', time: '14:41:08', actor: '独立复核', action: '检查证据完整性', input: '3 条原文证据及定位', output: '证据可访问，归因强度不足', evidence: '3 / 3 已验证' },
-    { key: '3', time: '14:40:08', actor: '小盾', action: '生成一级汇总结论', input: '4 组后台核验结果', output: '初步判断陈述基本成立', evidence: '3 条证据绑定' },
-    { key: '4', time: '14:38:36', actor: '证据检索', action: '检索匹配原文', input: '毛利率改善归因核验点', output: '返回 3 个原文片段及坐标', evidence: '相似度 0.86–0.94' },
-    { key: '5', time: '14:36:42', actor: '文档解析', action: '提取结构化指标', input: '年报第 41 页、调研记录问题 12', output: '提取成本与产品结构描述', evidence: '原文坐标已绑定' },
-  ]
+  const evidenceSummaries = evidenceList.reduce<Array<{
+    key: string
+    source: string
+    quote: string
+    basis: string
+    relation: Evidence['relation']
+    duplicateCount: number
+  }>>((summaries, evidence) => {
+    const source = evidence.publisher || evidence.title || '来源未标注'
+    const quote = evidence.quote?.trim() || '未返回可展示的原文片段'
+    const basis = [evidence.sourceType, evidence.locator].filter(Boolean).join(' · ') || '未返回原文定位'
+    const duplicate = summaries.find((item) => (
+      item.source === source
+      && item.quote === quote
+      && item.relation === evidence.relation
+    ))
+    if (duplicate) {
+      duplicate.duplicateCount += 1
+      return summaries
+    }
+    summaries.push({
+      key: evidence.id,
+      source,
+      quote,
+      basis,
+      relation: evidence.relation,
+      duplicateCount: 1,
+    })
+    return summaries
+  }, [])
+  const reviewHeading = evidenceList.length === 0
+    ? '为什么这条还不能确认'
+    : claim.status === 'conflict'
+      ? '为什么这条需要你判断'
+      : '现有证据还差什么'
+  const reviewExplanation = claim.conflictReason
+    || (evidenceList.length === 0
+      ? '本轮没有找到能够直接支持或质疑这句话的原文，因此系统没有自动确认。'
+      : '当前证据还不足以完整支持原句，需要你结合原文决定是否保留或调整。')
+  const decisionSummary = evidenceList.length === 0 || claim.issueType?.includes('缺失')
+    ? '当前没有原文证据可以核对'
+    : claim.status === 'conflict'
+      ? '现有证据之间存在矛盾'
+      : '现有证据还不足以确认原句'
 
   return (
     <section className="panel verdict-panel">
@@ -430,12 +475,29 @@ function VerdictPanel({ claim, onResolve, onRetry, persisted }: {
         <div className={`quick-decision-bar ${claim.status}`}>
           <div>
             <span>你的判断</span>
-            <strong>{claim.status === 'conflict' ? '归因证据存在冲突' : '现有证据无法证实该表述'}</strong>
+            <strong>{decisionSummary}</strong>
           </div>
           {decisions.map((decision) => (
             <button key={decision.label} onClick={() => onResolve(decision.action, decision.result)}>{decision.label}</button>
           ))}
-          <button className="primary" onClick={() => setRetryOpen(true)}><RetweetOutlined /> 重新取证</button>
+          <button className="primary" disabled={retryBusy} onClick={() => setRetryOpen(true)}>
+            <RetweetOutlined /> {currentRetry && retryBusy ? '取证中…' : retryBusy ? '其他主张取证中' : '重新取证'}
+          </button>
+        </div>
+      )}
+
+      {currentRetry && (
+        <div className={`claim-retry-progress ${currentRetry.status}`} role="status">
+          <span className="claim-retry-icon">
+            {currentRetry.status === 'success' ? <CheckOutlined /> : currentRetry.status === 'error' ? <CloseOutlined /> : <RetweetOutlined />}
+          </span>
+          <div>
+            <strong>{currentRetry.title}</strong>
+            <span>{currentRetry.detail}</span>
+          </div>
+          {(currentRetry.status === 'success' || currentRetry.status === 'error') && (
+            <button aria-label="关闭重新取证状态" onClick={onDismissRetry}><CloseOutlined /></button>
+          )}
         </div>
       )}
 
@@ -443,7 +505,7 @@ function VerdictPanel({ claim, onResolve, onRetry, persisted }: {
         <div className="verdict-card supervisor">
           <div className="verdict-card-header">
             <div className="verdict-avatar">盾</div>
-            <div><strong>小盾的第一轮判断</strong><span><ClockCircleOutlined /> 14:40:08 完成</span></div>
+            <div><strong>小盾的第一轮判断</strong><span><ClockCircleOutlined /> 已完成</span></div>
             <span className="verdict-state"><CheckOutlined /> 已完成</span>
           </div>
           <p>{claim.supervisorVerdict}</p>
@@ -455,9 +517,9 @@ function VerdictPanel({ claim, onResolve, onRetry, persisted }: {
         <div className="verdict-card reviewer">
           <div className="verdict-card-header">
             <div className="verdict-avatar">复</div>
-            <div><strong>独立复核</strong><span><ClockCircleOutlined /> 14:41:26 完成</span></div>
+            <div><strong>独立复核</strong><span><ClockCircleOutlined /> 已完成</span></div>
             <span className={claim.status === 'verified' ? 'verdict-state' : 'verdict-state warning'}>
-              {claim.status === 'verified' ? <><CheckOutlined /> 一致</> : '发现分歧'}
+              {claim.status === 'verified' ? <><CheckOutlined /> 一致</> : evidenceList.length === 0 ? '证据不足' : '需要研判'}
             </span>
           </div>
           <p>{claim.reviewerVerdict}</p>
@@ -465,73 +527,84 @@ function VerdictPanel({ claim, onResolve, onRetry, persisted }: {
         </div>
       </div>
 
-      {claim.conflictReason && (
+      {claim.status !== 'verified' && (
         <div className="conflict-box">
-          <div className="conflict-title"><SwapOutlined /><strong>高度存疑说明</strong><span>{claim.issueType ?? '证据冲突'}</span></div>
-          <p>{claim.conflictReason}</p>
-          <div className="comparison-table-wrap">
-            <div className="comparison-title"><strong>多源依据并排对比</strong><span>问题类型与可信度等级分开呈现</span></div>
-            <Table
-              size="small"
-              pagination={false}
-              tableLayout="fixed"
-              dataSource={comparisonRows}
-              columns={[
-                { title: '来源', dataIndex: 'source', width: '23%' },
-                { title: '披露内容', dataIndex: 'value', width: '21%' },
-                { title: '口径/依据', dataIndex: 'basis', width: '28%' },
-                { title: '关系', dataIndex: 'stance', width: '28%', render: (value) => <Tag color={value.startsWith('质疑') ? 'red' : 'green'}>{value}</Tag> },
-              ]}
-            />
-          </div>
-        </div>
-      )}
-
-      {!claim.conflictReason && claim.status === 'review' && (
-        <div className="review-box">
-          <div className="conflict-title"><SafetyCertificateOutlined /><strong>当前证据不足</strong><span>{claim.issueType}</span></div>
-          <p>系统只能确认项目将分阶段释放产能，现有原文没有承诺“2026 年第四季度满产”。</p>
+          <div className="conflict-title"><SafetyCertificateOutlined /><strong>{reviewHeading}</strong><span>{claim.issueType ?? (evidenceList.length === 0 ? '证据缺失' : '需要复核')}</span></div>
+          <p>{reviewExplanation}</p>
+          {evidenceSummaries.length > 0 ? (
+            <div className="claim-evidence-summary">
+              <div className="claim-evidence-summary-head">
+                <strong>相关原文</strong>
+                <span>{evidenceList.length} 条证据{evidenceSummaries.length < evidenceList.length ? ` · 合并为 ${evidenceSummaries.length} 组` : ''}</span>
+              </div>
+              <div className="claim-evidence-summary-list">
+                {evidenceSummaries.map((evidence) => (
+                  <article className="claim-evidence-summary-item" key={evidence.key}>
+                    <div className="claim-evidence-summary-meta">
+                      <strong>{evidence.source}</strong>
+                      {evidence.duplicateCount > 1 && <span>重复 {evidence.duplicateCount} 条</span>}
+                      <i className={evidence.relation}>{evidence.relation === 'challenge' ? '质疑' : '支持'}</i>
+                    </div>
+                    <p>{evidence.quote}</p>
+                    <small>{evidence.basis}</small>
+                  </article>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="claim-evidence-empty">
+              <FileSearchOutlined />
+              <div><strong>当前没有可比较的原文证据</strong><span>可以发起重新取证；找到原文后，这里才会按“支持 / 质疑”展示真实关系。</span></div>
+            </div>
+          )}
         </div>
       )}
 
       <div className="audit-mini">
-        <div className="audit-title"><strong>关键审计记录</strong><button onClick={() => setAuditOpen(true)}>查看全部</button></div>
-        <div><i className="blue" /><span>14:41:26</span><p>独立复核已完成</p></div>
-        <div><i className="orange" /><span>14:41:08</span><p>识别到因果归因证据不足</p></div>
-        <div><i className="green" /><span>14:40:08</span><p>小盾给出第一轮判断</p></div>
+        <div className="audit-title"><strong>当前主张处理记录</strong><button onClick={() => setAuditOpen(true)}>查看详情</button></div>
+        <div><i className="green" /><span>判断</span><p>{claim.supervisorVerdict || '第一轮判断已完成'}</p></div>
+        <div><i className="blue" /><span>复核</span><p>{claim.reviewerVerdict || '独立复核已完成'}</p></div>
+        <div><i className="orange" /><span>证据</span><p>当前绑定 {evidenceList.length} 条原文证据</p></div>
       </div>
 
-      <Drawer title="全链路审计记录" width={820} open={auditOpen} onClose={() => setAuditOpen(false)} extra={<Tag color="blue">Mock 数据</Tag>}>
-        <div className="audit-drawer-intro"><UnorderedListOutlined /><div><strong>C{String(claim.index).padStart(2, '0')} · {claim.statement}</strong><span>记录执行单元、输入输出、证据绑定、一级汇总与二级复核；本记录仅为 UI 展示。</span></div></div>
-        <Table
-          size="small"
-          pagination={false}
-          scroll={{ x: 760 }}
-          dataSource={auditRows}
-          columns={[
-            { title: '时间', dataIndex: 'time', width: 82 },
-            { title: '执行单元', dataIndex: 'actor', width: 165 },
-            { title: '操作', dataIndex: 'action', width: 130 },
-            { title: '输入', dataIndex: 'input' },
-            { title: '输出', dataIndex: 'output' },
-            { title: '证据/状态', dataIndex: 'evidence', width: 135 },
-          ]}
-        />
-        <div className="audit-seal"><SafetyCertificateOutlined /><div><strong>审计链完整</strong><span>各环节时间、来源与原文定位均已记录；后台核验任务彼此隔离。</span></div></div>
+      <Drawer title="当前主张核验详情" width={720} open={auditOpen} onClose={() => setAuditOpen(false)}>
+        <div className="audit-drawer-intro"><UnorderedListOutlined /><div><strong>C{String(claim.index).padStart(2, '0')} · {claim.statement}</strong><span>这里仅展示后端已经返回给当前主张的判断和证据，不再混入固定演示记录。</span></div></div>
+        <div className="claim-audit-detail">
+          <section><span>第一轮判断</span><p>{claim.supervisorVerdict || '后端未返回第一轮判断说明'}</p></section>
+          <section><span>独立复核</span><p>{claim.reviewerVerdict || '后端未返回独立复核说明'}</p></section>
+          <section><span>当前问题</span><p>{reviewExplanation}</p></section>
+          <section><span>证据情况</span><p>当前共绑定 {evidenceList.length} 条原文证据。</p></section>
+        </div>
       </Drawer>
 
-      <Modal title="发起第二轮取证" open={retryOpen} onCancel={() => setRetryOpen(false)} onOk={async () => { await onRetry(); setRetryOpen(false) }} okText="确认发起" cancelText="取消" width={660}>
+      <Modal
+        title="发起第二轮取证"
+        open={retryOpen}
+        onCancel={() => setRetryOpen(false)}
+        onOk={async () => {
+          try {
+            await onRetry()
+            setRetryOpen(false)
+          } catch {
+            // 请求错误已经显示在当前主张的取证状态中，保留弹窗方便再次确认。
+          }
+        }}
+        confirmLoading={currentRetry?.status === 'starting'}
+        okText="确认发起"
+        cancelText="取消"
+        width={660}
+      >
         <div className="mock-notice"><RetweetOutlined /><span>{persisted ? '确认后会调用 FastAPI，为当前主张启动真实重新取证。' : '本操作只演示 UI 流程，不会访问外部数据。'}</span></div>
-        <div className="retry-summary"><strong>触发原因</strong><p>{claim.conflictReason}</p></div>
+        <div className="retry-summary"><strong>触发原因</strong><p>{claim.conflictReason || '当前主张缺少能够直接支持原句的证据，需要重新检索并复核。'}</p></div>
         <Steps
           direction="vertical"
           size="small"
           current={0}
           items={[
-            { title: '小盾收到复核疑点', description: '问题类型：归因冲突；缺少各因素贡献的定量拆分。' },
-            { title: '重新派发原子任务', description: '仅向公开信源采集、文档解析、证据检索单元追加限定任务。' },
+            { title: '小盾收到复核疑点', description: `问题类型：${claim.issueType || '证据不足'}；只处理当前这条主张。` },
+            { title: '重新检索相关原文', description: '围绕当前主张重新匹配公开材料，并保留可以回查的原文片段。' },
             { title: '新旧证据并排比较', description: '保留第一轮证据，不覆盖历史记录。' },
-            { title: '再次进入独立审查', description: '形成第二轮可信度标签，最终由研究员研判。' },
+            { title: '再次进入独立复核', description: '刷新证据、复核意见与可信度标签，再交给你判断。' },
           ]}
         />
       </Modal>
@@ -550,6 +623,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   const [suspectedEventSteps, setSuspectedEventSteps] = useState<number[]>([])
   const [backendEvents, setBackendEvents] = useState<ResearchEvent[]>([])
   const [eventStreamStatus, setEventStreamStatus] = useState<EventStreamStatus>('idle')
+  const [retryProgress, setRetryProgress] = useState<ClaimRetryProgress | null>(null)
   const [realGuidanceOpen, setRealGuidanceOpen] = useState(false)
   const [realGuidanceSubmitting, setRealGuidanceSubmitting] = useState(false)
   const [selectedBackendEventSeqs, setSelectedBackendEventSeqs] = useState<number[]>([])
@@ -570,7 +644,6 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   const researchTopic = preview ? run.title : activeTask.researchTopic
   const demoStep = preview ? 8 : activeTask.demoStep
   const isDemoRunning = preview ? false : activeTask.isDemoRunning
-  const reviewedClaimIds = preview ? previewReviewedClaimIds : activeTask.reviewedClaimIds
   const selectedClaimId = preview ? previewSelectedClaimId : activeTask.selectedClaimId
   const selectClaim = useWorkspaceStore((state) => state.selectClaim)
   const resolveClaim = useWorkspaceStore((state) => state.resolveClaim)
@@ -578,16 +651,36 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   const stopDemo = useWorkspaceStore((state) => state.stopDemo)
   const resumeDemo = useWorkspaceStore((state) => state.resumeDemo)
   const setActiveView = useWorkspaceStore((state) => state.setActiveView)
-  const pendingClaims = run.claims.filter((claim) => claim.status !== 'verified' && !reviewedClaimIds.includes(claim.id))
+  // 真实任务以完整后端快照为准：处理后的疑点可能被改成 verified，但 humanAction 会保留，
+  // 因此“非 verified 或存在 humanAction”才是稳定的总疑点口径，不能复用可能残留的本地数组。
+  const issueClaims = activeTask.persisted && !preview
+    ? run.claims.filter((claim) => claim.status !== 'verified' || Boolean(claim.humanAction))
+    : run.claims.filter((claim) => claim.status !== 'verified')
+  const reviewedIssueIds = activeTask.persisted && !preview
+    ? issueClaims.filter((claim) => Boolean(claim.humanAction)).map((claim) => claim.id)
+    : preview
+      ? previewReviewedClaimIds.filter((claimId) => issueClaims.some((claim) => claim.id === claimId))
+      : activeTask.reviewedClaimIds.filter((claimId) => issueClaims.some((claim) => claim.id === claimId))
+  const pendingClaims = issueClaims.filter((claim) => !reviewedIssueIds.includes(claim.id))
+  const reviewedIssueCount = issueClaims.length - pendingClaims.length
   const visibleClaims = claimVisibility === 'all' ? run.claims : pendingClaims
-  const selectedClaim = visibleClaims.find((claim) => claim.id === selectedClaimId) ?? visibleClaims[0] ?? run.claims[0]
+  const selectedClaim = visibleClaims.find((claim) => claim.id === selectedClaimId)
+    ?? visibleClaims[0]
+    ?? (claimVisibility === 'all' ? run.claims[0] : undefined)
   const evidenceList = useMemo(
     () => selectedClaim ? run.evidence.filter((evidence) => selectedClaim.evidenceIds.includes(evidence.id)) : [],
     [run.evidence, selectedClaim],
   )
 
   useEffect(() => {
-    if (!activeTask.persisted || preview || taskPhase !== 'running') {
+    setRetryProgress(null)
+  }, [run.id])
+
+  useEffect(() => {
+    const shouldObserveBackend = activeTask.persisted
+      && !preview
+      && !['draft', 'stopped', 'failed'].includes(taskPhase)
+    if (!shouldObserveBackend) {
       setBackendEvents([])
       setEventStreamStatus('idle')
       return
@@ -605,6 +698,61 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
         if (current.some((item) => item.seq === event.seq)) return current
         return [...current, event].sort((left, right) => left.seq - right.seq)
       })
+
+      setRetryProgress((current) => {
+        if (!current || event.seq <= current.afterSeq || current.status === 'success' || current.status === 'error') return current
+        const title = event.payload.title ?? ''
+        const detail = event.payload.speech?.trim() ?? ''
+        if (event.kind === 'error' && title.includes('重新取证')) {
+          return {
+            ...current,
+            status: 'error',
+            title: '重新取证没有完成',
+            detail: detail || '后端没有返回更具体的失败原因，请稍后重试。',
+          }
+        }
+        if (title.includes('启动重新取证')) {
+          return {
+            ...current,
+            status: 'running',
+            title: '小盾已开始重新检索这条主张',
+            detail: '正在重新匹配能够直接支持或质疑原句的公开材料。',
+          }
+        }
+        if (title.includes('二次取证完成')) {
+          return {
+            ...current,
+            status: 'running',
+            title: '新一轮检索已结束，正在重新复核',
+            detail: '后台正在用最新证据重新判断这条主张，完成后会自动刷新当前页面。',
+          }
+        }
+        if (title.includes('重新复核完成')) {
+          void queryClient.invalidateQueries({ queryKey: ['research-run', run.id] }).then(() => {
+            const refreshedRun = queryClient.getQueryData<ResearchRun>(['research-run', run.id])
+            const refreshedClaim = refreshedRun?.claims.find((claim) => claim.id === current.claimId)
+            const evidenceCount = refreshedClaim?.evidenceIds.length ?? current.evidenceCountBefore
+            const addedCount = Math.max(0, evidenceCount - current.evidenceCountBefore)
+            setRetryProgress((latest) => latest?.claimId === current.claimId ? {
+              ...latest,
+              status: 'success',
+              title: '重新取证与复核已完成',
+              detail: addedCount > 0
+                ? `本轮新增 ${addedCount} 条可回查证据，当前主张的证据和复核结论已经刷新。`
+                : evidenceCount === 0
+                  ? '本轮仍未找到能够直接绑定到该主张的原文证据，系统保留“证据缺失”，没有用无关材料凑数。'
+                  : '本轮没有新增可绑定证据，现有证据与复核结论已重新检查。',
+            } : latest)
+          })
+          return {
+            ...current,
+            status: 'running',
+            title: '重新复核已完成，正在刷新结果',
+            detail: '正在重新读取这条主张的证据和最新复核结论。',
+          }
+        }
+        return current
+      })
     }, controller.signal)
       .then(() => {
         if (!disposed) setEventStreamStatus('ended')
@@ -619,7 +767,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
       disposed = true
       controller.abort()
     }
-  }, [activeTask.persisted, preview, run.id, taskPhase])
+  }, [activeTask.persisted, preview, queryClient, run.id, taskPhase])
 
   const handleResolve = async (action: 'reject' | 'keep' | 'remove' | 'rewrite', decision: string) => {
     if (!selectedClaim) return
@@ -647,11 +795,34 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
       message.success('已加入演示取证队列')
       return
     }
+    if (retryProgress?.status === 'starting' || retryProgress?.status === 'running') return
+    const claimId = selectedClaim.id
+    setRetryProgress({
+      claimId,
+      status: 'starting',
+      title: '正在提交重新取证请求',
+      detail: '已经锁定当前主张，正在等待 FastAPI 接收。',
+      afterSeq: backendEvents.at(-1)?.seq ?? 0,
+      evidenceCountBefore: selectedClaim.evidenceIds.length,
+    })
     try {
-      await retryPersistedClaim(run.id, selectedClaim.id)
-      message.success('已启动真实重新取证')
+      await retryPersistedClaim(run.id, claimId)
+      setRetryProgress((current) => current?.claimId === claimId && current.status === 'starting' ? {
+        ...current,
+        status: 'running',
+        title: '后端已受理，等待第一条取证进展',
+        detail: '重新检索和复核会在后台继续，当前卡片会实时显示进度。',
+      } : current)
+      message.success('重新取证已受理，进度会显示在当前主张下方')
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '重新取证失败')
+      const detail = error instanceof Error ? error.message : '重新取证失败'
+      setRetryProgress((current) => current?.claimId === claimId ? {
+        ...current,
+        status: 'error',
+        title: '重新取证请求未能启动',
+        detail,
+      } : current)
+      message.error(detail)
       throw error
     }
   }
@@ -1186,15 +1357,16 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
     )
   }
 
-  if (taskPhase === 'ready') {
+  if (taskPhase === 'ready' || (taskPhase === 'review' && issueClaims.length > 0 && pendingClaims.length === 0)) {
+    const autoVerifiedCount = run.claims.filter((claim) => claim.status === 'verified' && !claim.humanAction).length
     return (
       <div className="research-ready-page">
         <section className="ready-focus-card">
           <div className="ready-icon"><CheckOutlined /></div>
           <span>研究已完成</span>
           <h2>疑点已全部处理，底稿可以交付。</h2>
-          <p>5 条事实主张、8 份原始证据、双层核验记录与历史情景附件已经整理完毕。</p>
-          <div className="ready-summary"><span><strong>3</strong>可信结论</span><span><strong>2</strong>人工复核</span><span><strong>8</strong>原始证据</span></div>
+          <p>{run.claims.length} 条事实主张、{run.evidence.length} 份原始证据与双层核验记录已经整理完毕。</p>
+          <div className="ready-summary"><span><strong>{autoVerifiedCount}</strong>自动归档</span><span><strong>{reviewedIssueCount}</strong>人工复核</span><span><strong>{run.evidence.length}</strong>原始证据</span></div>
           <div className="ready-actions">
             <Button type="primary" size="large" icon={<CloudDownloadOutlined />} onClick={() => setActiveView('reports')}>查看并导出底稿</Button>
             <Button size="large" onClick={() => setActiveView('tasks')}>返回任务列表</Button>
@@ -1216,7 +1388,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
     <div className="workbench-shell">
       <div className="review-queue-header">
         <div><span>系统已完成自动核验</span><h2>只需处理 {pendingClaims.length} 条疑点</h2><p>左侧选疑点，中间看原文，右侧做一次判断。处理后自动进入下一条。</p></div>
-        <div className="review-progress"><strong>{reviewedClaimIds.length} / 2</strong><span>已处理</span></div>
+        <div className="review-progress"><strong>{reviewedIssueCount} / {issueClaims.length}</strong><span>已处理</span></div>
       </div>
       <div className="workbench-grid">
         <section className="panel evidence-workspace">
@@ -1230,7 +1402,15 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
           />
           <EvidenceViewer key={selectedClaim.id} evidenceList={evidenceList} />
         </section>
-        <VerdictPanel claim={selectedClaim} onResolve={handleResolve} onRetry={handleRetry} persisted={Boolean(activeTask.persisted && !preview)} />
+        <VerdictPanel
+          claim={selectedClaim}
+          evidenceList={evidenceList}
+          onResolve={handleResolve}
+          onRetry={handleRetry}
+          persisted={Boolean(activeTask.persisted && !preview)}
+          retryProgress={retryProgress}
+          onDismissRetry={() => setRetryProgress(null)}
+        />
       </div>
     </div>
   )
