@@ -1,137 +1,440 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import ReactECharts from 'echarts-for-react'
 import {
+  AimOutlined,
   CheckCircleFilled,
   ClockCircleOutlined,
   DatabaseOutlined,
   HistoryOutlined,
+  LineChartOutlined,
   PaperClipOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
 } from '@ant-design/icons'
-import { Button, Select, Table, Tag, message } from 'antd'
+import { Button, Empty, Segmented, Table, message } from 'antd'
 import type { ResearchRun } from '../types'
+import { getActiveTask, useWorkspaceStore } from '../store'
+import {
+  attachHistoryAnalysis,
+  getHistoryAnalysis,
+  startHistoryAnalysis,
+  type HistoryAnalysis,
+  type HistoryAnalysisEvent,
+  type HistoryAnalysisPoint,
+} from '../services/api'
 
-const samples = [
-  { key: '1', event: '2014 年地方债务规范化管理', date: '2014-10', source: '国务院公开文件、Wind 公开指标', window: '前 12 月 / 后 24 月', integrity: '完整' },
-  { key: '2', event: '2018 年隐性债务治理阶段', date: '2018-08', source: '财政部公开信息、中债数据', window: '前 12 月 / 后 24 月', integrity: '完整' },
-  { key: '3', event: '2023 年一揽子化债工作', date: '2023-07', source: '中央公开会议、交易所数据', window: '前 12 月 / 后 24 月', integrity: '部分月份待补' },
-]
+const POLL_INTERVAL = 2500
+const POLL_LIMIT = 72
 
-const indicatorSeries = {
-  spread: {
-    label: '城投债信用利差', unit: 'bp',
-    values: [
-      [178, 171, 169, 165, 158, 151, 147, 142, 139, 136, 132, 129, 127],
-      [149, 153, 161, 174, 189, 182, 176, 170, 165, 159, 156, 153, 151],
-      [136, 141, 148, 152, 146, 139, 133, 128, 124, 121, 118, 116, 114],
-    ],
-  },
-  credit: {
-    label: '社会融资规模存量增速', unit: '%',
-    values: [
-      [15.7, 15.3, 14.8, 14.2, 13.7, 13.2, 12.8, 12.6, 12.4, 12.3, 12.1, 11.9, 11.8],
-      [10.5, 10.3, 10.1, 10.0, 10.2, 10.4, 10.7, 10.8, 10.9, 10.8, 10.7, 10.6, 10.5],
-      [9.4, 9.2, 9.0, 8.9, 9.0, 9.1, 9.2, 9.1, 9.0, 8.9, 8.8, 8.7, 8.6],
-    ],
-  },
-  infrastructure: {
-    label: '基础设施投资累计增速', unit: '%',
-    values: [
-      [21.2, 20.6, 19.8, 18.9, 18.2, 17.6, 17.1, 16.4, 15.8, 15.2, 14.7, 14.3, 13.9],
-      [3.1, 3.4, 3.7, 4.1, 4.4, 4.7, 4.5, 4.2, 3.9, 3.8, 3.7, 3.6, 3.5],
-      [6.8, 6.4, 6.0, 5.7, 5.9, 6.1, 6.2, 6.0, 5.8, 5.6, 5.4, 5.2, 5.0],
-    ],
-  },
+type DisplayMode = 'relative' | 'raw'
+
+type PreparedPoint = HistoryAnalysisPoint & {
+  month: number | null
+  offset: number | null
+  sourceIndex: number
+}
+
+type EventPath = {
+  event: HistoryAnalysisEvent
+  eventMonth: number | null
+  points: PreparedPoint[]
+  baseline: PreparedPoint | null
+  baselineIndex: number
+  exactT0: boolean
+  canAlign: boolean
+}
+
+function parseYearMonth(value: string) {
+  const matched = value.match(/(\d{4})\s*(?:[-/.]|年)\s*(\d{1,2})(?:\s*月|(?=\D|$))/)
+  if (!matched) return null
+  const year = Number(matched[1])
+  const month = Number(matched[2])
+  if (!Number.isInteger(year) || month < 1 || month > 12) return null
+  return year * 12 + month - 1
+}
+
+function observedAfterBaseline(path: EventPath) {
+  if (!path.baseline || path.baselineIndex < 0) return []
+  return path.points.slice(path.baselineIndex + 1)
+}
+
+function observedAfterEvent(path: EventPath) {
+  if (!path.baseline) return []
+  return observedAfterBaseline(path).filter((point) => !path.canAlign || point.offset! >= 0)
+}
+
+function formatNumber(value: number, maximumFractionDigits = 2) {
+  return value.toLocaleString('zh-CN', { maximumFractionDigits })
+}
+
+function withUnit(value: number, unit: string) {
+  return `${formatNumber(value)}${unit ? ` ${unit}` : ''}`
+}
+
+function signedValue(value: number, suffix: string) {
+  const sign = value > 0 ? '+' : ''
+  return `${sign}${formatNumber(value)}${suffix}`
+}
+
+function prepareEventPath(event: HistoryAnalysisEvent): EventPath {
+  const eventMonth = parseYearMonth(event.period)
+  const prepared = event.points
+    .filter((point) => Number.isFinite(point.value))
+    .map((point, sourceIndex) => {
+      const month = parseYearMonth(point.t)
+      return {
+        ...point,
+        month,
+        offset: eventMonth !== null && month !== null ? month - eventMonth : null,
+        sourceIndex,
+      }
+    })
+
+  const canAlign = eventMonth !== null && prepared.length > 0 && prepared.every((point) => point.month !== null)
+  const points = canAlign
+    ? [...prepared].sort((left, right) => left.month! - right.month!)
+    : prepared
+  const baseline = points.length === 0
+    ? null
+    : canAlign
+      ? points.reduce((nearest, point) => Math.abs(point.offset!) < Math.abs(nearest.offset!) ? point : nearest, points[0])
+      : points[0]
+  const baselineIndex = baseline ? points.indexOf(baseline) : -1
+
+  return {
+    event,
+    eventMonth,
+    points,
+    baseline,
+    baselineIndex,
+    exactT0: baseline?.offset === 0,
+    canAlign,
+  }
+}
+
+function coverageText(path: EventPath) {
+  if (path.points.length === 0) return '没有取得数据点'
+  if (!path.canAlign) return `第 1–${path.points.length} 个观测点（日期无法按 T0 换算）`
+  const offsets = path.points.map((point) => point.offset!)
+  const formatOffset = (value: number) => value === 0 ? 'T0' : `T${value > 0 ? '+' : ''}${value}`
+  return `${formatOffset(Math.min(...offsets))} 至 ${formatOffset(Math.max(...offsets))}`
+}
+
+function rangeText(path: EventPath) {
+  if (path.points.length === 0) return '没有取得数据点'
+  const first = path.points[0]?.t
+  const last = path.points.at(-1)?.t
+  return first === last ? first : `${first} 至 ${last}`
 }
 
 export function AnalyticsView({ run }: { run: ResearchRun }) {
-  const [indicator, setIndicator] = useState<keyof typeof indicatorSeries>('spread')
+  const activeTask = useWorkspaceStore(getActiveTask)
+  const persisted = Boolean(activeTask.persisted && !activeTask.isDemo)
+  const [analysis, setAnalysis] = useState<HistoryAnalysis | null>(null)
+  const [displayMode, setDisplayMode] = useState<DisplayMode>('relative')
+  const [loading, setLoading] = useState(false)
   const [running, setRunning] = useState(false)
-  const [attached, setAttached] = useState(false)
-  const current = indicatorSeries[indicator]
+  const [attaching, setAttaching] = useState(false)
+  const [baselineAnalysisId, setBaselineAnalysisId] = useState<number | null>(null)
 
-  const chartOption = useMemo(() => ({
-    color: ['#0d6575', '#d39a43', '#3f86a2'],
-    textStyle: { fontFamily: 'MiSans', color: '#405651', fontSize: 12 },
-    tooltip: { trigger: 'axis', valueFormatter: (value: number) => `${value} ${current.unit}`, textStyle: { fontFamily: 'MiSans', fontSize: 12, color: '#263f39' } },
-    legend: { top: 2, right: 8, icon: 'circle', textStyle: { fontFamily: 'MiSans', color: '#405751', fontSize: 13 } },
-    grid: { left: 48, right: 20, top: 44, bottom: 38 },
-    xAxis: {
-      type: 'category', boundaryGap: false,
-      data: ['T-12', 'T-9', 'T-6', 'T-3', 'T0', 'T+3', 'T+6', 'T+9', 'T+12', 'T+15', 'T+18', 'T+21', 'T+24'],
-      axisTick: { show: false }, axisLine: { lineStyle: { color: '#dfe4ed' } }, axisLabel: { fontFamily: 'MiSans', color: '#405751', fontSize: 13 },
-    },
-    yAxis: { type: 'value', name: current.unit, nameTextStyle: { fontFamily: 'MiSans', color: '#405751', fontSize: 13 }, axisLabel: { fontFamily: 'MiSans', color: '#405751', fontSize: 13 }, splitLine: { lineStyle: { color: '#edf0f5' } } },
-    series: [
-      { name: '2014 样本', type: 'line', smooth: true, symbolSize: 5, data: current.values[0], lineStyle: { width: 2 } },
-      { name: '2018 样本', type: 'line', smooth: true, symbolSize: 5, data: current.values[1], lineStyle: { width: 2 } },
-      { name: '2023 样本', type: 'line', smooth: true, symbolSize: 5, data: current.values[2], lineStyle: { width: 2 } },
-    ],
-  }), [current])
+  useEffect(() => {
+    let cancelled = false
+    setRunning(false)
+    setDisplayMode('relative')
+    setBaselineAnalysisId(null)
+    if (!persisted) {
+      setAnalysis(null)
+      setLoading(false)
+      return () => { cancelled = true }
+    }
+    setLoading(true)
+    getHistoryAnalysis(run.id)
+      .then((result) => { if (!cancelled) setAnalysis(result) })
+      .catch((error) => { if (!cancelled) message.error(error instanceof Error ? error.message : '历史情景结果读取失败') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [persisted, run.id])
 
-  const startMock = () => {
+  useEffect(() => {
+    if (!running || !persisted) return
+    let cancelled = false
+    let attempts = 0
+    const poll = async () => {
+      attempts += 1
+      try {
+        const result = await getHistoryAnalysis(run.id)
+        if (cancelled) return
+        if (result && result.id !== baselineAnalysisId) {
+          setAnalysis(result)
+          setDisplayMode('relative')
+          setRunning(false)
+          message.success('历史情景复盘已生成')
+          return
+        }
+        if (attempts >= POLL_LIMIT) {
+          setRunning(false)
+          message.warning('暂未取得新结果，可稍后重新进入本页查看')
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setRunning(false)
+          message.error(error instanceof Error ? error.message : '历史情景结果读取失败')
+        }
+      }
+    }
+    void poll()
+    const timer = window.setInterval(() => { void poll() }, POLL_INTERVAL)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [baselineAnalysisId, persisted, run.id, running])
+
+  const startAnalysis = async () => {
+    if (!persisted) {
+      message.info('演示任务不会生成虚构历史情景，请选择真实任务后运行')
+      return
+    }
+    setBaselineAnalysisId(analysis?.id ?? null)
     setRunning(true)
-    window.setTimeout(() => {
+    try {
+      await startHistoryAnalysis(run.id)
+      message.success('复盘任务已提交，结果生成后会自动显示在本页')
+    } catch (error) {
       setRunning(false)
-      message.success('历史情景客观统计 Mock 演示已完成')
-    }, 1200)
+      message.error(error instanceof Error ? error.message : '历史情景复盘启动失败')
+    }
   }
+
+  const attachAnalysis = async () => {
+    if (!analysis || analysis.attached) return
+    setAttaching(true)
+    try {
+      await attachHistoryAnalysis(run.id)
+      setAnalysis({ ...analysis, attached: true })
+      message.success('历史情景复盘已加入研究底稿附件')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '加入底稿失败')
+    } finally {
+      setAttaching(false)
+    }
+  }
+
+  const eventPaths = useMemo(() => analysis?.events.map(prepareEventPath) ?? [], [analysis])
+  const totalPoints = eventPaths.reduce((sum, path) => sum + path.points.length, 0)
+  const canAlignAll = eventPaths.length > 0 && eventPaths.every((path) => path.canAlign)
+  const relativeAsPercent = eventPaths.every((path) => path.baseline && path.baseline.value !== 0)
+  const completeness = analysis
+    ? Math.max(0, Math.min(100, analysis.completeness <= 1 ? analysis.completeness * 100 : analysis.completeness))
+    : 0
+
+  const relativeValue = (value: number, baseline: number) => (
+    relativeAsPercent ? ((value - baseline) / Math.abs(baseline)) * 100 : value - baseline
+  )
+  const relativeSuffix = relativeAsPercent ? '%' : analysis?.unit ? ` ${analysis.unit}` : ''
+
+  const chartModel = useMemo(() => {
+    if (!analysis || eventPaths.length === 0) return null
+    const series = eventPaths.map((path, seriesIndex) => ({
+      name: path.event.name,
+      type: 'line',
+      smooth: false,
+      connectNulls: false,
+      symbol: 'circle',
+      symbolSize: 7,
+      data: path.points.map((point, index) => ({
+        value: [canAlignAll ? point.offset! : index + 1, displayMode === 'relative' && path.baseline
+          ? relativeValue(point.value, path.baseline.value)
+          : point.value],
+        observedAt: point.t,
+        rawValue: point.value,
+        baselineAt: path.baseline?.t ?? '',
+        baselineValue: path.baseline?.value ?? null,
+      })),
+      lineStyle: { width: 2.4 },
+      emphasis: { focus: 'series' },
+      markLine: seriesIndex === 0 && canAlignAll ? {
+        silent: true,
+        symbol: 'none',
+        label: { formatter: 'T0', color: '#64756f', fontFamily: 'MiSans', fontSize: 10 },
+        lineStyle: { color: '#aab8b4', type: 'dashed', width: 1 },
+        data: [{ xAxis: 0 }],
+      } : undefined,
+    }))
+
+    return {
+      option: {
+        color: ['#0d6575', '#d39a43', '#3f86a2', '#7f6bb0'],
+        textStyle: { fontFamily: 'MiSans', color: '#405651', fontSize: 12 },
+        tooltip: {
+          trigger: 'axis',
+          confine: true,
+          textStyle: { fontFamily: 'MiSans', fontSize: 12, color: '#263f39' },
+          formatter: (items: Array<{
+            marker: string
+            seriesName: string
+            data: { value: [number, number]; observedAt: string; rawValue: number; baselineAt: string; baselineValue: number | null }
+          }>) => items.map((item) => {
+            const shown = displayMode === 'relative'
+              ? signedValue(item.data.value[1], relativeSuffix)
+              : withUnit(item.data.rawValue, analysis.unit)
+            const baseline = item.data.baselineValue === null
+              ? ''
+              : `<br/><span style="color:#84928e">基准：${item.data.baselineAt} · ${withUnit(item.data.baselineValue, analysis.unit)}</span>`
+            return `${item.marker}<strong>${item.seriesName}</strong><br/>观测：${item.data.observedAt}<br/>${displayMode === 'relative' ? '相对基准' : '原始数值'}：${shown}${baseline}`
+          }).join('<br/><br/>'),
+        },
+        legend: { type: 'scroll', top: 0, right: 8, left: 8, icon: 'circle', textStyle: { fontFamily: 'MiSans', color: '#405751', fontSize: 11 } },
+        grid: { left: 66, right: 24, top: 58, bottom: 48 },
+        xAxis: {
+          type: 'value',
+          name: canAlignAll ? '相对事件时点（月）' : '各事件的观测顺序',
+          nameLocation: 'middle',
+          nameGap: 31,
+          minInterval: 1,
+          axisTick: { show: false },
+          axisLine: { lineStyle: { color: '#dfe4ed' } },
+          axisLabel: {
+            fontFamily: 'MiSans', color: '#405751', fontSize: 11,
+            formatter: (value: number) => canAlignAll ? (value === 0 ? 'T0' : `T${value > 0 ? '+' : ''}${value}`) : `第 ${value} 点`,
+          },
+        },
+        yAxis: {
+          type: 'value',
+          name: displayMode === 'relative'
+            ? relativeAsPercent ? '相对 T0 变化（%）' : `相对 T0 差值${analysis.unit ? `（${analysis.unit}）` : ''}`
+            : [analysis.metric, analysis.unit].filter(Boolean).join(' · '),
+          nameTextStyle: { fontFamily: 'MiSans', color: '#405751', fontSize: 11 },
+          axisLabel: {
+            fontFamily: 'MiSans', color: '#405751', fontSize: 11,
+            formatter: (value: number) => displayMode === 'relative' && relativeAsPercent ? `${value}%` : formatNumber(value),
+          },
+          splitLine: { lineStyle: { color: '#edf0f5' } },
+        },
+        series,
+      },
+    }
+  }, [analysis, canAlignAll, displayMode, eventPaths, relativeAsPercent, relativeSuffix])
+
+  const comparisonNames = analysis?.events.map((event) => `“${event.name}”`).join('、') ?? ''
 
   return (
     <div className="history-page">
       <section className="page-card history-header-card">
         <div>
-          <span className="eyebrow">手动触发 · 客观统计</span>
-          <h2>选择历史样本作对照</h2>
-          <p>针对已经结束的历史事件查询公开时序数据，进行客观对照统计，并将结果作为当前研究底稿的辅助附件。</p>
+          <span className="eyebrow">真实历史路径 · T0 对齐</span>
+          <h2>看同类事件发生前后，关键指标实际怎么走</h2>
+          <p>系统会围绕当前研究选择同类已发生事件和同一项客观指标，把各事件发生时点统一记作 T0，再比较前后变化路径。结果用于提供历史情景参照，不代替事实核查，也不推断当前对象的未来表现。</p>
         </div>
         <div className="history-agent-status">
           <span className={running ? 'agent-live-dot running' : 'agent-live-dot'} />
-          <div><strong>本次对照统计</strong><span>{running ? '正在执行 Mock 统计' : '等待研究员手动触发'}</span></div>
+          <div><strong>本次历史情景复盘</strong><span>{running ? '正在查找同类事件并整理公开数据' : analysis ? `已生成于 ${analysis.created_at}` : '尚未运行，不展示示例数据'}</span></div>
         </div>
       </section>
 
-      <section className="page-card history-config-card">
-        <div className="history-config-field"><span>当前研究任务</span><strong>{run.title}</strong></div>
-        <div className="history-config-field"><span>历史情景类别</span><Select defaultValue="debt" options={[{ value: 'debt', label: '地方债务治理相关事件' }, { value: 'policy', label: '重大政策调整事件' }, { value: 'industry', label: '行业指标异常事件' }]} /></div>
-        <div className="history-config-field"><span>客观指标</span><Select value={indicator} onChange={setIndicator} options={[{ value: 'spread', label: '城投债信用利差' }, { value: 'credit', label: '社会融资规模存量增速' }, { value: 'infrastructure', label: '基础设施投资累计增速' }]} /></div>
-        <div className="history-config-field"><span>观察窗口</span><Select defaultValue="36m" options={[{ value: '36m', label: '事件前 12 月至后 24 月' }, { value: '24m', label: '事件前 6 月至后 18 月' }]} /></div>
-        <Button type="primary" icon={running ? <ReloadOutlined spin /> : <PlayCircleOutlined />} loading={running} onClick={startMock}>{running ? '统计中' : '启动 Mock 统计'}</Button>
+      <section className="page-card history-trigger-card">
+        <div className="history-trigger-task"><span>当前研究</span><strong>{run.title}</strong></div>
+        <div className="history-trigger-method"><AimOutlined /><div><strong>自动选择可比较的历史路径</strong><span>基于当前研究主题与已核查主张选择同类事件，只使用后端实际返回的公开数值，不在前端补点或编造样本。</span></div></div>
+        <Button type="primary" icon={running ? <ReloadOutlined spin /> : <PlayCircleOutlined />} loading={running} onClick={startAnalysis}>{running ? '复盘生成中' : analysis ? '重新生成复盘' : '开始历史情景复盘'}</Button>
       </section>
 
-      <section className="history-kpi-strip">
-        <div><HistoryOutlined /><span>历史样本</span><strong>3</strong><small>个已结束事件</small></div>
-        <div><DatabaseOutlined /><span>公开数据源</span><strong>9</strong><small>个来源已记录</small></div>
-        <div><ClockCircleOutlined /><span>观察窗口</span><strong>36</strong><small>个月</small></div>
-        <div><CheckCircleFilled /><span>数据完整度</span><strong>94.6%</strong><small>缺口已单独标注</small></div>
-      </section>
+      {!analysis ? (
+        <section className="page-card history-empty-card">
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={loading ? '正在读取该任务已有的历史情景结果…' : '这项任务还没有真实历史情景结果，因此暂不显示图表和数字。'}
+          />
+          {!loading && <p>开始后，页面会明确列出比较了哪些事件、哪项指标、以哪一个真实观测点作为 T0 基准，以及事件前后的实际变化。</p>}
+        </section>
+      ) : (
+        <>
+          <section className="page-card history-comparison-brief">
+            <div className="history-brief-icon"><LineChartOutlined /></div>
+            <div>
+              <span>这次到底比较什么</span>
+              <strong>用“{analysis.metric}{analysis.unit ? `（${analysis.unit}）` : ''}”观察 {comparisonNames} 的事件前后路径</strong>
+              <p>{canAlignAll ? '每条线代表一个历史事件，横轴按各自事件月份对齐到 T0；' : '部分日期无法换算为月份，横轴暂按实际观测顺序展示，相关样本会明确标注；'}默认纵轴显示相对各自基准点的变化，因此不同年份、不同绝对量级可以放在同一口径下比较。“原始数值”用于回看后端返回的数据本身。</p>
+            </div>
+          </section>
 
-      <section className="page-card history-chart-card">
-        <div className="history-section-title">
-          <div><strong>{current.label}历史样本对照</strong><span>T0 表示各历史事件公开发生时点，曲线仅展示客观数据。</span></div>
-          <div className="chart-source-note"><DatabaseOutlined /> 数据来源：公开文件、交易所及公开指标库</div>
-        </div>
-        <ReactECharts option={chartOption} style={{ height: 360 }} showLoading={running} />
-      </section>
+          <section className="history-kpi-strip">
+            <div><HistoryOutlined /><span>同类事件</span><strong>{analysis.events.length}</strong><small>个真实返回样本</small></div>
+            <div><DatabaseOutlined /><span>对照指标</span><strong className="history-kpi-text">{analysis.metric}</strong><small>{analysis.unit || '后端未注明单位'}</small></div>
+            <div><ClockCircleOutlined /><span>实际数据点</span><strong>{totalPoints}</strong><small>个公开数值记录</small></div>
+            <div><CheckCircleFilled /><span>数据完整度</span><strong>{Math.round(completeness)}%</strong><small>按后端目标点数计算</small></div>
+          </section>
 
-      <section className="page-card history-samples-card">
-        <div className="history-section-title">
-          <div><strong>历史事件样本与来源</strong><span>所有样本均为已结束事件，缺失月份不会自动补写。</span></div>
-          <Button icon={<PaperClipOutlined />} type={attached ? 'default' : 'primary'} onClick={() => { setAttached(true); message.success('已作为 Mock 附件加入研究底稿') }}>{attached ? '已加入底稿附件' : '加入研究底稿附件'}</Button>
-        </div>
-        <Table
-          pagination={false}
-          dataSource={samples}
-          columns={[
-            { title: '历史事件', dataIndex: 'event' },
-            { title: '公开时点', dataIndex: 'date', width: 110 },
-            { title: '数据来源', dataIndex: 'source' },
-            { title: '观察窗口', dataIndex: 'window', width: 145 },
-            { title: '完整性', dataIndex: 'integrity', width: 115, render: (value) => <Tag color={value === '完整' ? 'green' : 'gold'}>{value}</Tag> },
-          ]}
-        />
-      </section>
+          <section className="page-card history-chart-card">
+            <div className="history-section-title history-chart-heading">
+              <div><strong>{analysis.metric} · 事件前后变化路径</strong><span>{displayMode === 'relative' ? `以每个事件最接近 T0 的真实数据为基准，${relativeAsPercent ? '统一换算为变化百分比' : '因存在零值基准，统一显示原始差值'}。` : '显示后端返回的原始指标值，不做换算。'}悬停可核验日期和数值。</span></div>
+              <div className="history-chart-tools">
+                <Segmented
+                  size="small"
+                  value={displayMode}
+                  onChange={(value) => setDisplayMode(value as DisplayMode)}
+                  options={[{ label: '相对 T0', value: 'relative' }, { label: '原始数值', value: 'raw' }]}
+                />
+                <div className="chart-source-note"><DatabaseOutlined /> {analysis.events.length} 个事件 · {totalPoints} 个真实数据点</div>
+              </div>
+            </div>
+            {chartModel && <ReactECharts option={chartModel.option} style={{ height: 380 }} showLoading={running} />}
+          </section>
+
+          <section className="page-card history-samples-card">
+            <div className="history-section-title">
+              <div><strong>每个事件得出了什么</strong><span>基准点、覆盖范围和路径变化逐项列清；找不到精确 T0 数据时只采用最近的真实观测点，不做插值。</span></div>
+              <Button icon={<PaperClipOutlined />} type={analysis.attached ? 'default' : 'primary'} loading={attaching} disabled={analysis.attached} onClick={attachAnalysis}>{analysis.attached ? '已加入底稿附件' : '加入研究底稿附件'}</Button>
+            </div>
+            <Table
+              rowKey={(path) => `${path.event.name}-${path.event.period}`}
+              pagination={false}
+              dataSource={eventPaths}
+              columns={[
+                {
+                  title: '历史事件',
+                  width: '25%',
+                  render: (_, path) => <div className="history-event-cell"><strong>{path.event.name}</strong><span>{path.event.description || '后端未返回事件说明'}</span></div>,
+                },
+                {
+                  title: 'T0 与采用基准',
+                  width: '22%',
+                  render: (_, path) => path.baseline
+                    ? <div className="history-baseline-cell"><strong>T0：{path.event.period}</strong><span>{path.exactT0 ? `采用 T0 当期 ${path.baseline.t}` : path.canAlign ? `采用最接近 T0 的 ${path.baseline.t}` : `日期无法对齐，采用首个观测 ${path.baseline.t}`}</span><small>{withUnit(path.baseline.value, analysis.unit)}</small></div>
+                    : '没有可用基准点',
+                },
+                {
+                  title: '实际覆盖',
+                  width: '18%',
+                  render: (_, path) => <div className="history-coverage-cell"><strong>{coverageText(path)}</strong><span>{rangeText(path)}</span><small>{path.points.length} 个真实数据点</small></div>,
+                },
+                {
+                  title: '从基准到最后观测',
+                  width: '18%',
+                  render: (_, path) => {
+                    const later = observedAfterBaseline(path)
+                    if (!path.baseline || later.length === 0) return <span className="history-insufficient">基准后没有观测，无法形成路径</span>
+                    const last = later.at(-1)!
+                    const change = relativeValue(last.value, path.baseline.value)
+                    return <div className="history-result-cell"><strong className={change > 0 ? 'is-up' : change < 0 ? 'is-down' : ''}>{signedValue(change, relativeSuffix)}</strong><span>{withUnit(path.baseline.value, analysis.unit)} → {withUnit(last.value, analysis.unit)}</span><small>最后观测：{last.t}</small></div>
+                  },
+                },
+                {
+                  title: '事件后路径范围',
+                  width: '17%',
+                  render: (_, path) => {
+                    if (!path.baseline) return '—'
+                    const after = observedAfterEvent(path)
+                    if (after.length === 0) return <span className="history-insufficient">事件后数据不足</span>
+                    const changes = [0, ...after.map((point) => relativeValue(point.value, path.baseline!.value))]
+                    return <div className="history-extremes"><span>最高 <strong className="is-up">{signedValue(Math.max(...changes), relativeSuffix)}</strong></span><span>最低 <strong className="is-down">{signedValue(Math.min(...changes), relativeSuffix)}</strong></span></div>
+                  },
+                },
+              ]}
+            />
+            <div className="history-data-note">本页仅使用接口返回的历史事件和公开数据点。后端当前没有返回逐条来源链接，因此不展示虚构的来源数量；需要审阅出处时，应以研究底稿中的原始检索记录为准。</div>
+          </section>
+        </>
+      )}
     </div>
   )
 }

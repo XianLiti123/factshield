@@ -44,6 +44,29 @@ export type ResearchEvent = {
   ts: string
 }
 
+export type HistoryAnalysisPoint = {
+  t: string
+  value: number
+}
+
+export type HistoryAnalysisEvent = {
+  name: string
+  period: string
+  description: string
+  points: HistoryAnalysisPoint[]
+}
+
+export type HistoryAnalysis = {
+  id: number
+  task_id: string
+  attached: boolean
+  created_at: string
+  metric: string
+  unit: string
+  events: HistoryAnalysisEvent[]
+  completeness: number
+}
+
 type ApiTask = {
   id: string
   title: string
@@ -329,6 +352,23 @@ export async function exportReport(taskId: string, format: ReportExportFormat) {
 }
 
 export const getAuditLog = (taskId: string) => request<{ task_id: string; events: unknown[]; resolutions: unknown[] }>(`/api/tasks/${taskId}/audit-log`)
+
+export const startHistoryAnalysis = (taskId: string) => request<{ status: string; task_id: string }>(
+  `/api/tasks/${taskId}/history-analysis`, { method: 'POST' },
+)
+
+export async function getHistoryAnalysis(taskId: string) {
+  try {
+    return await request<HistoryAnalysis>(`/api/tasks/${taskId}/history-analysis`)
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null
+    throw error
+  }
+}
+
+export const attachHistoryAnalysis = (taskId: string) => request<{ status: string; task_id: string }>(
+  `/api/tasks/${taskId}/history-analysis/attach`, { method: 'POST' },
+)
 
 export async function streamTaskEvents(
   taskId: string,
