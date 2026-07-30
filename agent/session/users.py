@@ -20,14 +20,15 @@ def _hash_password(password: str, salt: str | None = None) -> str:
     return f"{salt}${digest.hex()}"
 
 
-def register(email: str, password: str) -> int:
-    #注册新用户，返回 user_id；邮箱已注册时抛 ValueError
+def register(email: str, password: str, display_name: str = "") -> int:
+    #注册新用户，返回 user_id；邮箱已注册时抛 ValueError；display_name 为空时取邮箱前缀
+    display_name = display_name.strip() or email.split("@", 1)[0]
     with get_connection() as conn:
         if conn.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone():
             raise ValueError("该邮箱已注册")
         cursor = conn.execute(
-            "INSERT INTO users (email, password_hash) VALUES (?,?)",
-            (email, _hash_password(password))
+            "INSERT INTO users (email, display_name, password_hash) VALUES (?,?,?)",
+            (email, display_name, _hash_password(password))
         )
         return cursor.lastrowid  # type: ignore
 
@@ -47,7 +48,7 @@ def verify_login(email: str, password: str) -> int | None:
 def get_user(user_id: int) -> dict | None:
     #按 id 取用户信息（不含密码哈希）
     with get_connection() as conn:
-        row = conn.execute("SELECT id, email, created_at FROM users WHERE id=?", (user_id,)).fetchone()
+        row = conn.execute("SELECT id, email, display_name, created_at FROM users WHERE id=?", (user_id,)).fetchone()
     return dict(row) if row else None
 
 

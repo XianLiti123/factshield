@@ -10,6 +10,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT UNIQUE NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
     password_hash TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
@@ -169,4 +170,7 @@ def init_db() -> None:
         _add_column_if_missing(conn, "sessions", "paused_thread_id", "paused_thread_id TEXT")
         _add_column_if_missing(conn, "sessions", "paused_input", "paused_input TEXT")
         _add_column_if_missing(conn, "profile_facts", "user_id", "user_id INTEGER")
+        _add_column_if_missing(conn, "users", "display_name", "display_name TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "evidence", "url", "url TEXT NOT NULL DEFAULT ''")
+        #存量用户显示名为空时回填邮箱前缀
+        conn.execute("UPDATE users SET display_name=substr(email,1,instr(email,'@')-1) WHERE display_name=''")

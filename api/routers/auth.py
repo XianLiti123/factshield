@@ -14,9 +14,14 @@ class CredentialsRequest(BaseModel):
     password: str
 
 
+class RegisterRequest(CredentialsRequest):
+    username: str | None = None  #可选显示名；缺省时后端取邮箱前缀
+
+
 class UserInfo(BaseModel):
     id: int
     email: str
+    display_name: str = ""
 
 
 class TokenResponse(BaseModel):
@@ -30,10 +35,10 @@ def _issue(user_id: int) -> TokenResponse:
 
 
 @router.post("/register")
-def register_user(request: CredentialsRequest) -> TokenResponse:
+def register_user(request: RegisterRequest) -> TokenResponse:
     #注册（开放注册），成功即视为登录，直接返回 token
     try:
-        user_id = register(request.email, request.password)
+        user_id = register(request.email, request.password, request.username or "")
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return _issue(user_id)
