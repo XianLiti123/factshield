@@ -45,6 +45,59 @@ export type SearchFocus = {
   evidenceId?: string
 }
 
+export type HistoryAnalysisJob = {
+  taskId: string
+  baselineAnalysisId: number | null
+  startedAt: number
+  config: HistoryAnalysisConfig
+}
+
+export type HistoryAnalysisFrequency = 'auto' | 'monthly' | 'quarterly' | 'yearly'
+
+export type HistoryAnalysisConfig = {
+  metric: string
+  scenarios: string
+  start: string
+  end: string
+  frequency: HistoryAnalysisFrequency
+}
+
+export const EMPTY_HISTORY_ANALYSIS_CONFIG: HistoryAnalysisConfig = {
+  metric: '',
+  scenarios: '',
+  start: '',
+  end: '',
+  frequency: 'auto',
+}
+
+const HISTORY_ANALYSIS_CONFIGS_KEY = 'factshield.history-analysis.configs'
+
+function loadHistoryAnalysisConfigs(): Record<string, HistoryAnalysisConfig> {
+  if (typeof window === 'undefined') return {}
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(HISTORY_ANALYSIS_CONFIGS_KEY) ?? '{}') as Record<string, Partial<HistoryAnalysisConfig>>
+    return Object.fromEntries(Object.entries(parsed).map(([taskId, config]) => [taskId, {
+      metric: typeof config.metric === 'string' ? config.metric : '',
+      scenarios: typeof config.scenarios === 'string' ? config.scenarios : '',
+      start: typeof config.start === 'string' ? config.start : '',
+      end: typeof config.end === 'string' ? config.end : '',
+      frequency: ['auto', 'monthly', 'quarterly', 'yearly'].includes(config.frequency ?? '')
+        ? config.frequency as HistoryAnalysisFrequency
+        : 'auto',
+    }]))
+  } catch {
+    return {}
+  }
+}
+
+function persistHistoryAnalysisConfigs(configs: Record<string, HistoryAnalysisConfig>) {
+  try {
+    window.localStorage.setItem(HISTORY_ANALYSIS_CONFIGS_KEY, JSON.stringify(configs))
+  } catch {
+    // Storage may be unavailable; the in-memory configuration still survives page navigation.
+  }
+}
+
 interface CreateTaskInput {
   title: string
   company?: string
@@ -55,6 +108,8 @@ interface WorkspaceStore {
   activeView: ViewName
   activeTaskId: string
   searchFocus: SearchFocus | null
+  historyAnalysisJobs: Record<string, HistoryAnalysisJob>
+  historyAnalysisConfigs: Record<string, HistoryAnalysisConfig>
   tasks: ResearchTaskSession[]
   setActiveView: (view: ViewName) => void
   selectTask: (id: string) => void
@@ -72,6 +127,10 @@ interface WorkspaceStore {
   hydrateTasks: (tasks: ResearchTaskSession[], preserveLocalDemos?: boolean) => void
   addTask: (task: ResearchTaskSession) => void
   syncTaskRun: (run: ResearchRun) => void
+  setHistoryAnalysisConfig: (taskId: string, config: HistoryAnalysisConfig) => void
+  resetHistoryAnalysisConfig: (taskId: string) => void
+  startHistoryAnalysisJob: (taskId: string, baselineAnalysisId: number | null, config: HistoryAnalysisConfig) => void
+  finishHistoryAnalysisJob: (taskId: string) => void
 }
 
 const initialTasks: ResearchTaskSession[] = [
@@ -166,6 +225,8 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   activeView: 'tasks',
   activeTaskId: 'FS-2026-0726-018',
   searchFocus: null,
+  historyAnalysisJobs: {},
+  historyAnalysisConfigs: loadHistoryAnalysisConfigs(),
   tasks: initialTasks,
   setActiveView: (activeView) => set({ activeView, searchFocus: null }),
   selectTask: (activeTaskId) => set({ activeTaskId, searchFocus: null }),
@@ -276,8 +337,13 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   })),
   deleteTask: (taskId) => set((state) => {
     const tasks = state.tasks.filter((task) => task.id !== taskId)
+    const { [taskId]: _removedAnalysisJob, ...historyAnalysisJobs } = state.historyAnalysisJobs
+    const { [taskId]: _removedAnalysisConfig, ...historyAnalysisConfigs } = state.historyAnalysisConfigs
+    persistHistoryAnalysisConfigs(historyAnalysisConfigs)
     return {
       tasks,
+      historyAnalysisJobs,
+      historyAnalysisConfigs,
       activeTaskId: state.activeTaskId === taskId ? (tasks[0]?.id ?? '') : state.activeTaskId,
       activeView: state.activeTaskId === taskId ? 'tasks' : state.activeView,
     }
@@ -369,6 +435,26 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       }
     }),
   })),
+  setHistoryAnalysisConfig: (taskId, config) => set((state) => {
+    const historyAnalysisConfigs = { ...state.historyAnalysisConfigs, [taskId]: config }
+    persistHistoryAnalysisConfigs(historyAnalysisConfigs)
+    return { historyAnalysisConfigs }
+  }),
+  resetHistoryAnalysisConfig: (taskId) => set((state) => {
+    const { [taskId]: _removedAnalysisConfig, ...historyAnalysisConfigs } = state.historyAnalysisConfigs
+    persistHistoryAnalysisConfigs(historyAnalysisConfigs)
+    return { historyAnalysisConfigs }
+  }),
+  startHistoryAnalysisJob: (taskId, baselineAnalysisId, config) => set((state) => ({
+    historyAnalysisJobs: {
+      ...state.historyAnalysisJobs,
+      [taskId]: { taskId, baselineAnalysisId, startedAt: Date.now(), config },
+    },
+  })),
+  finishHistoryAnalysisJob: (taskId) => set((state) => {
+    const { [taskId]: _finishedAnalysisJob, ...historyAnalysisJobs } = state.historyAnalysisJobs
+    return { historyAnalysisJobs }
+  }),
 }))
 
 export const getActiveTask = (state: WorkspaceStore) => (

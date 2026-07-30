@@ -10,28 +10,39 @@ import {
   PaperClipOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
+  SettingOutlined,
 } from '@ant-design/icons'
-import { Button, Empty, Segmented, Table, message } from 'antd'
+import { Button, Empty, Input, Segmented, Select, Table, message } from 'antd'
 import type { ResearchRun } from '../types'
-import { getActiveTask, useWorkspaceStore } from '../store'
+import {
+  EMPTY_HISTORY_ANALYSIS_CONFIG,
+  getActiveTask,
+  useWorkspaceStore,
+  type HistoryAnalysisConfig,
+} from '../store'
 import {
   attachHistoryAnalysis,
   getHistoryAnalysis,
   startHistoryAnalysis,
+  supportsCustomHistoryAnalysis,
   type HistoryAnalysis,
   type HistoryAnalysisEvent,
   type HistoryAnalysisPoint,
+  type HistoryAnalysisRequest,
 } from '../services/api'
 
 const POLL_INTERVAL = 2500
 const POLL_LIMIT = 72
 
 type DisplayMode = 'relative' | 'raw'
+type TimeGranularity = 'month' | 'quarter' | 'year' | 'unknown'
+type CustomAnalysisCapability = 'checking' | 'supported' | 'unsupported'
 
 type PreparedPoint = HistoryAnalysisPoint & {
   month: number | null
   offset: number | null
   sourceIndex: number
+  granularity: TimeGranularity
 }
 
 type EventPath = {
@@ -42,15 +53,38 @@ type EventPath = {
   baselineIndex: number
   exactT0: boolean
   canAlign: boolean
+  granularity: TimeGranularity
+  excludedPointCount: number
+  alignmentReason: string
 }
 
-function parseYearMonth(value: string) {
+function parseObservationTime(value: string): { month: number | null; granularity: TimeGranularity } {
   const matched = value.match(/(\d{4})\s*(?:[-/.]|年)\s*(\d{1,2})(?:\s*月|(?=\D|$))/)
-  if (!matched) return null
-  const year = Number(matched[1])
-  const month = Number(matched[2])
-  if (!Number.isInteger(year) || month < 1 || month > 12) return null
-  return year * 12 + month - 1
+  if (matched) {
+    const year = Number(matched[1])
+    const month = Number(matched[2])
+    if (Number.isInteger(year) && month >= 1 && month <= 12) {
+      return { month: year * 12 + month - 1, granularity: 'month' }
+    }
+  }
+
+  const quarterMatched = value.match(/(\d{4})\s*(?:[-/.年]?\s*(?:Q|q|第)\s*([1-4])\s*(?:季度|季)?)/)
+  if (quarterMatched) {
+    const year = Number(quarterMatched[1])
+    const quarter = Number(quarterMatched[2])
+    return { month: year * 12 + (quarter - 1) * 3, granularity: 'quarter' }
+  }
+
+  const yearMatched = value.trim().match(/^(\d{4})\s*年?$/)
+  if (yearMatched) return { month: Number(yearMatched[1]) * 12, granularity: 'year' }
+  return { month: null, granularity: 'unknown' }
+}
+
+function granularityLabel(granularity: TimeGranularity) {
+  if (granularity === 'month') return '月度'
+  if (granularity === 'quarter') return '季度'
+  if (granularity === 'year') return '年度'
+  return '日期不明'
 }
 
 function observedAfterBaseline(path: EventPath) {
@@ -77,29 +111,58 @@ function signedValue(value: number, suffix: string) {
 }
 
 function prepareEventPath(event: HistoryAnalysisEvent): EventPath {
-  const eventMonth = parseYearMonth(event.period)
+  const eventTime = parseObservationTime(event.period)
+  const eventMonth = eventTime.granularity === 'month' ? eventTime.month : null
   const prepared = event.points
     .filter((point) => Number.isFinite(point.value))
     .map((point, sourceIndex) => {
-      const month = parseYearMonth(point.t)
+      const parsedTime = parseObservationTime(point.t)
       return {
         ...point,
-        month,
-        offset: eventMonth !== null && month !== null ? month - eventMonth : null,
+        month: parsedTime.month,
+        offset: eventMonth !== null && parsedTime.granularity === 'month' && parsedTime.month !== null
+          ? parsedTime.month - eventMonth
+          : null,
         sourceIndex,
+        granularity: parsedTime.granularity,
       }
     })
 
-  const canAlign = eventMonth !== null && prepared.length > 0 && prepared.every((point) => point.month !== null)
-  const points = canAlign
-    ? [...prepared].sort((left, right) => left.month! - right.month!)
-    : prepared
+  const granularityCounts = prepared.reduce<Record<TimeGranularity, number>>((counts, point) => {
+    counts[point.granularity] += 1
+    return counts
+  }, { month: 0, quarter: 0, year: 0, unknown: 0 })
+  const comparableGranularities: TimeGranularity[] = ['month', 'quarter', 'year']
+  const granularity = comparableGranularities.reduce<TimeGranularity>((selected, candidate) => (
+    granularityCounts[candidate] > granularityCounts[selected] ? candidate : selected
+  ), granularityCounts.month > 0 ? 'month' : granularityCounts.quarter > 0 ? 'quarter' : granularityCounts.year > 0 ? 'year' : 'unknown')
+  const selectedPoints = granularity === 'unknown'
+    ? prepared
+    : prepared.filter((point) => point.granularity === granularity)
+  const points = [...selectedPoints].sort((left, right) => {
+    if (left.month !== null && right.month !== null) return left.month - right.month
+    if (left.month !== null) return -1
+    if (right.month !== null) return 1
+    return left.sourceIndex - right.sourceIndex
+  })
+  const canAlign = eventMonth !== null
+    && granularity === 'month'
+    && points.length > 0
+    && points.every((point) => point.offset !== null)
   const baseline = points.length === 0
     ? null
     : canAlign
       ? points.reduce((nearest, point) => Math.abs(point.offset!) < Math.abs(nearest.offset!) ? point : nearest, points[0])
-      : points[0]
+      : null
   const baselineIndex = baseline ? points.indexOf(baseline) : -1
+  const excludedPointCount = prepared.length - points.length
+  const alignmentReason = eventTime.granularity !== 'month'
+    ? `事件时点“${event.period}”没有精确到月，不能确定 T0`
+    : granularity !== 'month'
+      ? `可用数据以${granularityLabel(granularity)}口径为主，不能与月度 T0 对齐`
+      : points.length === 0
+        ? '没有可用于对齐的数据点'
+        : ''
 
   return {
     event,
@@ -109,12 +172,15 @@ function prepareEventPath(event: HistoryAnalysisEvent): EventPath {
     baselineIndex,
     exactT0: baseline?.offset === 0,
     canAlign,
+    granularity,
+    excludedPointCount,
+    alignmentReason,
   }
 }
 
 function coverageText(path: EventPath) {
   if (path.points.length === 0) return '没有取得数据点'
-  if (!path.canAlign) return `第 1–${path.points.length} 个观测点（日期无法按 T0 换算）`
+  if (!path.canAlign) return `${granularityLabel(path.granularity)}数据 · ${path.points.length} 期（已按时间升序）`
   const offsets = path.points.map((point) => point.offset!)
   const formatOffset = (value: number) => value === 0 ? 'T0' : `T${value > 0 ? '+' : ''}${value}`
   return `${formatOffset(Math.min(...offsets))} 至 ${formatOffset(Math.max(...offsets))}`
@@ -127,21 +193,73 @@ function rangeText(path: EventPath) {
   return first === last ? first : `${first} 至 ${last}`
 }
 
+function normalizeHistoryAnalysisConfig(config: HistoryAnalysisConfig): HistoryAnalysisConfig {
+  return {
+    metric: config.metric.trim(),
+    scenarios: config.scenarios.trim(),
+    start: config.start.trim(),
+    end: config.end.trim(),
+    frequency: config.frequency,
+  }
+}
+
+function isCustomHistoryAnalysis(config: HistoryAnalysisConfig) {
+  return Boolean(config.metric || config.scenarios || config.start || config.end || config.frequency !== 'auto')
+}
+
+function toHistoryAnalysisRequest(config: HistoryAnalysisConfig): HistoryAnalysisRequest {
+  return {
+    metric: config.metric || null,
+    scenarios: config.scenarios.split(/[\n,，;；]+/).map((item) => item.trim()).filter(Boolean),
+    start: config.start || null,
+    end: config.end || null,
+    frequency: config.frequency,
+  }
+}
+
+const frequencyLabels = {
+  auto: '系统判断',
+  monthly: '月度',
+  quarterly: '季度',
+  yearly: '年度',
+} as const
+
 export function AnalyticsView({ run }: { run: ResearchRun }) {
   const activeTask = useWorkspaceStore(getActiveTask)
+  const historyAnalysisJob = useWorkspaceStore((state) => state.historyAnalysisJobs[run.id])
+  const historyAnalysisConfig = useWorkspaceStore((state) => (
+    state.historyAnalysisConfigs[run.id] ?? EMPTY_HISTORY_ANALYSIS_CONFIG
+  ))
+  const setHistoryAnalysisConfig = useWorkspaceStore((state) => state.setHistoryAnalysisConfig)
+  const resetHistoryAnalysisConfig = useWorkspaceStore((state) => state.resetHistoryAnalysisConfig)
+  const startHistoryAnalysisJob = useWorkspaceStore((state) => state.startHistoryAnalysisJob)
+  const finishHistoryAnalysisJob = useWorkspaceStore((state) => state.finishHistoryAnalysisJob)
   const persisted = Boolean(activeTask.persisted && !activeTask.isDemo)
   const [analysis, setAnalysis] = useState<HistoryAnalysis | null>(null)
   const [displayMode, setDisplayMode] = useState<DisplayMode>('relative')
   const [loading, setLoading] = useState(false)
-  const [running, setRunning] = useState(false)
   const [attaching, setAttaching] = useState(false)
-  const [baselineAnalysisId, setBaselineAnalysisId] = useState<number | null>(null)
+  const [customCapability, setCustomCapability] = useState<CustomAnalysisCapability>('checking')
+  const running = Boolean(historyAnalysisJob)
+  const normalizedConfig = normalizeHistoryAnalysisConfig(historyAnalysisConfig)
+  const customMode = isCustomHistoryAnalysis(normalizedConfig)
+
+  const updateConfig = <K extends keyof HistoryAnalysisConfig>(key: K, value: HistoryAnalysisConfig[K]) => {
+    setHistoryAnalysisConfig(run.id, { ...historyAnalysisConfig, [key]: value })
+  }
 
   useEffect(() => {
     let cancelled = false
-    setRunning(false)
+    setCustomCapability('checking')
+    supportsCustomHistoryAnalysis().then((supported) => {
+      if (!cancelled) setCustomCapability(supported ? 'supported' : 'unsupported')
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
     setDisplayMode('relative')
-    setBaselineAnalysisId(null)
     if (!persisted) {
       setAnalysis(null)
       setLoading(false)
@@ -164,20 +282,20 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
       try {
         const result = await getHistoryAnalysis(run.id)
         if (cancelled) return
-        if (result && result.id !== baselineAnalysisId) {
+        if (result && result.id !== historyAnalysisJob.baselineAnalysisId) {
           setAnalysis(result)
           setDisplayMode('relative')
-          setRunning(false)
+          finishHistoryAnalysisJob(run.id)
           message.success('历史情景复盘已生成')
           return
         }
         if (attempts >= POLL_LIMIT) {
-          setRunning(false)
+          finishHistoryAnalysisJob(run.id)
           message.warning('暂未取得新结果，可稍后重新进入本页查看')
         }
       } catch (error) {
         if (!cancelled) {
-          setRunning(false)
+          finishHistoryAnalysisJob(run.id)
           message.error(error instanceof Error ? error.message : '历史情景结果读取失败')
         }
       }
@@ -188,21 +306,39 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [baselineAnalysisId, persisted, run.id, running])
+  }, [finishHistoryAnalysisJob, historyAnalysisJob, persisted, run.id, running])
 
   const startAnalysis = async () => {
     if (!persisted) {
       message.info('演示任务不会生成虚构历史情景，请选择真实任务后运行')
       return
     }
-    setBaselineAnalysisId(analysis?.id ?? null)
-    setRunning(true)
+    if (normalizedConfig.start && normalizedConfig.end && normalizedConfig.start > normalizedConfig.end) {
+      message.warning('开始时间不能晚于结束时间')
+      return
+    }
+    if (customMode) {
+      const supported = customCapability === 'supported'
+        || (customCapability === 'checking' && await supportsCustomHistoryAnalysis())
+      setCustomCapability(supported ? 'supported' : 'unsupported')
+      if (!supported) {
+        message.error('你的比较要求已保存，但当前后端还不接收自定义复盘口径，暂不能按这些条件执行；清空条件后仍可使用系统推荐。')
+        return
+      }
+    }
+    const baselineAnalysisId = analysis?.id ?? null
+    startHistoryAnalysisJob(run.id, baselineAnalysisId, normalizedConfig)
     try {
-      await startHistoryAnalysis(run.id)
-      message.success('复盘任务已提交，结果生成后会自动显示在本页')
+      await startHistoryAnalysis(run.id, customMode ? toHistoryAnalysisRequest(normalizedConfig) : undefined)
+      message.success(customMode ? '已按你填写的比较要求提交，结果生成后会自动显示在本页' : '已按系统推荐提交，结果生成后会自动显示在本页')
     } catch (error) {
-      setRunning(false)
-      message.error(error instanceof Error ? error.message : '历史情景复盘启动失败')
+      const errorMessage = error instanceof Error ? error.message : '历史情景复盘启动失败'
+      if (errorMessage.includes('已有正在运行')) {
+        message.info('已重新接入正在运行的历史情景复盘')
+        return
+      }
+      finishHistoryAnalysisJob(run.id)
+      message.error(errorMessage)
     }
   }
 
@@ -223,7 +359,8 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
   const eventPaths = useMemo(() => analysis?.events.map(prepareEventPath) ?? [], [analysis])
   const totalPoints = eventPaths.reduce((sum, path) => sum + path.points.length, 0)
   const canAlignAll = eventPaths.length > 0 && eventPaths.every((path) => path.canAlign)
-  const relativeAsPercent = eventPaths.every((path) => path.baseline && path.baseline.value !== 0)
+  const excludedPointCount = eventPaths.reduce((sum, path) => sum + path.excludedPointCount, 0)
+  const relativeAsPercent = canAlignAll && eventPaths.every((path) => path.baseline && path.baseline.value !== 0)
   const completeness = analysis
     ? Math.max(0, Math.min(100, analysis.completeness <= 1 ? analysis.completeness * 100 : analysis.completeness))
     : 0
@@ -232,6 +369,10 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
     relativeAsPercent ? ((value - baseline) / Math.abs(baseline)) * 100 : value - baseline
   )
   const relativeSuffix = relativeAsPercent ? '%' : analysis?.unit ? ` ${analysis.unit}` : ''
+
+  useEffect(() => {
+    if (!canAlignAll && displayMode === 'relative') setDisplayMode('raw')
+  }, [canAlignAll, displayMode])
 
   const chartModel = useMemo(() => {
     if (!analysis || eventPaths.length === 0) return null
@@ -243,7 +384,7 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
       symbol: 'circle',
       symbolSize: 7,
       data: path.points.map((point, index) => ({
-        value: [canAlignAll ? point.offset! : index + 1, displayMode === 'relative' && path.baseline
+        value: [canAlignAll ? point.offset! : index + 1, displayMode === 'relative' && canAlignAll && path.baseline
           ? relativeValue(point.value, path.baseline.value)
           : point.value],
         observedAt: point.t,
@@ -275,20 +416,20 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
             seriesName: string
             data: { value: [number, number]; observedAt: string; rawValue: number; baselineAt: string; baselineValue: number | null }
           }>) => items.map((item) => {
-            const shown = displayMode === 'relative'
+            const shown = displayMode === 'relative' && canAlignAll
               ? signedValue(item.data.value[1], relativeSuffix)
               : withUnit(item.data.rawValue, analysis.unit)
             const baseline = item.data.baselineValue === null
               ? ''
               : `<br/><span style="color:#84928e">基准：${item.data.baselineAt} · ${withUnit(item.data.baselineValue, analysis.unit)}</span>`
-            return `${item.marker}<strong>${item.seriesName}</strong><br/>观测：${item.data.observedAt}<br/>${displayMode === 'relative' ? '相对基准' : '原始数值'}：${shown}${baseline}`
+            return `${item.marker}<strong>${item.seriesName}</strong><br/>观测：${item.data.observedAt}<br/>${displayMode === 'relative' && canAlignAll ? '相对基准' : '原始数值'}：${shown}${baseline}`
           }).join('<br/><br/>'),
         },
         legend: { type: 'scroll', top: 0, right: 8, left: 8, icon: 'circle', textStyle: { fontFamily: 'MiSans', color: '#405751', fontSize: 11 } },
         grid: { left: 66, right: 24, top: 58, bottom: 48 },
         xAxis: {
           type: 'value',
-          name: canAlignAll ? '相对事件时点（月）' : '各事件的观测顺序',
+          name: canAlignAll ? '相对事件时点（月）' : '各事件按时间升序的观测期次',
           nameLocation: 'middle',
           nameGap: 31,
           minInterval: 1,
@@ -296,18 +437,18 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
           axisLine: { lineStyle: { color: '#dfe4ed' } },
           axisLabel: {
             fontFamily: 'MiSans', color: '#405751', fontSize: 11,
-            formatter: (value: number) => canAlignAll ? (value === 0 ? 'T0' : `T${value > 0 ? '+' : ''}${value}`) : `第 ${value} 点`,
+            formatter: (value: number) => canAlignAll ? (value === 0 ? 'T0' : `T${value > 0 ? '+' : ''}${value}`) : `第 ${value} 期`,
           },
         },
         yAxis: {
           type: 'value',
-          name: displayMode === 'relative'
+          name: displayMode === 'relative' && canAlignAll
             ? relativeAsPercent ? '相对 T0 变化（%）' : `相对 T0 差值${analysis.unit ? `（${analysis.unit}）` : ''}`
             : [analysis.metric, analysis.unit].filter(Boolean).join(' · '),
           nameTextStyle: { fontFamily: 'MiSans', color: '#405751', fontSize: 11 },
           axisLabel: {
             fontFamily: 'MiSans', color: '#405751', fontSize: 11,
-            formatter: (value: number) => displayMode === 'relative' && relativeAsPercent ? `${value}%` : formatNumber(value),
+            formatter: (value: number) => displayMode === 'relative' && canAlignAll && relativeAsPercent ? `${value}%` : formatNumber(value),
           },
           splitLine: { lineStyle: { color: '#edf0f5' } },
         },
@@ -334,8 +475,59 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
 
       <section className="page-card history-trigger-card">
         <div className="history-trigger-task"><span>当前研究</span><strong>{run.title}</strong></div>
-        <div className="history-trigger-method"><AimOutlined /><div><strong>自动选择可比较的历史路径</strong><span>基于当前研究主题与已核查主张选择同类事件，只使用后端实际返回的公开数值，不在前端补点或编造样本。</span></div></div>
-        <Button type="primary" icon={running ? <ReloadOutlined spin /> : <PlayCircleOutlined />} loading={running} onClick={startAnalysis}>{running ? '复盘生成中' : analysis ? '重新生成复盘' : '开始历史情景复盘'}</Button>
+        <div className="history-trigger-method"><AimOutlined /><div><strong>{customMode ? '优先采用你填写的比较口径' : '未填写条件，由系统推荐比较口径'}</strong><span>{customMode ? '指标、场景、时间范围和频率会随启动请求一并提交。' : '系统会根据当前研究主题与已核查主张选择可比较的历史路径。'}</span></div></div>
+        <span className={`history-capability-status ${customCapability}`}>
+          {customCapability === 'checking' ? '正在确认接口能力' : customCapability === 'supported' ? '自定义口径可用' : '自动模式可用'}
+        </span>
+      </section>
+
+      <section className="page-card history-config-card history-analysis-config-card">
+        <div className="history-config-intro">
+          <div><SettingOutlined /><span><strong>你想比较什么</strong><small>只填你关心的部分，其余仍由系统补全；全部留空则完全由系统推荐。</small></span></div>
+          {customMode && <Button type="text" disabled={running} onClick={() => resetHistoryAnalysisConfig(run.id)}>恢复系统推荐</Button>}
+        </div>
+        <label className="history-config-field history-metric-field">
+          <span>比较指标</span>
+          <Input
+            value={historyAnalysisConfig.metric}
+            disabled={running}
+            onChange={(event) => updateConfig('metric', event.target.value)}
+            placeholder="如：股价涨幅、营业收入、净利润"
+          />
+        </label>
+        <label className="history-config-field history-scenarios-field">
+          <span>关注的历史事件或场景</span>
+          <Input.TextArea
+            value={historyAnalysisConfig.scenarios}
+            disabled={running}
+            autoSize={{ minRows: 1, maxRows: 2 }}
+            onChange={(event) => updateConfig('scenarios', event.target.value)}
+            placeholder="如：版号恢复发放、监管政策调整；多个场景用逗号隔开"
+          />
+        </label>
+        <div className="history-config-field history-date-field">
+          <span>观察时间范围</span>
+          <div className="history-date-range">
+            <Input type="month" aria-label="开始月份" value={historyAnalysisConfig.start} disabled={running} onChange={(event) => updateConfig('start', event.target.value)} />
+            <i>至</i>
+            <Input type="month" aria-label="结束月份" value={historyAnalysisConfig.end} disabled={running} onChange={(event) => updateConfig('end', event.target.value)} />
+          </div>
+        </div>
+        <label className="history-config-field history-frequency-field">
+          <span>统计频率</span>
+          <Select
+            value={historyAnalysisConfig.frequency}
+            disabled={running}
+            onChange={(value) => updateConfig('frequency', value)}
+            options={Object.entries(frequencyLabels).map(([value, label]) => ({ value, label }))}
+          />
+        </label>
+        <div className="history-config-actions">
+          <Button type="primary" icon={running ? <ReloadOutlined spin /> : <PlayCircleOutlined />} loading={running} onClick={startAnalysis}>
+            {running ? '复盘生成中' : customMode ? '按我的要求开始' : analysis ? '按系统推荐重新生成' : '按系统推荐开始'}
+          </Button>
+          {customMode && customCapability === 'unsupported' && <small>当前后端尚未接收这些字段，配置会保留，但不会假装已经执行。</small>}
+        </div>
       </section>
 
       {!analysis ? (
@@ -348,14 +540,40 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
         </section>
       ) : (
         <>
+          {analysis.requested_config && (
+            <section className="page-card history-applied-config">
+              <span>本次采用的比较要求</span>
+              <strong>{analysis.requested_config.metric || analysis.metric}</strong>
+              <small>
+                {analysis.requested_config.scenarios.length > 0 ? analysis.requested_config.scenarios.join('、') : '历史场景由系统推荐'}
+                {' · '}{analysis.requested_config.start || '不限起点'} 至 {analysis.requested_config.end || '不限终点'}
+                {' · '}{frequencyLabels[analysis.requested_config.frequency]}
+              </small>
+            </section>
+          )}
           <section className="page-card history-comparison-brief">
             <div className="history-brief-icon"><LineChartOutlined /></div>
             <div>
               <span>这次到底比较什么</span>
               <strong>用“{analysis.metric}{analysis.unit ? `（${analysis.unit}）` : ''}”观察 {comparisonNames} 的事件前后路径</strong>
-              <p>{canAlignAll ? '每条线代表一个历史事件，横轴按各自事件月份对齐到 T0；' : '部分日期无法换算为月份，横轴暂按实际观测顺序展示，相关样本会明确标注；'}默认纵轴显示相对各自基准点的变化，因此不同年份、不同绝对量级可以放在同一口径下比较。“原始数值”用于回看后端返回的数据本身。</p>
+              <p>{canAlignAll
+                ? '每条线代表一个历史事件，横轴按各自事件月份对齐到 T0；默认纵轴显示相对各自基准点的变化，因此不同年份、不同绝对量级可以放在同一口径下比较。'
+                : '部分事件只给出了年份、没有精确月份，无法可靠确定 T0。本图已按每个事件的真实日期升序排列，第 1 期就是该事件最早的同口径观测；当前仅显示原始数值，不计算伪造的相对变化。'}“原始数值”始终用于回看后端返回的数据本身。</p>
             </div>
           </section>
+
+          {(!canAlignAll || excludedPointCount > 0) && (
+            <section className="history-data-quality-note">
+              <ClockCircleOutlined />
+              <div>
+                <strong>{canAlignAll ? '已统一数据统计周期' : '当前数据不能可靠对齐 T0'}</strong>
+                <span>
+                  {!canAlignAll && '至少一个事件时点未精确到月，因此已关闭“相对 T0”，改为展示按日期升序的原始数值。'}
+                  {excludedPointCount > 0 && ` 同一事件中发现年度、季度或月度数据混用，已排除 ${excludedPointCount} 个不同统计周期的数据点，避免把年度合计和月度值直接相除。`}
+                </span>
+              </div>
+            </section>
+          )}
 
           <section className="history-kpi-strip">
             <div><HistoryOutlined /><span>同类事件</span><strong>{analysis.events.length}</strong><small>个真实返回样本</small></div>
@@ -366,13 +584,13 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
 
           <section className="page-card history-chart-card">
             <div className="history-section-title history-chart-heading">
-              <div><strong>{analysis.metric} · 事件前后变化路径</strong><span>{displayMode === 'relative' ? `以每个事件最接近 T0 的真实数据为基准，${relativeAsPercent ? '统一换算为变化百分比' : '因存在零值基准，统一显示原始差值'}。` : '显示后端返回的原始指标值，不做换算。'}悬停可核验日期和数值。</span></div>
+              <div><strong>{analysis.metric} · 事件前后变化路径</strong><span>{displayMode === 'relative' && canAlignAll ? `以每个事件最接近 T0 的真实数据为基准，${relativeAsPercent ? '统一换算为变化百分比' : '因存在零值基准，统一显示原始差值'}。` : canAlignAll ? '显示后端返回的原始指标值，不做换算。' : '每条线内部已按真实日期升序，横轴“第 N 期”表示该事件第 N 个同口径观测。'}悬停可核验日期和数值。</span></div>
               <div className="history-chart-tools">
                 <Segmented
                   size="small"
                   value={displayMode}
                   onChange={(value) => setDisplayMode(value as DisplayMode)}
-                  options={[{ label: '相对 T0', value: 'relative' }, { label: '原始数值', value: 'raw' }]}
+                  options={[{ label: '相对 T0', value: 'relative', disabled: !canAlignAll }, { label: '原始数值', value: 'raw' }]}
                 />
                 <div className="chart-source-note"><DatabaseOutlined /> {analysis.events.length} 个事件 · {totalPoints} 个真实数据点</div>
               </div>
@@ -400,7 +618,7 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
                   width: '22%',
                   render: (_, path) => path.baseline
                     ? <div className="history-baseline-cell"><strong>T0：{path.event.period}</strong><span>{path.exactT0 ? `采用 T0 当期 ${path.baseline.t}` : path.canAlign ? `采用最接近 T0 的 ${path.baseline.t}` : `日期无法对齐，采用首个观测 ${path.baseline.t}`}</span><small>{withUnit(path.baseline.value, analysis.unit)}</small></div>
-                    : '没有可用基准点',
+                    : <span className="history-insufficient">{path.alignmentReason || '没有可用基准点'}</span>,
                 },
                 {
                   title: '实际覆盖',
@@ -431,7 +649,7 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
                 },
               ]}
             />
-            <div className="history-data-note">本页仅使用接口返回的历史事件和公开数据点。后端当前没有返回逐条来源链接，因此不展示虚构的来源数量；需要审阅出处时，应以研究底稿中的原始检索记录为准。</div>
+            <div className="history-data-note">本页仅使用接口返回的历史事件和公开数据点。所有可识别日期均按时间升序展示；同一事件中不同统计周期的数据不会混合计算。后端当前没有返回逐条来源链接，因此不展示虚构的来源数量；需要审阅出处时，应以研究底稿中的原始检索记录为准。</div>
           </section>
         </>
       )}

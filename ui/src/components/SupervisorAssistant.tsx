@@ -333,7 +333,10 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
                 {message.replyTo && (
                   <div className="assistant-sent-reply-card">
                     <RetweetOutlined />
-                    <div><strong>追问小盾</strong><span>{message.replyTo.content}</span></div>
+                    <div>
+                      <strong>追问小盾</strong>
+                      <MarkdownContent content={message.replyTo.content} className="assistant-reply-markdown assistant-reply-markdown-compact" />
+                    </div>
                   </div>
                 )}
                 {message.role === 'user' && <p>{message.content}</p>}
@@ -399,7 +402,10 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
           <div className="assistant-composer-box">
             {replyTarget && (
               <div className="assistant-reply-target-card">
-                <div><strong>追问这条回复</strong><span>{replyTarget.content}</span></div>
+                <div>
+                  <strong>追问这条回复</strong>
+                  <MarkdownContent content={replyTarget.content} className="assistant-reply-markdown" />
+                </div>
                 <button aria-label="取消追问" onClick={() => setReplyTarget(null)}><CloseOutlined /></button>
               </div>
             )}

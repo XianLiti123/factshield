@@ -65,6 +65,17 @@ export type HistoryAnalysis = {
   unit: string
   events: HistoryAnalysisEvent[]
   completeness: number
+  requested_config?: HistoryAnalysisRequest
+}
+
+export type HistoryAnalysisFrequency = 'auto' | 'monthly' | 'quarterly' | 'yearly'
+
+export type HistoryAnalysisRequest = {
+  metric: string | null
+  scenarios: string[]
+  start: string | null
+  end: string | null
+  frequency: HistoryAnalysisFrequency
 }
 
 export type WorkspaceSearchTask = {
@@ -423,8 +434,31 @@ export async function exportReport(taskId: string, format: ReportExportFormat) {
 
 export const getAuditLog = (taskId: string) => request<{ task_id: string; events: unknown[]; resolutions: unknown[] }>(`/api/tasks/${taskId}/audit-log`)
 
-export const startHistoryAnalysis = (taskId: string) => request<{ status: string; task_id: string }>(
-  `/api/tasks/${taskId}/history-analysis`, { method: 'POST' },
+let historyAnalysisCapabilityPromise: Promise<boolean> | null = null
+
+export function supportsCustomHistoryAnalysis() {
+  if (!historyAnalysisCapabilityPromise) {
+    historyAnalysisCapabilityPromise = fetch('/api/openapi.json')
+      .then(async (response) => {
+        if (!response.ok) return false
+        const schema = await response.json() as {
+          paths?: Record<string, { post?: { requestBody?: unknown } }>
+        }
+        const route = Object.entries(schema.paths ?? {}).find(([path]) => (
+          path.endsWith('/tasks/{task_id}/history-analysis')
+        ))?.[1]
+        return Boolean(route?.post?.requestBody)
+      })
+      .catch(() => false)
+  }
+  return historyAnalysisCapabilityPromise
+}
+
+export const startHistoryAnalysis = (taskId: string, options?: HistoryAnalysisRequest) => request<{ status: string; task_id: string }>(
+  `/api/tasks/${taskId}/history-analysis`, {
+    method: 'POST',
+    ...(options ? { body: JSON.stringify(options) } : {}),
+  },
 )
 
 export async function getHistoryAnalysis(taskId: string) {
