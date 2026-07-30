@@ -219,7 +219,7 @@
 .user-avatar { color: #fff; background: var(--fs-teal-900); }
 .profile-chip .user-avatar.ant-avatar { display: inline-flex; align-items: center; justify-content: center; color: #fff !important; background: var(--fs-teal-900) !important; font-size: 18px !important; font-weight: 600; }
 .profile-chip .user-avatar .ant-avatar-string { position: absolute !important; inset: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; display: grid !important; place-items: center; color: #fff !important; font-size: 18px !important; line-height: 1 !important; opacity: 1 !important; transform: none !important; }
-.ant-avatar-string > .avatar-glyph { width: 100% !important; height: 100% !important; margin: 0 !important; display: grid !important; place-items: center !important; overflow: visible !important; color: inherit !important; font-family: Arial, sans-serif; font-size: inherit !important; font-weight: inherit; line-height: 1 !important; text-overflow: clip !important; white-space: nowrap; opacity: 1 !important; }
+.ant-avatar-string > .avatar-glyph { width: 100% !important; height: 100% !important; margin: 0 !important; display: grid !important; place-items: center !important; overflow: visible !important; color: inherit !important; font-family: "MiSans" !important; font-size: inherit !important; font-weight: inherit; line-height: 1 !important; text-overflow: clip !important; white-space: nowrap; opacity: 1 !important; }
 
 .account-dropdown .ant-dropdown-menu { width: 174px; padding: 7px; border: 1px solid #dce7e3; border-radius: 9px; box-shadow: 0 13px 32px rgba(29, 61, 55, .14); }
 .account-dropdown .ant-dropdown-menu-item { min-height: 38px; padding: 8px 11px; color: #3a544e; border-radius: 6px; font-size: 11px; }
@@ -367,7 +367,7 @@
 .process-live i { width: 6px; height: 6px; border-radius: 50%; background: #36ae7f; box-shadow: 0 0 0 3px rgba(54, 174, 127, .12); }
 .task-process { min-height: 56px; padding: 9px 12px; display: grid; grid-template-columns: auto 1fr auto 1fr auto 1fr auto; align-items: center; border: 1px solid #e2ebe7; background: #f7faf9; border-radius: 7px; }
 .process-step { display: grid; grid-template-columns: 29px auto; gap: 8px; align-items: center; }
-.process-step > span { width: 29px; height: 29px; display: grid; place-items: center; color: #82918d; background: #fff; border: 1px solid var(--fs-border); border-radius: 50%; font: 8px Consolas, monospace; }
+.process-step > span { width: 29px; height: 29px; display: grid; place-items: center; color: #82918d; background: #fff; border: 1px solid var(--fs-border); border-radius: 50%; font-family: "MiSans"; font-size: 8px; }
 .process-step strong, .process-step small { display: block; white-space: nowrap; }
 .process-step strong { color: #52625f; font-size: 9px; }
 .process-step small { margin-top: 3px; color: #98a4a1; font-size: 7px; }
@@ -547,7 +547,7 @@
 .overview-claim-visual { padding: 0 13px; display: flex; align-items: center; justify-content: space-between; background: #eaf4f1; }
 .overview-claim-card.review .overview-claim-visual { background: #fff6e7; }
 .overview-claim-card.conflict .overview-claim-visual { background: #fff0f1; }
-.overview-claim-visual span { color: #4f7068; font: 11px Consolas, monospace; }
+.overview-claim-visual span { color: #4f7068; font-family: "MiSans"; font-size: 11px; }
 .overview-claim-visual strong { color: var(--fs-teal-900); font-size: 21px; line-height: 1; }
 .overview-claim-card.review .overview-claim-visual strong { color: #a76d1c; }
 .overview-claim-card.conflict .overview-claim-visual strong { color: #b74850; }
@@ -770,7 +770,7 @@
 .report-markdown-preview blockquote { margin: 14px 0; padding: 10px 14px; color: #5c716a; background: #f2f7f5; border-left: 3px solid #8bb8ad; }
 .report-markdown-preview blockquote p { margin: 0; }
 .report-markdown-preview a { color: #0d7180; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
-.report-markdown-preview code { padding: 2px 5px; color: #275f52; background: #edf3f1; border-radius: 4px; font-family: Consolas, 'SFMono-Regular', monospace; font-size: .9em; }
+.report-markdown-preview code { padding: 2px 5px; color: #275f52; background: #edf3f1; border-radius: 4px; font-family: "MiSans"; font-size: .9em; }
 .report-markdown-preview pre { margin: 13px 0; padding: 13px 15px; overflow-x: auto; color: #dce9e5; background: #233c37; border-radius: 7px; line-height: 1.65; }
 .report-markdown-preview pre code { padding: 0; color: inherit; background: transparent; white-space: pre; }
 .report-markdown-preview hr { margin: 22px 0; border: 0; border-top: 1px solid #dbe6e2; }
@@ -800,10 +800,25 @@
 }
 
 /* Readable MiSans typography floor */
-.app-layout,
-.app-layout * {
-  font-family: "MiSans", sans-serif !important;
+html,
+body,
+#root,
+body * {
+  font-family: "MiSans" !important;
   font-synthesis: none;
+}
+
+button,
+input,
+textarea,
+select,
+option,
+code,
+pre,
+kbd,
+samp,
+svg text {
+  font-family: "MiSans" !important;
 }
 
 .brand-copy span,
@@ -876,7 +891,7 @@
 .report-claim > span,
 .guide-card > span,
 .hash-code {
-  font-family: "MiSans", sans-serif !important;
+  font-family: "MiSans" !important;
   font-variant-numeric: tabular-nums;
 }
 .claim-index { font-size: 11px; }
@@ -914,6 +929,8 @@
 .topology-status-strip strong { color: #183b35; font-size: 22px; line-height: 1; }
 .topology-status-strip .warning { background: #fff8f6; }
 .topology-status-strip .warning strong { color: #c64f55; }
+.topology-status-strip .attention { background: #fffbf2; }
+.topology-status-strip .attention strong { color: #a87527; }
 .topology-alert { margin: 0 22px 10px; min-height: 58px; padding: 10px 13px; display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 10px; align-items: center; border: 1px solid #efd1d1; border-radius: 8px; background: #fff8f7; }
 .topology-alert > .anticon { width: 28px; height: 28px; display: grid; place-items: center; color: #d4585d; background: #ffe8e6; border-radius: 7px; }
 .topology-alert strong, .topology-alert span { display: block; }
@@ -1344,7 +1361,7 @@
 .assistant-tools-section li::before { content: ''; width: 4px; height: 4px; margin-top: 6px; margin-right: -1px; align-self: start; border-radius: 50%; background: #9aaba6; }
 .assistant-tools-section li { grid-template-columns: 4px max-content minmax(0, 1fr); }
 .assistant-tools-section strong { color: #5d716b; font-size: 10px; font-weight: 600; overflow-wrap: anywhere; }
-.assistant-tools-section code { min-width: 0; padding: 1px 4px; color: #75837f; background: #edf1f0; border-radius: 3px; font-family: Consolas, 'SFMono-Regular', monospace; font-size: 9px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.assistant-tools-section code { min-width: 0; padding: 1px 4px; color: #75837f; background: #edf1f0; border-radius: 3px; font-family: "MiSans"; font-size: 9px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .assistant-context-notices { padding: 7px 12px; display: flex; flex-wrap: wrap; gap: 5px; color: #698079; background: #eef5f2; border-bottom: 1px solid #dce9e4; font-size: 9px; line-height: 1.45; }
 .assistant-context-notices span::before { content: '·'; margin-right: 4px; color: var(--fs-teal-700); }
 .assistant-answer-section { padding: 11px 12px 12px; }
@@ -1377,7 +1394,7 @@
 .assistant-markdown li::marker { color: var(--fs-teal-700); font-weight: 600; }
 .assistant-process-markdown blockquote, .assistant-markdown blockquote { margin: 8px 0; padding: 6px 9px; color: #62766f; background: #f4f8f6; border-left: 3px solid #9bc2b8; }
 .assistant-process-markdown blockquote p, .assistant-markdown blockquote p { margin: 0; }
-.assistant-process-markdown code, .assistant-markdown code { padding: 1px 4px; color: #285f53; background: #edf3f1; border-radius: 3px; font-family: Consolas, 'SFMono-Regular', monospace; font-size: .88em; }
+.assistant-process-markdown code, .assistant-markdown code { padding: 1px 4px; color: #285f53; background: #edf3f1; border-radius: 3px; font-family: "MiSans"; font-size: .88em; }
 .assistant-process-markdown pre, .assistant-markdown pre { margin: 8px 0; padding: 9px 10px; overflow-x: auto; color: #dce9e5; background: #233c37; border-radius: 6px; line-height: 1.55; }
 .assistant-process-markdown pre code, .assistant-markdown pre code { padding: 0; color: inherit; background: transparent; border-radius: 0; white-space: pre; }
 .assistant-process-markdown a, .assistant-markdown a { color: #0d7180; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }

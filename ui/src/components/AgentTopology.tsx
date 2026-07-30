@@ -56,12 +56,21 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
   const workers = run.agents.filter((agent) => !['supervisor', 'reviewer'].includes(agent.id))
   const completedCount = workers.filter((agent) => agent.status === 'done').length
   const waitingCount = workers.filter((agent) => agent.status === 'waiting').length
-  const warningCount = run.agents.filter((agent) => agent.status === 'warning').length
-  const conflictClaim = run.claims.find((claim) => claim.status === 'conflict')
+  const pendingReviewClaims = run.claims.filter((claim) => claim.status !== 'verified' && !claim.humanAction)
+  const conflictClaims = pendingReviewClaims.filter((claim) => claim.status === 'conflict')
+  const conflictCount = conflictClaims.length
+  const conflictClaim = conflictClaims[0]
 
   const { nodes, edges } = useMemo(() => {
     const find = (id: string) => run.agents.find((agent) => agent.id === id)!
-    const asNodeData = (agent: AgentInfo): AgentNodeData => ({ ...agent })
+    const asNodeData = (agent: AgentInfo): AgentNodeData => ({
+      ...agent,
+      // 后端的 reviewer warning 可能来自历史复核事件；当前没有未处理冲突时，
+      // 独立复核已经完成，不能继续在执行监控中显示为阻塞节点。
+      status: agent.id === 'reviewer' && agent.status === 'warning' && conflictCount === 0
+        ? 'done'
+        : agent.status,
+    })
     const topologyNodes: Node<AgentNodeData>[] = [
       { id: 'supervisor', type: 'agent', position: { x: 300, y: 0 }, data: { ...find('supervisor'), kind: 'supervisor' } },
       { id: 'collector', type: 'agent', position: { x: 0, y: 150 }, data: asNodeData(find('collector')) },
@@ -69,7 +78,7 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
       { id: 'retriever', type: 'agent', position: { x: 600, y: 150 }, data: asNodeData(find('retriever')) },
       { id: 'scorer', type: 'agent', position: { x: 0, y: 300 }, data: asNodeData(find('scorer')) },
       { id: 'assembler', type: 'agent', position: { x: 300, y: 300 }, data: asNodeData(find('assembler')) },
-      { id: 'reviewer', type: 'agent', position: { x: 300, y: 460 }, data: { ...find('reviewer'), kind: 'reviewer' } },
+      { id: 'reviewer', type: 'agent', position: { x: 300, y: 460 }, data: { ...asNodeData(find('reviewer')), kind: 'reviewer' } },
     ]
 
     const normalStyle = { stroke: '#79aaa4', strokeWidth: 1.6 }
@@ -89,31 +98,35 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
         id: 'supervisor-reviewer', source: 'supervisor', target: 'reviewer', type: 'smoothstep',
         markerEnd: { type: MarkerType.ArrowClosed, color: '#d39a43' }, style: reviewStyle, animated: true,
       },
-      {
+      ...(conflictCount > 0 ? [{
         id: 'reviewer-supervisor', source: 'reviewer', target: 'supervisor', type: 'smoothstep',
         markerEnd: { type: MarkerType.ArrowClosed, color: '#dc6267' }, style: retryStyle,
-      },
+      }] : []),
     ]
     return { nodes: topologyNodes, edges: topologyEdges }
-  }, [run.agents])
+  }, [conflictCount, run.agents])
 
   return (
     <div className="page-card topology-page">
       <div className="page-card-header">
-        <div><span className="eyebrow">任务运行状态</span><h2>当前执行链路</h2><p>查看各执行单元的进度、耗时和异常，快速定位当前阻塞环节。</p></div>
+        <div><span className="eyebrow">任务运行状态</span><h2>当前执行链路</h2><p>查看各执行单元的进度、耗时以及仍需关注的主张。</p></div>
         <div className="topology-legend"><span><i className="running" />运行中</span><span><i className="done" />已完成</span><span><i className="warning" />需处理</span></div>
       </div>
       <div className="topology-status-strip">
         <div><span>执行单元</span><strong>{workers.length}</strong></div>
         <div><span>已完成</span><strong>{completedCount}</strong></div>
         <div><span>等待启动</span><strong>{waitingCount}</strong></div>
-        <div className="warning"><span>待处理异常</span><strong>{warningCount}</strong></div>
+        <div className={conflictCount > 0 ? 'warning' : pendingReviewClaims.length > 0 ? 'attention' : undefined}>
+          <span>待复核主张</span><strong>{pendingReviewClaims.length}</strong>
+        </div>
       </div>
-      <div className="topology-alert">
-        <WarningFilled />
-        <div><strong>当前阻塞：独立审查发现 {warningCount} 项冲突</strong><span>{conflictClaim?.statement ?? '需要返回核验工作台补充交叉证据。'}</span></div>
-        <Button onClick={() => setActiveView('workbench')}>查看待核验主张</Button>
-      </div>
+      {conflictCount > 0 && (
+        <div className="topology-alert">
+          <WarningFilled />
+          <div><strong>当前阻塞：有 {conflictCount} 条冲突主张尚未处理</strong><span>{conflictClaim.statement}</span></div>
+          <Button onClick={() => setActiveView('workbench')}>处理冲突主张</Button>
+        </div>
+      )}
       <div className="isolation-banner"><LockFilled /><strong>隔离状态正常</strong><span>后台助手只把结果交给小盾，彼此不共享上下文。</span></div>
       <div className="flow-canvas">
         <ReactFlow

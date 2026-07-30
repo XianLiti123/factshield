@@ -9,14 +9,14 @@ import { StatusBadge } from './StatusBadge'
 
 const workflowOption = {
   color: ['#0d6575', '#d39a43'],
-  textStyle: { fontFamily: 'MiSans, sans-serif', color: '#405651', fontSize: 12 },
-  tooltip: { trigger: 'axis', textStyle: { fontFamily: 'MiSans, sans-serif', fontSize: 12, color: '#263f39' } },
+  textStyle: { fontFamily: 'MiSans', color: '#405651', fontSize: 12 },
+  tooltip: { trigger: 'axis', textStyle: { fontFamily: 'MiSans', fontSize: 12, color: '#263f39' } },
   legend: {
     top: 0,
     right: 0,
     icon: 'circle',
     itemWidth: 7,
-    textStyle: { fontFamily: 'MiSans, sans-serif', color: '#4f655f', fontSize: 13 },
+    textStyle: { fontFamily: 'MiSans', color: '#4f655f', fontSize: 13 },
   },
   grid: { left: 42, right: 58, top: 38, bottom: 32, containLabel: true },
   xAxis: {
@@ -25,13 +25,13 @@ const workflowOption = {
     data: ['任务拆解', '信源采集', '文档解析', '证据检索', '一级汇总', '独立复核'],
     axisTick: { show: false },
     axisLine: { lineStyle: { color: '#dce6e2' } },
-    axisLabel: { fontFamily: 'MiSans, sans-serif', color: '#405751', fontSize: 13, interval: 0, hideOverlap: false, margin: 12 },
+    axisLabel: { fontFamily: 'MiSans', color: '#405751', fontSize: 13, interval: 0, hideOverlap: false, margin: 12 },
   },
   yAxis: {
     type: 'value',
     min: 0,
     max: 100,
-    axisLabel: { fontFamily: 'MiSans, sans-serif', color: '#405751', fontSize: 13, formatter: '{value}%' },
+    axisLabel: { fontFamily: 'MiSans', color: '#405751', fontSize: 13, formatter: '{value}%' },
     splitLine: { lineStyle: { color: '#edf2f0' } },
   },
   series: [
@@ -63,13 +63,13 @@ export function WorkbenchOverview({ run, onOpenClaim }: { run: ResearchRun; onOp
   const conflict = run.claims.filter((claim) => claim.status === 'conflict').length
   const distributionOption = {
     color: ['#15966c', '#d6a13f', '#d75b63'],
-    textStyle: { fontFamily: 'MiSans, sans-serif', color: '#405651', fontSize: 12 },
-    tooltip: { trigger: 'item', textStyle: { fontFamily: 'MiSans, sans-serif', fontSize: 12, color: '#263f39' } },
+    textStyle: { fontFamily: 'MiSans', color: '#405651', fontSize: 12 },
+    tooltip: { trigger: 'item', textStyle: { fontFamily: 'MiSans', fontSize: 12, color: '#263f39' } },
     title: {
       text: `${verified}\n可信`,
       left: 'center',
       top: '35%',
-      textStyle: { fontFamily: 'MiSans, sans-serif', color: '#1f3935', fontSize: 25, fontWeight: 700, lineHeight: 30 },
+      textStyle: { fontFamily: 'MiSans', color: '#1f3935', fontSize: 25, fontWeight: 700, lineHeight: 30 },
     },
     series: [{
       type: 'pie',
