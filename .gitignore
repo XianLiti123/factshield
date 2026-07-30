@@ -148,3 +148,10 @@ notes
 
 # FactShield secrets
 .master_key
+
+# FactShield 数据库文件（本地运行数据，不入库）
+*.db
+*.db-shm
+*.db-wal
+*.sqlite3
+chroma_db/

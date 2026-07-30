@@ -24,6 +24,9 @@ RERANKER_API_KEY = os.getenv("RERANKER_API_KEY")
 RERANKER_BASE_URL = os.getenv("RERANKER_BASE_URL")
 RERANKER_MODEL = os.getenv("RERANKER_MODEL")
 
+# TickFlow 行情数据 API（可选）：不配置时用免费服务（仅历史日K与标的信息）
+TICKFLOW_API_KEY = os.getenv("TICKFLOW_API_KEY")
+
 
 if not DEEPSEEK_API_KEY:
     raise ValueError("API key为空，请配置API key")

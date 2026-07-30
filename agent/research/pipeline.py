@@ -37,6 +37,7 @@ def _parse_level(value: object) -> str:
         return "低"
     return "中"
 MAX_RETRY = 2           #冲突二次取证上限（重试纪律由 VERIFY_PROMPT 约束，仅数据矛盾/证据缺失时触发）
+MAX_DEEPEN_CLAIMS = 4   #单次定向深挖的主张上限（按证据薄弱程度取前 N，每条补采 1 篇信源）
 
 _search = TavilySearch(max_results=3)
 _extract = TavilyExtract()
@@ -233,49 +234,105 @@ def _search_with_meta(query: str, num: int = 2) -> list[dict]:
              "chunk_index": d.metadata.get("chunk_index", 0)} for d in picked]
 
 
+def _match_evidence(task_id: str, claim: dict, llm: ChatClient, num: int = 2) -> int:
+    #对单条主张做 向量粗筛+精排+LLM 判定，摘录证据入库，返回新增证据条数
+    candidates = _search_with_meta(claim["statement"], num=num)
+    if not candidates:
+        return 0
+    cand_text = "\n\n".join(f"[{i}] {c['content'][:800]}" for i, c in enumerate(candidates))
+    try:
+        data = _llm_json(llm, prompts.JUDGE_EVIDENCE_PROMPT.format(
+            statement=claim["statement"], candidates=cand_text))
+    except RuntimeError:
+        return 0  #单条判定失败不中断流水线，该主张留待审查单元标黄
+    materials_by_group = {m["group_id"]: m for m in store.list_materials(task_id)}
+    items = []
+    for e in data.get("evidence", []):
+        idx = e.get("chunk_index")
+        if not isinstance(idx, int) or not (0 <= idx < len(candidates)):
+            continue
+        cand = candidates[idx]
+        src = materials_by_group.get(cand["group_id"], {})
+        quote = str(e.get("quote", ""))[:300]
+        if not quote:
+            continue
+        items.append({
+            "title": src.get("title", ""), "publisher": src.get("publisher", ""),
+            "url": src.get("url", ""),
+            "locator": f"{src.get('title') or cand['group_id']} 第{cand['chunk_index'] + 1}段",
+            "quote": quote, "source_type": src.get("source_type", ""),
+            "credibility": src.get("credibility", 0.0),
+            "credibility_level": src.get("credibility_level", ""),
+            "relation": "challenge" if e.get("relation") == "challenge" else "support",
+        })
+    if items:
+        store.save_evidence(task_id, claim["id"], items)
+    return len(items)
+
+
 def retrieve_node(state: ResearchState, config: RunnableConfig) -> dict:
     #证据检索：逐条主张检索原文段落，LLM 判定支持/质疑关系并摘录原文
     _check_stop(config)
     task_id = state["task_id"]
     guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 55)
     llm = _llm(config)
-    materials_by_group = {m["group_id"]: m for m in state["materials"]}
     total = 0
     for claim in state["claims"]:
         _check_stop(config)
-        candidates = _search_with_meta(claim["statement"], num=2)
-        if not candidates:
-            continue
-        cand_text = "\n\n".join(f"[{i}] {c['content'][:800]}" for i, c in enumerate(candidates))
-        try:
-            data = _llm_json(llm, prompts.JUDGE_EVIDENCE_PROMPT.format(
-                statement=claim["statement"], candidates=cand_text))
-        except RuntimeError:
-            continue  #单条判定失败不中断流水线，该主张留待审查单元标黄
-        items = []
-        for e in data.get("evidence", []):
-            idx = e.get("chunk_index")
-            if not isinstance(idx, int) or not (0 <= idx < len(candidates)):
-                continue
-            cand = candidates[idx]
-            src = materials_by_group.get(cand["group_id"], {})
-            quote = str(e.get("quote", ""))[:300]
-            if not quote:
-                continue
-            items.append({
-                "title": src.get("title", ""), "publisher": src.get("publisher", ""),
-                "url": src.get("url", ""),
-                "locator": f"{src.get('title') or cand['group_id']} 第{cand['chunk_index'] + 1}段",
-                "quote": quote,
-                "relation": "challenge" if e.get("relation") == "challenge" else "support",
-            })
-        if items:
-            store.save_evidence(task_id, claim["id"], items)
-            total += len(items)
+        total += _match_evidence(task_id, claim, llm)
     store.bump_progress(task_id, 55)
     _emit(config, "retriever", "progress",
           title="证据检索完成", speech=f"已为各主张匹配到 {total} 条原文证据。",
           details=[], metrics=[{"label": "证据总数", "value": str(total)}], progress=55)
+    return {"guidance": guidance}
+
+
+def deepen_node(state: ResearchState, config: RunnableConfig) -> dict:
+    #逐条定向深挖：对证据不足 2 条的薄弱主张，逐条定向联网检索补采信源后重新匹配证据
+    _check_stop(config)
+    task_id = state["task_id"]
+    guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 62)
+    llm = _llm(config)
+    ce_map = store.claim_evidence_ids(task_id)
+    weak = [c for c in state["claims"] if len(ce_map.get(c["id"], [])) < 2][:MAX_DEEPEN_CLAIMS]
+    materials_count = len(store.list_materials(task_id))
+    if not weak or materials_count >= MAX_MATERIALS_TOTAL:
+        _emit(config, "retriever", "progress", title="定向深挖跳过",
+              speech="各主张证据均已达标，无需定向深挖。" if not weak
+                    else f"素材已达 {MAX_MATERIALS_TOTAL} 篇上限，不再补采。",
+              details=[], metrics=[], progress=62)
+        return {"guidance": guidance}
+    new_sources, new_evidence = 0, 0
+    for claim in weak:
+        _check_stop(config)
+        if materials_count >= MAX_MATERIALS_TOTAL:
+            break
+        try:
+            result = _search.invoke({"query": claim["statement"][:200]})
+            items = result.get("results", []) if isinstance(result, dict) else []
+        except Exception:
+            continue
+        for item in items[:1]:  #每条主张只取最相关的一篇全文
+            url, title = item.get("url", ""), item.get("title", "")
+            try:
+                ext = _extract.invoke({"urls": [url]})
+                pages = ext.get("results", []) if isinstance(ext, dict) else []
+                content = str(pages[0].get("raw_content", ""))[:6000] if pages else ""
+            except Exception:
+                content = str(item.get("content", ""))[:6000]
+            if not content.strip():
+                continue
+            publisher = url.split("/")[2] if "://" in url else url
+            materials_count += 1
+            _ingest_material(task_id, materials_count, title, publisher, url, content)
+            new_sources += 1
+        new_evidence += _match_evidence(task_id, claim, llm, num=3)
+    store.bump_progress(task_id, 62)
+    _emit(config, "retriever", "progress", title="定向深挖完成",
+          speech=f"对 {len(weak)} 条证据薄弱的主张做了定向检索，补采 {new_sources} 篇信源，新增 {new_evidence} 条证据。",
+          details=[{"label": c["id"], "text": c["statement"][:60]} for c in weak],
+          metrics=[{"label": "新信源", "value": str(new_sources)},
+                   {"label": "新证据", "value": str(new_evidence)}], progress=62)
     return {"guidance": guidance}
 
 
@@ -674,6 +731,7 @@ def build_research_graph():
     g.add_node("collect", collect_node)
     g.add_node("parse", parse_node)
     g.add_node("retrieve", retrieve_node)
+    g.add_node("deepen", deepen_node)
     g.add_node("score", score_node)
     g.add_node("verify", verify_node)
     g.add_node("review", review_node)
@@ -682,7 +740,8 @@ def build_research_graph():
     g.add_edge("plan", "collect")
     g.add_edge("collect", "parse")
     g.add_edge("parse", "retrieve")
-    g.add_edge("retrieve", "score")
+    g.add_edge("retrieve", "deepen")
+    g.add_edge("deepen", "score")
     g.add_edge("score", "verify")
     g.add_conditional_edges("verify", route_after_verify, {"collect": "collect", "review": "review"})
     g.add_edge("review", "assemble")
