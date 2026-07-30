@@ -257,7 +257,7 @@ export function LoginView({ onLogin }: { onLogin: (user: UserInfo) => void }) {
   const submitRegistration = async (values: LoginValues) => {
     setSubmitting(true)
     try {
-      const response = await register(values.email, values.password)
+      const response = await register(values.username?.trim() ?? '', values.email, values.password)
       setToken(response.token)
       message.success('账号已创建')
       onLogin(response.user)
@@ -308,7 +308,16 @@ export function LoginView({ onLogin }: { onLogin: (user: UserInfo) => void }) {
               onFinishFailed={handleValidationFailed}
             >
               {isRegister && (
-                <Form.Item className={invalidFieldClass('username')} label="用户名" name="username">
+                <Form.Item
+                  className={invalidFieldClass('username')}
+                  label="用户名"
+                  name="username"
+                  rules={[
+                    { required: true, whitespace: true, message: '请输入用户名' },
+                    { min: 2, message: '用户名至少 2 个字符' },
+                    { max: 32, message: '用户名不能超过 32 个字符' },
+                  ]}
+                >
                   <Input prefix={<UserOutlined />} placeholder="请输入用户名" autoComplete="username" />
                 </Form.Item>
               )}

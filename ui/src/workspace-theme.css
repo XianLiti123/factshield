@@ -205,15 +205,72 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
+  transition: background .18s ease, box-shadow .18s ease;
 }
 
+.profile-chip:hover, .profile-chip.open { background: #f1f6f4; box-shadow: inset 0 0 0 1px #d8e6e1; }
+.profile-chip-copy { min-width: 0; }
 .profile-chip strong, .profile-chip span { display: block; }
-.profile-chip strong { color: #1f3531; font-size: 13px; }
-.profile-chip span { margin-top: 2px; color: #536963; font-size: 11px; }
-.profile-chip > .anticon { color: #81918d; font-size: 9px; }
+.profile-chip strong { overflow: hidden; color: #1f3531; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.profile-chip span { margin-top: 2px; overflow: hidden; color: #536963; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.profile-chip > .anticon { color: #81918d; font-size: 9px; transition: transform .18s ease; }
+.profile-chip.open > .anticon { transform: rotate(180deg); }
 .user-avatar { color: #fff; background: var(--fs-teal-900); }
 .profile-chip .user-avatar.ant-avatar { display: inline-flex; align-items: center; justify-content: center; color: #fff !important; background: var(--fs-teal-900) !important; font-size: 18px !important; font-weight: 600; }
 .profile-chip .user-avatar .ant-avatar-string { position: static !important; left: auto !important; width: auto !important; color: #fff !important; font-size: 18px !important; line-height: 1 !important; opacity: 1 !important; transform: none !important; }
+
+.account-dropdown .ant-dropdown-menu { width: 238px; padding: 7px; border: 1px solid #dce7e3; border-radius: 9px; box-shadow: 0 13px 32px rgba(29, 61, 55, .14); }
+.account-dropdown .ant-dropdown-menu-item { min-height: 36px; padding: 8px 10px; color: #3a544e; border-radius: 6px; font-size: 11px; }
+.account-dropdown .ant-dropdown-menu-item .anticon { color: #688079; font-size: 12px; }
+.account-dropdown .ant-dropdown-menu-item:not(.ant-dropdown-menu-item-disabled):hover { color: var(--fs-teal-900); background: #edf5f2; }
+.account-dropdown .ant-dropdown-menu-item-danger { color: #a64c52; }
+.account-dropdown .ant-dropdown-menu-item-danger .anticon { color: #b45b61; }
+.account-dropdown .ant-dropdown-menu-item-danger:not(.ant-dropdown-menu-item-disabled):hover { color: #9d3f47; background: #faeeee; }
+.account-dropdown .ant-dropdown-menu-item-disabled { padding: 8px 9px 9px; cursor: default; opacity: 1; }
+.account-dropdown .ant-dropdown-menu-item-divider { margin: 4px 2px; background: #e5ece9; }
+.account-menu-summary { min-width: 0; display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 9px; }
+.account-menu-avatar.ant-avatar { display: inline-flex; align-items: center; justify-content: center; color: #fff !important; background: var(--fs-teal-900); font-size: 16px !important; font-weight: 700; opacity: 1 !important; }
+.account-menu-avatar .ant-avatar-string { position: static !important; left: auto !important; width: auto !important; color: #fff !important; font-size: 16px !important; line-height: 1 !important; opacity: 1 !important; transform: none !important; }
+.account-menu-summary > div { min-width: 0; }
+.account-menu-summary strong, .account-menu-summary span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-menu-summary strong { color: #29443e; font-size: 11px; }
+.account-menu-summary span { margin-top: 3px; color: #788a85; font-size: 9px; }
+
+.account-profile-modal .ant-modal-content, .logout-confirm-modal .ant-modal-content { padding: 0; overflow: hidden; border: 1px solid #dce7e3; border-radius: 11px; box-shadow: 0 20px 52px rgba(29, 61, 55, .16); }
+.account-profile-modal .ant-modal-header { margin: 0; padding: 17px 20px; border-bottom: 1px solid var(--fs-border); }
+.account-profile-modal .ant-modal-title { color: #29423c; font-size: 14px; }
+.account-profile-modal .ant-modal-close { top: 11px; right: 12px; }
+.account-profile-modal .ant-modal-body { padding: 18px 20px 7px; }
+.account-profile-modal .ant-modal-footer { margin: 0; padding: 12px 20px 16px; }
+.account-profile-modal .ant-modal-footer .ant-btn { min-width: 86px; height: 32px; font-size: 11px; }
+.account-profile-hero { min-height: 92px; padding: 15px 16px; display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; align-items: center; gap: 13px; color: #fff; border-radius: 9px; background: linear-gradient(135deg, var(--fs-teal-900), #126b70); }
+.account-profile-hero .ant-avatar { display: inline-flex; align-items: center; justify-content: center; color: var(--fs-teal-900); background: #fff; font-size: 24px !important; font-weight: 700; }
+.account-profile-hero .ant-avatar-string { position: static !important; left: auto !important; color: var(--fs-teal-900) !important; font-size: 24px !important; line-height: 1 !important; opacity: 1 !important; transform: none !important; }
+.account-profile-hero > div { min-width: 0; }
+.account-profile-hero > div > span, .account-profile-hero > div > strong, .account-profile-hero > div > small { display: block; }
+.account-profile-hero > div > span { color: #a8cfca; font-size: 9px; }
+.account-profile-hero > div > strong { margin-top: 3px; color: #fff; font-size: 17px; }
+.account-profile-hero > div > small { margin-top: 6px; color: #c5dfdc; font-size: 9px; }
+.account-profile-hero > div > small i { width: 6px; height: 6px; margin-right: 5px; display: inline-block; border-radius: 50%; background: #72d2a9; }
+.account-profile-hero .ant-tag { min-width: 64px; min-height: 34px; margin: 0; padding: 0 9px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; align-self: center; color: #e7f6f2; border-color: rgba(213, 240, 233, .28); background: rgba(255, 255, 255, .11); font-size: 9px; line-height: 1; }
+.account-profile-hero .ant-tag .anticon { margin: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; line-height: 1; }
+.account-profile-details { margin-top: 13px; display: grid; gap: 1px; overflow: hidden; border: 1px solid #e1eae7; border-radius: 8px; background: #e1eae7; }
+.account-profile-details > div { min-width: 0; min-height: 56px; padding: 9px 12px; display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap: 10px; background: #fff; }
+.account-detail-icon { width: 30px; height: 30px; display: grid; place-items: center; color: var(--fs-teal-700); border-radius: 7px; background: #e9f3f0; font-size: 13px; }
+.account-profile-details small, .account-profile-details strong { display: block; overflow-wrap: anywhere; }
+.account-profile-details small { color: #84938f; font-size: 9px; }
+.account-profile-details strong { margin-top: 3px; color: #334d47; font-size: 11px; font-weight: 600; }
+.account-profile-note { margin-top: 11px; padding: 8px 10px; color: #74847f; border-left: 2px solid #a8c7bf; background: #f5f8f7; font-size: 9px; line-height: 1.55; }
+
+.logout-confirm-modal .ant-modal-body { padding: 22px 22px 18px; }
+.logout-confirm-content { display: grid; grid-template-columns: 40px minmax(0, 1fr); align-items: center; gap: 12px; }
+.logout-confirm-icon { width: 40px; height: 40px; display: grid; place-items: center; color: #aa5158; border-radius: 9px; background: #fae9ea; font-size: 18px; }
+.logout-confirm-content > div { min-height: 40px; display: flex; flex-direction: column; justify-content: space-between; }
+.logout-confirm-content strong { display: block; color: #304741; font-size: 14px; line-height: 18px; }
+.logout-confirm-content p { margin: 0; color: #73827e; font-size: 10px; line-height: 15px; }
+.logout-confirm-actions { margin-top: 20px; display: flex; justify-content: flex-end; gap: 8px; }
+.logout-confirm-actions .ant-btn { min-width: 82px; height: 32px; padding-top: 0; padding-bottom: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; line-height: 1; }
+.logout-confirm-actions .ant-btn > span { display: inline-flex; align-items: center; justify-content: center; line-height: 1; }
 
 .content { max-width: none; padding: 0 16px 22px; }
 .compliance-footer { color: #7c8c88; background: rgba(255, 255, 255, .94); border-top-color: var(--fs-border); font-size: 8px; }
