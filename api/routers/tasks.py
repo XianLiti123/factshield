@@ -87,6 +87,15 @@ def list_tasks(user_id: int = Depends(get_current_user)) -> list[TaskSummary]:
     return [_summary(t, len(store.list_claims(t["task_id"]))) for t in store.list_tasks(user_id)]
 
 
+@router.get("/search")
+def search_tasks(q: str = "", user_id: int = Depends(get_current_user)) -> dict:
+    #全局搜索：任务/主张/证据，限当前用户数据（须在 /{task_id} 之前注册，避免 search 被当成 task_id）
+    q = q.strip()
+    if not q:
+        return {"query": q, "tasks": [], "claims": [], "evidence": []}
+    return {"query": q, **store.search(user_id, q)}
+
+
 @router.get("/{task_id}", response_model=ResearchRun)
 def get_task(task_id: str, user_id: int = Depends(get_current_user)) -> ResearchRun:
     task = _get_task_or_404(task_id, user_id)

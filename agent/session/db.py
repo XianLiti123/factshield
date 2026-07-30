@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS evidence (
     source_type TEXT NOT NULL DEFAULT '',
     relation TEXT NOT NULL DEFAULT 'support',
     credibility REAL NOT NULL DEFAULT 0,
+    url TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     PRIMARY KEY (task_id, id)
 );
@@ -168,3 +169,4 @@ def init_db() -> None:
         _add_column_if_missing(conn, "sessions", "paused_thread_id", "paused_thread_id TEXT")
         _add_column_if_missing(conn, "sessions", "paused_input", "paused_input TEXT")
         _add_column_if_missing(conn, "profile_facts", "user_id", "user_id INTEGER")
+        _add_column_if_missing(conn, "evidence", "url", "url TEXT NOT NULL DEFAULT ''")

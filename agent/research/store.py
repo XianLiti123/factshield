@@ -55,6 +55,37 @@ def list_tasks(user_id: int) -> list[dict]:
     return tasks
 
 
+def search(user_id: int, keyword: str, limit: int = 10) -> dict:
+    #全局搜索：任务（标题/主题/公司）、主张（表述）、证据（标题/出处/引文），限本人数据
+    like = f"%{keyword}%"
+    with get_connection() as conn:
+        task_rows = conn.execute(
+            "SELECT task_id, title, company, status, updated_at FROM research_tasks"
+            " WHERE user_id=? AND (title LIKE ? OR topic LIKE ? OR company LIKE ?)"
+            " ORDER BY updated_at DESC LIMIT ?",
+            (user_id, like, like, like, limit)
+        ).fetchall()
+        claim_rows = conn.execute(
+            "SELECT c.id, c.task_id, c.statement, c.status, t.title AS task_title"
+            " FROM claims c JOIN research_tasks t ON t.task_id=c.task_id"
+            " WHERE t.user_id=? AND c.statement LIKE ?"
+            " ORDER BY c.task_id, c.idx LIMIT ?",
+            (user_id, like, limit)
+        ).fetchall()
+        evidence_rows = conn.execute(
+            "SELECT e.id, e.task_id, e.title, e.publisher, e.url, t.title AS task_title"
+            " FROM evidence e JOIN research_tasks t ON t.task_id=e.task_id"
+            " WHERE t.user_id=? AND (e.title LIKE ? OR e.publisher LIKE ? OR e.quote LIKE ?)"
+            " LIMIT ?",
+            (user_id, like, like, like, limit)
+        ).fetchall()
+    return {
+        "tasks": [dict(r) for r in task_rows],
+        "claims": [dict(r) for r in claim_rows],
+        "evidence": [dict(r) for r in evidence_rows],
+    }
+
+
 def update_task(task_id: str, **fields) -> None:
     #通用字段更新（status/progress/report_md 等），自动刷新 updated_at
     if not fields:
@@ -64,6 +95,16 @@ def update_task(task_id: str, **fields) -> None:
         conn.execute(
             f"UPDATE research_tasks SET {assignments}, updated_at=datetime('now','localtime') WHERE task_id=?",
             (*fields.values(), task_id)
+        )
+
+
+def bump_progress(task_id: str, progress: float) -> None:
+    #进度只增不减：二次取证回退环节不会拉低进度条，避免前端显示倒退
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE research_tasks SET progress=MAX(progress, ?),"
+            " updated_at=datetime('now','localtime') WHERE task_id=?",
+            (progress, task_id)
         )
 
 
@@ -130,11 +171,11 @@ def save_evidence(task_id: str, claim_id: str, items: list[dict]) -> None:
             eid = f"e{n}"
             conn.execute(
                 "INSERT INTO evidence (id, task_id, title, publisher, published_at, locator, quote,"
-                " source_type, relation, credibility) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                " source_type, relation, credibility, url) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (eid, task_id, item.get("title", ""), item.get("publisher", ""),
                  item.get("published_at", ""), item.get("locator", ""), item.get("quote", ""),
                  item.get("source_type", ""), item.get("relation", "support"),
-                 item.get("credibility", 0.0))
+                 item.get("credibility", 0.0), item.get("url", ""))
             )
             conn.execute(
                 "INSERT OR IGNORE INTO claim_evidence (task_id, claim_id, evidence_id) VALUES (?,?,?)",

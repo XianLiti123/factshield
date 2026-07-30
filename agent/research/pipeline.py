@@ -23,7 +23,7 @@ MAX_CLAIMS = 6          #单任务主张上限，控制 LLM 调用规模
 MAX_KEYWORDS = 4        #每次采集的关键词上限
 MAX_MATERIALS = 6       #单轮采集素材上限
 MAX_MATERIALS_TOTAL = 12  #含二次取证轮次的素材总量上限
-MAX_RETRY = 2           #冲突二次取证上限
+MAX_RETRY = 1           #冲突二次取证上限（控制运行时长与进度回退次数）
 
 _search = TavilySearch(max_results=3)
 _extract = TavilyExtract()
@@ -52,6 +52,12 @@ class ResearchState(TypedDict, total=False):
 
 def _emit(config: RunnableConfig, actor: str, kind: str, **payload) -> None:
     #节点产事件：经 runner 注入的回调写库 + 推 SSE 队列
+    #进度只增不减：二次取证等回退环节不会把进度条拉回去（地板值记录在运行配置里）
+    p = payload.get("progress")
+    if p is not None:
+        floor = max(config["configurable"].get("progress_floor", 0), p)
+        config["configurable"]["progress_floor"] = floor
+        payload["progress"] = floor
     cb: Callable = config["configurable"]["emit"]
     cb(actor, kind, payload)
 
@@ -144,7 +150,7 @@ def collect_node(state: ResearchState, config: RunnableConfig) -> dict:
             store.add_material(task_id, group_id, title, publisher, url)
             materials.append(material)
             collected += 1
-    store.update_task(task_id, progress=25)
+    store.bump_progress(task_id, 25)
     _emit(config, "collector", "progress",
           title="公开信源采集完成", speech=f"已采集 {collected} 份原始材料并存档至知识库。",
           details=[{"label": m["title"] or m["url"], "text": m["url"]}
@@ -172,7 +178,7 @@ def parse_node(state: ResearchState, config: RunnableConfig) -> dict:
     store.save_claims(task_id, claims)
     for i, c in enumerate(claims, 1):
         c["id"] = f"c{i}"
-    store.update_task(task_id, progress=40)
+    store.bump_progress(task_id, 40)
     _emit(config, "parser", "progress",
           title="主张提取完成", speech=f"从材料中提取出 {len(claims)} 条待核查主张。",
           details=[{"label": c["id"], "text": c["statement"]} for c in claims],
@@ -225,6 +231,7 @@ def retrieve_node(state: ResearchState, config: RunnableConfig) -> dict:
                 continue
             items.append({
                 "title": src.get("title", ""), "publisher": src.get("publisher", ""),
+                "url": src.get("url", ""),
                 "locator": f"{src.get('title') or cand['group_id']} 第{cand['chunk_index'] + 1}段",
                 "quote": quote,
                 "relation": "challenge" if e.get("relation") == "challenge" else "support",
@@ -232,7 +239,7 @@ def retrieve_node(state: ResearchState, config: RunnableConfig) -> dict:
         if items:
             store.save_evidence(task_id, claim["id"], items)
             total += len(items)
-    store.update_task(task_id, progress=55)
+    store.bump_progress(task_id, 55)
     _emit(config, "retriever", "progress",
           title="证据检索完成", speech=f"已为各主张匹配到 {total} 条原文证据。",
           details=[], metrics=[{"label": "证据总数", "value": str(total)}], progress=55)
@@ -264,7 +271,7 @@ def score_node(state: ResearchState, config: RunnableConfig) -> dict:
             conn.execute(
                 "UPDATE evidence SET source_type=?, credibility=? WHERE task_id=? AND title=? AND publisher=?",
                 (source_type, credibility, task_id, m["title"], m["publisher"]))
-    store.update_task(task_id, progress=70)
+    store.bump_progress(task_id, 70)
     _emit(config, "scorer", "progress",
           title="信源打分完成", speech="已按来源类型输出标准化可信度标签。",
           details=[{"label": m["publisher"], "text": f"{m['source_type']} {m['credibility']:.2f}"}
@@ -314,7 +321,7 @@ def verify_node(state: ResearchState, config: RunnableConfig) -> dict:
     retry_count = state.get("retry_count", 0)
     need_retry = bool(data.get("need_retry")) and retry_count < MAX_RETRY
     retry_keywords = [str(k) for k in data.get("retry_keywords", [])][:MAX_KEYWORDS]
-    store.update_task(task_id, progress=85)
+    store.bump_progress(task_id, 85)
     if need_retry and retry_keywords:
         _emit(config, "supervisor", "warning",
               title="发现疑点，启动二次取证", speech="一级核验发现证据不足或数据冲突，重新调度采集子智能体复核。",
@@ -358,7 +365,7 @@ def review_node(state: ResearchState, config: RunnableConfig) -> dict:
           speech=f"复核完毕：{red} 条高度存疑。" if red else "复核完毕：未发现疑似幻觉内容。",
           details=[], metrics=[{"label": "高度存疑", "value": str(red)}],
           tone="danger" if red else None, progress=95)
-    store.update_task(task_id, progress=95)
+    store.bump_progress(task_id, 95)
     return {}
 
 
@@ -426,7 +433,8 @@ def _build_report(task: dict) -> str:
                 relation = "支持" if e["relation"] == "support" else "质疑"
                 lines.append(
                     f"  - [{eid}]（{relation}，可信度 {e['credibility']:.2f}）「{_clean(e['quote'])}」"
-                    f" —— {_clean(e['publisher'])}，{_clean(e['locator'])}")
+                    f" —— {_clean(e['publisher'])}，{_clean(e['locator'])}"
+                    + (f"，{e['url']}" if e["url"] else ""))
         else:
             lines.append("- 证据：（未检索到，需人工补充取证）")
     materials = store.list_materials(task_id)
@@ -496,6 +504,7 @@ def retry_single_claim(task_id: str, claim_id: str, emit: Callable, llm: ChatCli
             if not quote:
                 continue
             items.append({"title": src.get("title", ""), "publisher": src.get("publisher", ""),
+                          "url": src.get("url", ""),
                           "locator": f"{src.get('title') or cand['group_id']} 第{cand['chunk_index'] + 1}段",
                           "quote": quote, "source_type": src.get("source_type", ""),
                           "credibility": src.get("credibility", 0.0),
@@ -509,13 +518,16 @@ def retry_single_claim(task_id: str, claim_id: str, emit: Callable, llm: ChatCli
     data = _llm_json(llm, prompts.REVIEW_PROMPT.format(
         claims_with_verdicts=json.dumps(snapshot, ensure_ascii=False)))
     level_map = {"green": "verified", "yellow": "review", "red": "conflict"}
+    human_decided = bool(store.get_claim(task_id, claim_id)["human_action"])  # type: ignore[index]
     for r in data.get("reviews", []):
         if str(r.get("claim_id")) != claim_id:
             continue
-        status = level_map.get(str(r.get("level", "yellow")), "review")
-        store.update_claim(task_id, claim_id, status=status,
-                           reviewer_verdict=str(r.get("verdict", "")),
-                           conflict_reason=str(r.get("conflict_reason") or "") or None)
+        fields = {"reviewer_verdict": str(r.get("verdict", "")),
+                  "conflict_reason": str(r.get("conflict_reason") or "") or None}
+        if not human_decided:
+            #人工裁决具有最高优先级：已裁决的主张只更新复核意见，不得推翻人工设定的状态
+            fields["status"] = level_map.get(str(r.get("level", "yellow")), "review")
+        store.update_claim(task_id, claim_id, **fields)
     emit("reviewer", "progress", title="重新复核完成",
          speech=f"主张 [{claim_id}] 已完成二级复核。", details=[], metrics=[], progress=None)
 

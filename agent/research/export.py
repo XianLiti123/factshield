@@ -96,10 +96,12 @@ def report_to_docx(md: str) -> bytes:
             table.autofit = False  #关闭自动布局，按内容占比固定列宽，防止长文本列挤压短列
             from docx.shared import Cm
             widths = _col_widths(rows, 15.9)  #A4 默认页边距下正文可用宽度约 15.9cm
+            for c, w in enumerate(widths):
+                table.columns[c].width = Cm(w)  #写 tblGrid（Word 布局以此为准）
             for r, row in enumerate(rows):  # type: ignore[union-attr]
                 for c, cell in enumerate(row):
                     table.cell(r, c).text = cell
-                    table.cell(r, c).width = Cm(widths[c])
+                    table.cell(r, c).width = Cm(widths[c])  #单元格级 tcW 同步设置
         elif kind == "para":
             doc.add_paragraph(str(content))
         #hr 在 Word 中忽略
@@ -126,12 +128,12 @@ def report_to_pdf(md: str) -> bytes:
         pdfmetrics.registerFont(UnicodeCIDFont(font))
 
     styles = {
-        "h1": ParagraphStyle("h1", fontName=font, fontSize=18, leading=24, spaceAfter=8),
-        "h2": ParagraphStyle("h2", fontName=font, fontSize=14, leading=20, spaceBefore=10, spaceAfter=6),
-        "h3": ParagraphStyle("h3", fontName=font, fontSize=12, leading=17, spaceBefore=8, spaceAfter=4),
-        "body": ParagraphStyle("body", fontName=font, fontSize=10, leading=15, spaceAfter=4),
+        "h1": ParagraphStyle("h1", fontName=font, fontSize=18, leading=24, spaceAfter=8, wordWrap="CJK"),
+        "h2": ParagraphStyle("h2", fontName=font, fontSize=14, leading=20, spaceBefore=10, spaceAfter=6, wordWrap="CJK"),
+        "h3": ParagraphStyle("h3", fontName=font, fontSize=12, leading=17, spaceBefore=8, spaceAfter=4, wordWrap="CJK"),
+        "body": ParagraphStyle("body", fontName=font, fontSize=10, leading=15, spaceAfter=4, wordWrap="CJK"),
         "quote": ParagraphStyle("quote", fontName=font, fontSize=9, leading=14,
-                                leftIndent=14, textColor="#555555", spaceAfter=6),
+                                leftIndent=14, textColor="#555555", spaceAfter=6, wordWrap="CJK"),
     }
 
     def esc(text: str) -> str:

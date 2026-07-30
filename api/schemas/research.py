@@ -19,6 +19,7 @@ class Evidence(BaseModel):
     sourceType: str
     relation: Literal["support", "challenge"]
     credibility: float
+    url: str = ""  #原始来源地址，前端"打开来源"按钮用
 
 
 class Claim(BaseModel):

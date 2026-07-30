@@ -54,16 +54,44 @@ def evidence_to_dto(row: dict) -> dict:
         "sourceType": row["source_type"],
         "relation": row["relation"],
         "credibility": row["credibility"],
+        "url": row["url"],
     }
+
+
+def _fmt_duration(seconds: float) -> str:
+    #耗时格式化：60 秒内显秒，否则显分秒
+    s = max(1, int(seconds))
+    if s < 60:
+        return f"{s}秒"
+    return f"{s // 60}分{s % 60}秒"
 
 
 def agents_status(task: dict, events: list[dict]) -> list[dict]:
     #由事件流推导各智能体状态：出现过→done；最新一条进度事件的 actor→running；未出现→waiting
+    #耗时取该 actor 首末事件的时间差（执行监控页节点页脚展示，无事件则显示"尚未启动"）
+    from datetime import datetime
     seen = {e["actor"] for e in events}
     current = None
     if task["status"] == "running" and events:
         current = events[-1]["actor"]
     has_conflict = any(e["actor"] == "reviewer" and e["kind"] == "warning" for e in events)
+    first_ts: dict[str, str] = {}
+    last_ts: dict[str, str] = {}
+    for e in events:
+        first_ts.setdefault(e["actor"], e["ts"])
+        last_ts[e["actor"]] = e["ts"]
+
+    def duration_of(aid: str) -> str | None:
+        if aid not in first_ts:
+            return None
+        try:
+            start = datetime.strptime(first_ts[aid], "%Y-%m-%d %H:%M:%S")
+            end = (datetime.now() if aid == current
+                   else datetime.strptime(last_ts[aid], "%Y-%m-%d %H:%M:%S"))
+            return _fmt_duration((end - start).total_seconds())
+        except ValueError:
+            return None
+
     agents = []
     for spec in AGENT_ROSTER:
         aid = spec["id"]
@@ -75,7 +103,7 @@ def agents_status(task: dict, events: list[dict]) -> list[dict]:
             status = "done"
         else:
             status = "waiting"
-        agents.append({**spec, "status": status, "detail": "", "duration": None})
+        agents.append({**spec, "status": status, "detail": "", "duration": duration_of(aid)})
     return agents
 
 
