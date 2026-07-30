@@ -19,9 +19,9 @@ from . import prompts, store
 #-> review(独立幻觉审查) -> assemble(底稿组装)
 #所有"子智能体"互相隔离：各自只拿到本环节的输入，产出结构化结果交回主控，彼此无通信边
 
-MAX_CLAIMS = 6          #单任务主张上限，控制 LLM 调用规模
+MAX_CLAIMS = 8          #单任务主张上限，控制 LLM 调用规模
 MAX_KEYWORDS = 4        #每次采集的关键词上限
-MAX_MATERIALS = 6       #单轮采集素材上限
+MAX_MATERIALS = 8       #单轮采集素材上限
 MAX_MATERIALS_TOTAL = 20  #含二次取证轮次的素材总量上限
 
 #来源可信度三档 -> 兼容数值（数值仅供排序与旧字段兼容，展示一律以等级为准）
@@ -36,7 +36,7 @@ def _parse_level(value: object) -> str:
     if "低" in text or "low" in text:
         return "低"
     return "中"
-MAX_RETRY = 1           #冲突二次取证上限（控制运行时长与进度回退次数）
+MAX_RETRY = 2           #冲突二次取证上限（重试纪律由 VERIFY_PROMPT 约束，仅数据矛盾/证据缺失时触发）
 
 _search = TavilySearch(max_results=3)
 _extract = TavilyExtract()
@@ -196,11 +196,11 @@ def parse_node(state: ResearchState, config: RunnableConfig) -> dict:
     task_id = state["task_id"]
     guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 40)
     materials_text = "\n\n".join(
-        f"【材料{i}】{m['title']}（{m['publisher']}）\n{m['content'][:1200]}"
+        f"【材料{i}】{m['title']}（{m['publisher']}）\n{m['content'][:1500]}"
         for i, m in enumerate(state["materials"], 1)
     )
     data = _llm_json(_llm(config), prompts.EXTRACT_CLAIMS_PROMPT.format(
-        materials=materials_text[:9000], max_claims=MAX_CLAIMS))
+        materials=materials_text[:12000], max_claims=MAX_CLAIMS))
     claims = [{"statement": str(c["statement"]), "category": str(c.get("category", ""))}
               for c in data.get("claims", []) if c.get("statement")][:MAX_CLAIMS]
     if not claims:
