@@ -5,7 +5,7 @@ const TOKEN_KEY = 'factshield.auth.token'
 const SESSION_KEY_PREFIX = 'factshield.chat.session.'
 const RESEARCH_PROGRESS_KEY_PREFIX = 'factshield.research.progress.'
 
-export type UserInfo = { id: number; email: string }
+export type UserInfo = { id: number; email: string; username?: string }
 export type AuthResponse = { token: string; user: UserInfo }
 export type CapabilityStatus = {
   llm: boolean
@@ -113,8 +113,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>
 }
 
-export const register = (email: string, password: string) => request<AuthResponse>('/api/auth/register', {
-  method: 'POST', body: JSON.stringify({ email, password }),
+export const register = (username: string, email: string, password: string) => request<AuthResponse>('/api/auth/register', {
+  method: 'POST', body: JSON.stringify({ username, email, password }),
 })
 
 export const login = (email: string, password: string) => request<AuthResponse>('/api/auth/login', {

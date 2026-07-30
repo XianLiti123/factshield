@@ -1,16 +1,22 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import {
   ApartmentOutlined,
   BarChartOutlined,
   DownOutlined,
   FileSearchOutlined,
   FileTextOutlined,
+  IdcardOutlined,
+  LogoutOutlined,
+  MailOutlined,
   SearchOutlined,
   RocketOutlined,
   SafetyCertificateFilled,
   SettingOutlined,
+  UserOutlined,
+  WarningFilled,
 } from '@ant-design/icons'
-import { Avatar, Input } from 'antd'
+import { Avatar, Button, Dropdown, Input, Modal, Tag } from 'antd'
+import type { MenuProps } from 'antd'
 import { useWorkspaceStore } from '../store'
 import type { UserInfo } from '../services/api'
 
@@ -35,7 +41,11 @@ const pageMeta = {
   settings: { title: '系统设置', subtitle: '管理模型连接与研究偏好' },
 }
 
-export function AppShell({ children, user, onLogout }: { children: ReactNode; user: UserInfo; onLogout: () => void }) {
+export function AppShell({ children, user, onLogout }: { children: ReactNode; user: UserInfo; onLogout: () => void | Promise<void> }) {
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false)
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false)
+  const [loggingOut, setLoggingOut] = useState(false)
   const activeView = useWorkspaceStore((state) => state.activeView)
   const setActiveView = useWorkspaceStore((state) => state.setActiveView)
   const tasks = useWorkspaceStore((state) => state.tasks)
@@ -48,6 +58,8 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
     : [])
   const pendingCount = pendingItems.length
   const nextPendingItem = pendingItems[0]
+  const username = user.username?.trim() || '研究员'
+  const avatarText = Array.from(username)[0] || '研'
 
   const navigate = (view: typeof navItems[number]['key'] | typeof secondaryItems[number]['key']) => {
     if (view === 'workbench' && nextPendingItem) {
@@ -55,6 +67,38 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
       return
     }
     setActiveView(view)
+  }
+
+  const accountMenuItems: MenuProps['items'] = [
+    {
+      key: 'account-summary',
+      disabled: true,
+      label: (
+        <div className="account-menu-summary">
+          <Avatar size={34} className="account-menu-avatar">{avatarText}</Avatar>
+          <div><strong>{username}</strong><span>{user.email}</span></div>
+        </div>
+      ),
+    },
+    { type: 'divider' },
+    { key: 'profile', icon: <UserOutlined />, label: '用户信息' },
+    { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', danger: true },
+  ]
+
+  const handleAccountMenuClick: MenuProps['onClick'] = ({ key }) => {
+    setAccountMenuOpen(false)
+    if (key === 'profile') setProfileOpen(true)
+    if (key === 'logout') setLogoutConfirmOpen(true)
+  }
+
+  const confirmLogout = async () => {
+    setLoggingOut(true)
+    try {
+      await onLogout()
+    } finally {
+      setLoggingOut(false)
+      setLogoutConfirmOpen(false)
+    }
   }
 
   return (
@@ -112,16 +156,78 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
           </div>
           <div className="topbar-actions">
             <Input className="workspace-search" prefix={<SearchOutlined />} placeholder="搜索任务、主张或证据" allowClear />
-            <button className="profile-chip" onClick={onLogout} title="退出登录">
-              <Avatar size={40} className="user-avatar">研</Avatar>
-              <div><strong>研究员</strong><span>{user.email}</span></div>
-              <DownOutlined />
-            </button>
+            <Dropdown
+              trigger={['click']}
+              placement="bottomRight"
+              open={accountMenuOpen}
+              onOpenChange={setAccountMenuOpen}
+              menu={{ items: accountMenuItems, onClick: handleAccountMenuClick }}
+              overlayClassName="account-dropdown"
+            >
+              <button className={accountMenuOpen ? 'profile-chip open' : 'profile-chip'} aria-label="打开账户菜单" aria-expanded={accountMenuOpen}>
+                <Avatar size={40} className="user-avatar">{avatarText}</Avatar>
+                <div className="profile-chip-copy"><strong>{username}</strong><span>{user.email}</span></div>
+                <DownOutlined />
+              </button>
+            </Dropdown>
           </div>
         </header>
         <main className="content">{children}</main>
         <footer className="compliance-footer"><SafetyCertificateFilled /> 本工具仅为金融研究辅助系统，不构成任何投资建议；所有输出仅供研究人员参考，最终结论由研究员判断。</footer>
       </div>
+
+      <Modal
+        className="account-profile-modal"
+        title="用户信息"
+        open={profileOpen}
+        onCancel={() => setProfileOpen(false)}
+        width={520}
+        footer={<Button type="primary" onClick={() => setProfileOpen(false)}>知道了</Button>}
+      >
+        <div className="account-profile-hero">
+          <Avatar size={58}>{avatarText}</Avatar>
+          <div>
+            <span>当前登录账号</span>
+            <strong>{username}</strong>
+            <small><i /> 账号状态正常</small>
+          </div>
+          <Tag icon={<SafetyCertificateFilled />}>已认证</Tag>
+        </div>
+        <div className="account-profile-details">
+          <div>
+            <span className="account-detail-icon"><UserOutlined /></span>
+            <div><small>用户名</small><strong>{username}</strong></div>
+          </div>
+          <div>
+            <span className="account-detail-icon"><MailOutlined /></span>
+            <div><small>登录邮箱</small><strong>{user.email}</strong></div>
+          </div>
+          <div>
+            <span className="account-detail-icon"><IdcardOutlined /></span>
+            <div><small>账号编号</small><strong>FS-{String(user.id).padStart(6, '0')}</strong></div>
+          </div>
+        </div>
+        <div className="account-profile-note">账号信息来自当前登录凭证；如需修改邮箱或权限，请联系工作台管理员。</div>
+      </Modal>
+
+      <Modal
+        className="logout-confirm-modal"
+        title={null}
+        open={logoutConfirmOpen}
+        onCancel={() => setLogoutConfirmOpen(false)}
+        closable={false}
+        width={400}
+        footer={null}
+      >
+        <div className="logout-confirm-content">
+          <span className="logout-confirm-icon"><WarningFilled /></span>
+          <div><strong>确认退出登录？</strong><p>退出后需要重新登录才能继续查看研究任务。</p></div>
+        </div>
+        <div className="logout-confirm-actions">
+          <Button onClick={() => setLogoutConfirmOpen(false)} disabled={loggingOut}>取消</Button>
+          <Button danger type="primary" loading={loggingOut} onClick={confirmLogout}>确认退出</Button>
+        </div>
+      </Modal>
     </div>
   )
 }
