@@ -1,8 +1,10 @@
-import { useState, type ReactNode } from 'react'
+import { useRef, useState, type ChangeEvent, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import {
   ApartmentOutlined,
   BarChartOutlined,
+  CameraOutlined,
   DownOutlined,
+  EditOutlined,
   FileSearchOutlined,
   FileTextOutlined,
   IdcardOutlined,
@@ -12,13 +14,48 @@ import {
   RocketOutlined,
   SafetyCertificateFilled,
   SettingOutlined,
+  UploadOutlined,
   UserOutlined,
   WarningFilled,
 } from '@ant-design/icons'
-import { Avatar, Button, Dropdown, Input, Modal, Tag } from 'antd'
+import { Avatar, Button, Dropdown, Input, Modal, Slider, Tag, message } from 'antd'
 import type { MenuProps } from 'antd'
 import { useWorkspaceStore } from '../store'
 import type { UserInfo } from '../services/api'
+
+const PROFILE_STORAGE_PREFIX = 'factshield.profile.'
+const AVATAR_CROP_SIZE = 280
+const AVATAR_OUTPUT_SIZE = 320
+
+type LocalProfile = {
+  displayName?: string
+  avatar?: string
+}
+
+type CropImage = {
+  src: string
+  width: number
+  height: number
+}
+
+function readLocalProfile(userId: number): LocalProfile {
+  try {
+    const stored = window.localStorage.getItem(`${PROFILE_STORAGE_PREFIX}${userId}`)
+    return stored ? JSON.parse(stored) as LocalProfile : {}
+  } catch {
+    return {}
+  }
+}
+
+function constrainCropOffset(image: CropImage, zoom: number, x: number, y: number) {
+  const baseScale = Math.max(AVATAR_CROP_SIZE / image.width, AVATAR_CROP_SIZE / image.height)
+  const maxX = Math.max(0, (image.width * baseScale * zoom - AVATAR_CROP_SIZE) / 2)
+  const maxY = Math.max(0, (image.height * baseScale * zoom - AVATAR_CROP_SIZE) / 2)
+  return {
+    x: Math.max(-maxX, Math.min(maxX, x)),
+    y: Math.max(-maxY, Math.min(maxY, y)),
+  }
+}
 
 const navItems = [
   { key: 'tasks' as const, label: '研究任务', icon: <RocketOutlined /> },
@@ -46,6 +83,24 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
   const [profileOpen, setProfileOpen] = useState(false)
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
+  const [localProfile, setLocalProfile] = useState<LocalProfile>(() => readLocalProfile(user.id))
+  const [nameEditOpen, setNameEditOpen] = useState(false)
+  const [nameDraft, setNameDraft] = useState('')
+  const [avatarEditOpen, setAvatarEditOpen] = useState(false)
+  const [cropImage, setCropImage] = useState<CropImage | null>(null)
+  const [cropZoom, setCropZoom] = useState(1)
+  const [cropOffset, setCropOffset] = useState({ x: 0, y: 0 })
+  const [savingAvatar, setSavingAvatar] = useState(false)
+  const [avatarDragging, setAvatarDragging] = useState(false)
+  const avatarInputRef = useRef<HTMLInputElement>(null)
+  const avatarDragDepthRef = useRef(0)
+  const cropDragRef = useRef<{
+    pointerId: number
+    startClientX: number
+    startClientY: number
+    startOffsetX: number
+    startOffsetY: number
+  } | null>(null)
   const activeView = useWorkspaceStore((state) => state.activeView)
   const setActiveView = useWorkspaceStore((state) => state.setActiveView)
   const tasks = useWorkspaceStore((state) => state.tasks)
@@ -58,8 +113,177 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
     : [])
   const pendingCount = pendingItems.length
   const nextPendingItem = pendingItems[0]
-  const username = user.username?.trim() || '研究员'
-  const avatarText = Array.from(username)[0] || '研'
+  const displayName = localProfile.displayName?.trim() || user.display_name?.trim() || user.email.split('@')[0] || '研究员'
+  const avatarText = Array.from(displayName)[0] || '研'
+  const avatarSrc = localProfile.avatar
+
+  const saveLocalProfile = (change: Partial<LocalProfile>) => {
+    setLocalProfile((current) => {
+      const next = { ...current, ...change }
+      try {
+        window.localStorage.setItem(`${PROFILE_STORAGE_PREFIX}${user.id}`, JSON.stringify(next))
+      } catch {
+        message.error('本地存储空间不足，资料未能保存')
+        return current
+      }
+      return next
+    })
+  }
+
+  const openNameEditor = () => {
+    setNameDraft(displayName)
+    setNameEditOpen(true)
+  }
+
+  const saveDisplayName = () => {
+    const nextName = nameDraft.trim()
+    if (nextName.length < 2 || nextName.length > 32) {
+      message.error('用户名需要保持在 2–32 个字符之间')
+      return
+    }
+    saveLocalProfile({ displayName: nextName })
+    setNameEditOpen(false)
+    message.success('用户名已更新')
+  }
+
+  const openAvatarEditor = () => {
+    setCropImage(null)
+    setCropZoom(1)
+    setCropOffset({ x: 0, y: 0 })
+    setAvatarDragging(false)
+    avatarDragDepthRef.current = 0
+    setAvatarEditOpen(true)
+  }
+
+  const loadAvatarFile = (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      message.error('请选择 PNG、JPG 或 WebP 图片')
+      return
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      message.error('图片不能超过 10 MB')
+      return
+    }
+    const reader = new FileReader()
+    reader.onerror = () => message.error('图片读取失败，请重新选择')
+    reader.onload = () => {
+      const src = String(reader.result ?? '')
+      const image = new Image()
+      image.onerror = () => message.error('无法识别这张图片')
+      image.onload = () => {
+        setCropImage({ src, width: image.naturalWidth, height: image.naturalHeight })
+        setCropZoom(1)
+        setCropOffset({ x: 0, y: 0 })
+      }
+      image.src = src
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const handleAvatarFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (file) loadAvatarFile(file)
+  }
+
+  const handleAvatarDragEnter = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!event.dataTransfer.types.includes('Files')) return
+    event.preventDefault()
+    event.stopPropagation()
+    avatarDragDepthRef.current += 1
+    setAvatarDragging(true)
+  }
+
+  const handleAvatarDragOver = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!event.dataTransfer.types.includes('Files')) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.dataTransfer.dropEffect = 'copy'
+  }
+
+  const handleAvatarDragLeave = (event: ReactDragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    avatarDragDepthRef.current = Math.max(0, avatarDragDepthRef.current - 1)
+    if (avatarDragDepthRef.current === 0) setAvatarDragging(false)
+  }
+
+  const handleAvatarDrop = (event: ReactDragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    avatarDragDepthRef.current = 0
+    setAvatarDragging(false)
+    const files = Array.from(event.dataTransfer.files)
+    const imageFile = files.find((file) => file.type.startsWith('image/'))
+    if (!imageFile) {
+      message.error('拖入的文件不是可识别的图片')
+      return
+    }
+    if (files.length > 1) message.info('一次只能设置一张头像，已读取第一张图片')
+    loadAvatarFile(imageFile)
+  }
+
+  const handleCropPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!cropImage) return
+    cropDragRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startOffsetX: cropOffset.x,
+      startOffsetY: cropOffset.y,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  const handleCropPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = cropDragRef.current
+    if (!cropImage || !drag || drag.pointerId !== event.pointerId) return
+    setCropOffset(constrainCropOffset(
+      cropImage,
+      cropZoom,
+      drag.startOffsetX + event.clientX - drag.startClientX,
+      drag.startOffsetY + event.clientY - drag.startClientY,
+    ))
+  }
+
+  const finishCropDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (cropDragRef.current?.pointerId !== event.pointerId) return
+    cropDragRef.current = null
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+  }
+
+  const saveCroppedAvatar = async () => {
+    if (!cropImage) return
+    setSavingAvatar(true)
+    try {
+      const source = new Image()
+      source.src = cropImage.src
+      await source.decode()
+      const canvas = document.createElement('canvas')
+      canvas.width = AVATAR_OUTPUT_SIZE
+      canvas.height = AVATAR_OUTPUT_SIZE
+      const context = canvas.getContext('2d')
+      if (!context) throw new Error('浏览器无法创建头像画布')
+
+      const outputScale = AVATAR_OUTPUT_SIZE / AVATAR_CROP_SIZE
+      const baseScale = Math.max(AVATAR_CROP_SIZE / cropImage.width, AVATAR_CROP_SIZE / cropImage.height)
+      const drawWidth = cropImage.width * baseScale * cropZoom * outputScale
+      const drawHeight = cropImage.height * baseScale * cropZoom * outputScale
+      const drawX = (AVATAR_OUTPUT_SIZE - drawWidth) / 2 + cropOffset.x * outputScale
+      const drawY = (AVATAR_OUTPUT_SIZE - drawHeight) / 2 + cropOffset.y * outputScale
+      context.beginPath()
+      context.arc(AVATAR_OUTPUT_SIZE / 2, AVATAR_OUTPUT_SIZE / 2, AVATAR_OUTPUT_SIZE / 2, 0, Math.PI * 2)
+      context.clip()
+      context.drawImage(source, drawX, drawY, drawWidth, drawHeight)
+      saveLocalProfile({ avatar: canvas.toDataURL('image/png') })
+      setAvatarEditOpen(false)
+      message.success('头像已更新')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '头像保存失败')
+    } finally {
+      setSavingAvatar(false)
+    }
+  }
 
   const navigate = (view: typeof navItems[number]['key'] | typeof secondaryItems[number]['key']) => {
     if (view === 'workbench' && nextPendingItem) {
@@ -70,17 +294,6 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
   }
 
   const accountMenuItems: MenuProps['items'] = [
-    {
-      key: 'account-summary',
-      disabled: true,
-      label: (
-        <div className="account-menu-summary">
-          <Avatar size={34} className="account-menu-avatar">{avatarText}</Avatar>
-          <div><strong>{username}</strong><span>{user.email}</span></div>
-        </div>
-      ),
-    },
-    { type: 'divider' },
     { key: 'profile', icon: <UserOutlined />, label: '用户信息' },
     { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', danger: true },
   ]
@@ -165,8 +378,8 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
               overlayClassName="account-dropdown"
             >
               <button className={accountMenuOpen ? 'profile-chip open' : 'profile-chip'} aria-label="打开账户菜单" aria-expanded={accountMenuOpen}>
-                <Avatar size={40} className="user-avatar">{avatarText}</Avatar>
-                <div className="profile-chip-copy"><strong>{username}</strong><span>{user.email}</span></div>
+                <Avatar size={40} className="user-avatar" src={avatarSrc}>{avatarText}</Avatar>
+                <div className="profile-chip-copy"><strong>{displayName}</strong><span>{user.email}</span></div>
                 <DownOutlined />
               </button>
             </Dropdown>
@@ -185,18 +398,22 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
         footer={<Button type="primary" onClick={() => setProfileOpen(false)}>知道了</Button>}
       >
         <div className="account-profile-hero">
-          <Avatar size={58}>{avatarText}</Avatar>
+          <Avatar size={58} src={avatarSrc}>{avatarText}</Avatar>
           <div>
             <span>当前登录账号</span>
-            <strong>{username}</strong>
+            <strong>{displayName}</strong>
             <small><i /> 账号状态正常</small>
           </div>
           <Tag icon={<SafetyCertificateFilled />}>已认证</Tag>
         </div>
+        <div className="account-profile-actions">
+          <Button icon={<CameraOutlined />} onClick={openAvatarEditor}>修改头像</Button>
+          <Button icon={<EditOutlined />} onClick={openNameEditor}>修改用户名</Button>
+        </div>
         <div className="account-profile-details">
           <div>
             <span className="account-detail-icon"><UserOutlined /></span>
-            <div><small>用户名</small><strong>{username}</strong></div>
+            <div><small>用户名</small><strong>{displayName}</strong></div>
           </div>
           <div>
             <span className="account-detail-icon"><MailOutlined /></span>
@@ -207,7 +424,111 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
             <div><small>账号编号</small><strong>FS-{String(user.id).padStart(6, '0')}</strong></div>
           </div>
         </div>
-        <div className="account-profile-note">账号信息来自当前登录凭证；如需修改邮箱或权限，请联系工作台管理员。</div>
+        <div className="account-profile-note">头像与修改后的用户名保存在当前浏览器；登录邮箱与账号权限仍由后端账号管理。</div>
+      </Modal>
+
+      <Modal
+        className="profile-name-modal"
+        title="修改用户名"
+        open={nameEditOpen}
+        onCancel={() => setNameEditOpen(false)}
+        onOk={saveDisplayName}
+        okText="保存修改"
+        cancelText="取消"
+      >
+        <label className="profile-edit-label" htmlFor="profile-display-name">用户名</label>
+        <Input
+          id="profile-display-name"
+          value={nameDraft}
+          maxLength={32}
+          showCount
+          autoFocus
+          onChange={(event) => setNameDraft(event.target.value)}
+          onPressEnter={saveDisplayName}
+          placeholder="请输入 2–32 个字符"
+        />
+        <p className="profile-edit-hint">修改后会立即应用到右上角账户卡和用户信息页。</p>
+      </Modal>
+
+      <Modal
+        className="avatar-crop-modal"
+        title="修改头像"
+        open={avatarEditOpen}
+        onCancel={() => setAvatarEditOpen(false)}
+        width={520}
+        footer={[
+          <Button key="cancel" disabled={savingAvatar} onClick={() => setAvatarEditOpen(false)}>取消</Button>,
+          <Button key="save" type="primary" loading={savingAvatar} disabled={!cropImage} onClick={saveCroppedAvatar}>使用此头像</Button>,
+        ]}
+      >
+        <input ref={avatarInputRef} hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={handleAvatarFile} />
+        <div
+          className={avatarDragging ? 'avatar-drop-zone dragging' : 'avatar-drop-zone'}
+          onDragEnter={handleAvatarDragEnter}
+          onDragOver={handleAvatarDragOver}
+          onDragLeave={handleAvatarDragLeave}
+          onDrop={handleAvatarDrop}
+        >
+          <div className="avatar-crop-toolbar">
+            <Button icon={<UploadOutlined />} onClick={() => avatarInputRef.current?.click()}>{cropImage ? '重新选择图片' : '从电脑选择图片'}</Button>
+            <span>也可以把图片直接拖到这里 · 最大 10 MB</span>
+          </div>
+          {cropImage ? (
+            <>
+              <div className="avatar-crop-stage">
+                <div
+                  className="avatar-crop-viewport"
+                  onPointerDown={handleCropPointerDown}
+                  onPointerMove={handleCropPointerMove}
+                  onPointerUp={finishCropDrag}
+                  onPointerCancel={finishCropDrag}
+                >
+                  <img
+                    className="avatar-crop-image"
+                    src={cropImage.src}
+                    alt="待裁剪头像"
+                    draggable={false}
+                    style={{
+                      width: cropImage.width * Math.max(AVATAR_CROP_SIZE / cropImage.width, AVATAR_CROP_SIZE / cropImage.height) * cropZoom,
+                      height: cropImage.height * Math.max(AVATAR_CROP_SIZE / cropImage.width, AVATAR_CROP_SIZE / cropImage.height) * cropZoom,
+                      left: `calc(50% + ${cropOffset.x}px)`,
+                      top: `calc(50% + ${cropOffset.y}px)`,
+                    }}
+                  />
+                </div>
+              </div>
+              <div className="avatar-zoom-control">
+                <span>缩小</span>
+                <Slider
+                  min={1}
+                  max={3}
+                  step={0.01}
+                  value={cropZoom}
+                  tooltip={{ formatter: (value) => `${Math.round((value ?? 1) * 100)}%` }}
+                  onChange={(zoom) => {
+                    setCropZoom(zoom)
+                    setCropOffset((current) => constrainCropOffset(cropImage, zoom, current.x, current.y))
+                  }}
+                />
+                <span>放大</span>
+              </div>
+              <p className="avatar-crop-hint">拖动图片调整位置，缩放后圆形区域内的内容会成为你的头像。</p>
+            </>
+          ) : (
+            <button className="avatar-upload-empty" type="button" onClick={() => avatarInputRef.current?.click()}>
+              <span><CameraOutlined /></span>
+              <strong>选择或拖入一张头像图片</strong>
+              <small>导入后可以拖动和缩放，截取你想要的圆形区域</small>
+            </button>
+          )}
+          {avatarDragging && (
+            <div className="avatar-drop-overlay" aria-live="polite">
+              <span><UploadOutlined /></span>
+              <strong>松开即可导入图片</strong>
+              <small>新图片会替换当前待裁剪图片</small>
+            </div>
+          )}
+        </div>
       </Modal>
 
       <Modal

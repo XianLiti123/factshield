@@ -6,11 +6,62 @@ import remarkGfm from 'remark-gfm'
 import type { ResearchRun } from '../types'
 import { getActiveTask, useWorkspaceStore } from '../store'
 import { StatusBadge } from './StatusBadge'
-import { getAuditLog, getReport } from '../services/api'
+import { exportReport, getAuditLog, getReport, type ReportExportFormat } from '../services/api'
 
 const reportMarkdownComponents: Components = {
   a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
   table: ({ children }) => <div className="report-markdown-table"><table>{children}</table></div>,
+}
+
+type WritableExportFile = {
+  write: (data: Blob) => Promise<void>
+  close: () => Promise<void>
+}
+
+type ExportFileHandle = {
+  name: string
+  createWritable: () => Promise<WritableExportFile>
+}
+
+type PreparedReportExport = {
+  format: ReportExportFormat
+  blob: Blob
+  filename: string
+}
+
+type SaveFilePicker = (options: {
+  suggestedName: string
+  excludeAcceptAllOption: boolean
+  types: Array<{ description: string; accept: Record<string, string[]> }>
+}) => Promise<ExportFileHandle>
+
+const exportFileTypes: Record<ReportExportFormat, { description: string; accept: Record<string, string[]> }> = {
+  pdf: { description: 'PDF 文档', accept: { 'application/pdf': ['.pdf'] } },
+  docx: {
+    description: 'Word 文档',
+    accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] },
+  },
+}
+
+function getSaveFilePicker() {
+  return (window as Window & { showSaveFilePicker?: SaveFilePicker }).showSaveFilePicker?.bind(window)
+}
+
+function downloadWithBrowser(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 export function ReportsView({ run }: { run: ResearchRun }) {
@@ -19,7 +70,9 @@ export function ReportsView({ run }: { run: ResearchRun }) {
   const reviewedClaimIds = activeTask.reviewedClaimIds
   const [reportContent, setReportContent] = useState('')
   const [reportOpen, setReportOpen] = useState(false)
-  const exportMock = (format: string) => message.success(`${format} 底稿已生成（UI 演示）`)
+  const [exportingFormat, setExportingFormat] = useState<ReportExportFormat | null>(null)
+  const [preparedExport, setPreparedExport] = useState<PreparedReportExport | null>(null)
+  const [savingExport, setSavingExport] = useState(false)
   const previewReport = async () => {
     if (!activeTask.persisted) {
       message.info('当前是 UI 演示底稿')
@@ -31,6 +84,48 @@ export function ReportsView({ run }: { run: ResearchRun }) {
       setReportOpen(true)
     } catch (error) {
       message.error(error instanceof Error ? error.message : '底稿加载失败')
+    }
+  }
+  const downloadReport = async (format: ReportExportFormat) => {
+    if (!activeTask.persisted) {
+      message.info('演示任务暂无真实底稿可导出')
+      return
+    }
+    setExportingFormat(format)
+    try {
+      const { blob, filename } = await exportReport(run.id, format)
+      setPreparedExport({ format, blob, filename })
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '底稿导出失败')
+    } finally {
+      setExportingFormat(null)
+    }
+  }
+  const savePreparedReport = async () => {
+    if (!preparedExport) return
+    setSavingExport(true)
+    try {
+      const picker = getSaveFilePicker()
+      if (picker) {
+        const fileHandle = await picker({
+          suggestedName: preparedExport.filename,
+          excludeAcceptAllOption: true,
+          types: [exportFileTypes[preparedExport.format]],
+        })
+        const writable = await fileHandle.createWritable()
+        await writable.write(preparedExport.blob)
+        await writable.close()
+        message.success(`${preparedExport.format === 'pdf' ? 'PDF' : 'Word'} 底稿已保存为 ${fileHandle.name}`)
+      } else {
+        downloadWithBrowser(preparedExport.blob, preparedExport.filename)
+        message.success('文件已下载到浏览器默认下载目录')
+      }
+      setPreparedExport(null)
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return
+      message.error(error instanceof Error ? error.message : '文件保存失败')
+    } finally {
+      setSavingExport(false)
     }
   }
   const downloadAudit = async () => {
@@ -63,7 +158,7 @@ export function ReportsView({ run }: { run: ResearchRun }) {
             <h3>{run.title}</h3>
             <p>底稿已生成预览版本，当前包含 5 条事实主张、8 份原始证据、5 份一级核验记录、5 份独立复核记录与 1 份历史情景附件。</p>
             <div className="report-checks"><span><CheckCircleFilled /> 证据链接完整</span><span><CheckCircleFilled /> 引用定位有效</span><span><CheckCircleFilled /> 审计日志已封存</span></div>
-            <div className="report-actions"><Button type="primary" icon={<EyeOutlined />} onClick={previewReport}>预览底稿</Button><Button icon={<FilePdfOutlined />} onClick={() => exportMock('PDF')}>导出 PDF</Button><Button icon={<FileWordOutlined />} onClick={() => exportMock('Word')}>导出 Word</Button></div>
+            <div className="report-actions"><Button type="primary" icon={<EyeOutlined />} onClick={previewReport}>预览底稿</Button><Button icon={<FilePdfOutlined />} loading={exportingFormat === 'pdf'} disabled={exportingFormat !== null && exportingFormat !== 'pdf'} onClick={() => downloadReport('pdf')}>导出 PDF</Button><Button icon={<FileWordOutlined />} loading={exportingFormat === 'docx'} disabled={exportingFormat !== null && exportingFormat !== 'docx'} onClick={() => downloadReport('docx')}>导出 Word</Button></div>
             <div className="report-disclaimer">本底稿仅为金融研究辅助材料，不构成任何投资建议；高度存疑内容必须由研究员人工复核。</div>
           </div>
         </div>
@@ -100,6 +195,27 @@ export function ReportsView({ run }: { run: ResearchRun }) {
         <article className="report-markdown-preview">
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={reportMarkdownComponents}>{reportContent}</ReactMarkdown>
         </article>
+      </Modal>
+      <Modal
+        title="底稿文件已生成"
+        open={preparedExport !== null}
+        closable={!savingExport}
+        maskClosable={!savingExport}
+        onCancel={() => setPreparedExport(null)}
+        footer={[
+          <Button key="cancel" disabled={savingExport} onClick={() => setPreparedExport(null)}>取消</Button>,
+          <Button key="save" type="primary" icon={<DownloadOutlined />} loading={savingExport} onClick={savePreparedReport}>
+            {getSaveFilePicker() ? '选择保存位置' : '下载文件'}
+          </Button>,
+        ]}
+      >
+        {preparedExport && (
+          <div className="report-export-ready">
+            <strong>{preparedExport.filename}</strong>
+            <span>{preparedExport.format === 'pdf' ? 'PDF 文档' : 'Word 文档'} · {formatFileSize(preparedExport.blob.size)}</span>
+            <p>文件内容已完整生成并通过格式校验，现在可以选择保存位置。</p>
+          </div>
+        )}
       </Modal>
     </div>
   )

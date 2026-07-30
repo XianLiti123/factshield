@@ -5,7 +5,7 @@ const TOKEN_KEY = 'factshield.auth.token'
 const SESSION_KEY_PREFIX = 'factshield.chat.session.'
 const RESEARCH_PROGRESS_KEY_PREFIX = 'factshield.research.progress.'
 
-export type UserInfo = { id: number; email: string; username?: string }
+export type UserInfo = { id: number; email: string; display_name: string }
 export type AuthResponse = { token: string; user: UserInfo }
 export type CapabilityStatus = {
   llm: boolean
@@ -93,13 +93,15 @@ function forgetResearchProgress(taskId: string) {
 }
 
 async function parseError(response: Response) {
+  const raw = await response.text()
   try {
-    const payload = await response.json()
+    const payload = JSON.parse(raw)
     if (typeof payload.detail === 'string') return payload.detail
     if (Array.isArray(payload.detail)) return payload.detail.map((item: { msg?: string }) => item.msg).filter(Boolean).join('；')
   } catch {
-    // Non-JSON error response.
+    // Keep the plain-text response below when the backend does not return JSON.
   }
+  if (raw.trim()) return raw.trim()
   return `请求失败（${response.status}）`
 }
 
@@ -269,6 +271,63 @@ export const retryClaim = (taskId: string, claimId: string) => request<{ status:
   `/api/tasks/${taskId}/claims/${claimId}/retry`, { method: 'POST' },
 )
 export const getReport = (taskId: string) => request<{ format: string; content: string }>(`/api/tasks/${taskId}/report`)
+
+export type ReportExportFormat = 'pdf' | 'docx'
+
+function getDownloadFilename(contentDisposition: string | null, fallback: string) {
+  if (!contentDisposition) return fallback
+  const encodedFilename = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
+  if (encodedFilename) {
+    try {
+      return decodeURIComponent(encodedFilename.trim())
+    } catch {
+      // Fall through to the regular filename parameter.
+    }
+  }
+  return contentDisposition.match(/filename="([^"]+)"/i)?.[1]
+    ?? contentDisposition.match(/filename=([^;]+)/i)?.[1]?.trim()
+    ?? fallback
+}
+
+export async function exportReport(taskId: string, format: ReportExportFormat) {
+  const headers = new Headers()
+  const token = getToken()
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  const response = await fetch(
+    `/api/tasks/${encodeURIComponent(taskId)}/report?format=${encodeURIComponent(format)}`,
+    { headers },
+  )
+  if (!response.ok) {
+    const detail = await parseError(response)
+    const label = format === 'pdf' ? 'PDF' : 'Word'
+    throw new ApiError(
+      response.status >= 500 ? `后端生成 ${label} 失败（${detail}），未创建本地文件` : detail,
+      response.status,
+    )
+  }
+  const blob = await response.blob()
+  if (blob.size === 0) throw new ApiError('后端返回了空文件，导出已取消', 502)
+
+  const signature = new Uint8Array(await blob.slice(0, 5).arrayBuffer())
+  const isPdf = signature[0] === 0x25
+    && signature[1] === 0x50
+    && signature[2] === 0x44
+    && signature[3] === 0x46
+    && signature[4] === 0x2d
+  const isDocx = signature[0] === 0x50
+    && signature[1] === 0x4b
+    && signature[2] === 0x03
+    && signature[3] === 0x04
+  if ((format === 'pdf' && !isPdf) || (format === 'docx' && !isDocx)) {
+    throw new ApiError(`后端返回的 ${format === 'pdf' ? 'PDF' : 'Word'} 文件格式无效，导出已取消`, 502)
+  }
+
+  return {
+    blob,
+    filename: getDownloadFilename(response.headers.get('Content-Disposition'), `${taskId}.${format}`),
+  }
+}
+
 export const getAuditLog = (taskId: string) => request<{ task_id: string; events: unknown[]; resolutions: unknown[] }>(`/api/tasks/${taskId}/audit-log`)
 
 export async function streamTaskEvents(
