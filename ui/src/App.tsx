@@ -42,12 +42,15 @@ function App() {
   const {
     data: persistedRun,
     isLoading: runLoading,
+    isFetching: runFetching,
     isError: runError,
     refetch: refetchRun,
   } = useQuery({
-    queryKey: ['research-run', activeTask.id],
-    queryFn: () => getTask(activeTask.id),
+    // createdAt and user id are part of the identity because the backend can reuse a deleted task's id.
+    queryKey: ['research-run', activeTask.id, activeTask.createdAt, user?.id],
+    queryFn: ({ queryKey }) => getTask(queryKey[1] as string),
     enabled: Boolean(user && isPersistedTask),
+    refetchOnMount: 'always',
     refetchInterval: (query) => {
       const latestRun = query.state.data
       if (latestRun?.status === 'running') return 2500
@@ -73,8 +76,10 @@ function App() {
   }, [hydrateTasks, persistedTasks])
 
   useEffect(() => {
-    if (persistedRun) syncTaskRun(persistedRun)
-  }, [persistedRun, syncTaskRun])
+    if (persistedRun?.id === activeTask.id && persistedRun.createdAt === activeTask.createdAt) {
+      syncTaskRun(persistedRun)
+    }
+  }, [activeTask.createdAt, activeTask.id, persistedRun, syncTaskRun])
 
   useEffect(() => {
     if (!hasRunningTasks) return
@@ -84,11 +89,17 @@ function App() {
 
   const baseRun = runs?.[0]
   const matchedRun = runs?.find((run) => run.id === activeTask.id)
+  // 后端的顺序号可能在旧任务删除后被复用。任务编号相同但创建时间不同的详情属于
+  // 旧查询缓存，不能在新任务下展示，也不能反向同步进当前任务的状态。
+  const currentPersistedRun = persistedRun?.id === activeTask.id && persistedRun.createdAt === activeTask.createdAt
+    ? persistedRun
+    : undefined
+  const persistedRunIdentityMismatch = Boolean(isPersistedTask && persistedRun && !currentPersistedRun)
   const isResearchPreview = !['tasks', 'settings'].includes(activeView) && (!activeTask.id || activeTask.phase === 'draft')
   const run = isResearchPreview
     ? baseRun
     : isPersistedTask
-      ? persistedRun
+      ? currentPersistedRun
       : matchedRun ? {
         ...matchedRun,
         progress: getTaskProgress(activeTask),
@@ -146,7 +157,7 @@ function App() {
       )}
       {activeView === 'tasks' && <TaskCenter />}
       {activeView === 'settings' && <SettingsView />}
-      {isPersistedTask && runLoading && !['tasks', 'settings'].includes(activeView) && (
+      {isPersistedTask && (runLoading || (runFetching && !currentPersistedRun)) && !['tasks', 'settings'].includes(activeView) && (
         <div className="loading-state"><Skeleton active paragraph={{ rows: 8 }} /></div>
       )}
       {isPersistedTask && runError && !['tasks', 'settings'].includes(activeView) && (
@@ -155,6 +166,14 @@ function App() {
           title="研究详情加载失败"
           subTitle="任务列表已连接，但这条研究的详情暂时读取失败。"
           extra={<Button icon={<ReloadOutlined />} onClick={() => refetchRun()}>重新加载</Button>}
+        />
+      )}
+      {persistedRunIdentityMismatch && !runFetching && !runError && !['tasks', 'settings'].includes(activeView) && (
+        <Result
+          status="warning"
+          title="研究详情与当前任务不一致"
+          subTitle="已拦截旧任务缓存，没有把其他项目的复核内容显示到这里。"
+          extra={<Button icon={<ReloadOutlined />} onClick={() => refetchRun()}>重新读取当前任务</Button>}
         />
       )}
       {run && !['tasks', 'settings'].includes(activeView) && (

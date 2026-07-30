@@ -151,6 +151,8 @@ export function TaskCenter() {
         researchType: taskTypeByValue[values.type] ?? 'company',
         preferredSources: values.sources ?? [],
       })
+      // 后端删除任务后可能复用同一个顺序号，先清掉这个编号曾经留下的详情缓存。
+      queryClient.removeQueries({ queryKey: ['research-run', task.id] })
       addTask(task)
       await queryClient.invalidateQueries({ queryKey: ['workspace-tasks'] })
       setCreateOpen(false)
@@ -167,6 +169,7 @@ export function TaskCenter() {
     if (!deleteTarget) return
     try {
       if (deleteTarget.persisted) await deletePersistedTask(deleteTarget.id)
+      queryClient.removeQueries({ queryKey: ['research-run', deleteTarget.id] })
       deleteTask(deleteTarget.id)
       await queryClient.invalidateQueries({ queryKey: ['workspace-tasks'] })
       message.success(`已删除“${deleteTarget.title}”`)
