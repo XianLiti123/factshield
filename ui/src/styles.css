@@ -614,11 +614,13 @@ button { color: inherit; }
 .history-trigger-task span, .history-trigger-task strong { display: block; }
 .history-trigger-task span { margin-bottom: 5px; color: #8590a3; font-size: 8px; }
 .history-trigger-task strong { overflow: hidden; color: #2f3e55; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.history-trigger-method { min-width: 0; display: grid; grid-template-columns: 28px 1fr; gap: 9px; align-items: center; }
-.history-trigger-method > .anticon { width: 28px; height: 28px; display: grid; place-items: center; color: #3469ce; background: #edf3ff; border-radius: 7px; }
+.history-trigger-method { min-width: 0; display: flex; align-items: flex-start; gap: 9px; }
+.history-trigger-method > .anticon { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 32px; color: #3469ce; background: #edf3ff; border-radius: 7px; font-size: 12px; line-height: 1; }
+.history-trigger-method > .anticon > svg { display: block; }
+.history-trigger-method > div { min-width: 0; height: 32px; display: grid; grid-template-rows: 16px 16px; align-items: stretch; }
 .history-trigger-method strong, .history-trigger-method span { display: block; }
-.history-trigger-method strong { color: #344057; font-size: 10px; }
-.history-trigger-method span { margin-top: 3px; color: #8792a5; font-size: 8px; line-height: 1.55; }
+.history-trigger-method strong { display: flex; align-items: center; color: #344057; font-size: 10px; line-height: 16px; }
+.history-trigger-method span { margin: 0; display: flex; align-items: center; color: #8792a5; font-size: 8px; line-height: 16px; }
 .history-capability-status { min-width: 104px; padding: 6px 9px; display: inline-flex; align-items: center; justify-content: center; color: #657a74; border: 1px solid #d7e4e0; border-radius: 14px; background: #f6faf8; font-size: 8px; white-space: nowrap; }
 .history-capability-status.checking { color: #7d8798; border-color: #e1e5eb; background: #f8f9fb; }
 .history-capability-status.supported { color: #28725d; border-color: #c9e2d9; background: #eff8f4; }

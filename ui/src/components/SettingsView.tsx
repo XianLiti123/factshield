@@ -100,15 +100,22 @@ const initialSearchEngines: SearchEngine[] = [
   { id: 'python', name: 'Python', description: '通过本地 Python 检索流程执行，无需 API Key', apiKey: '', requiresApiKey: false },
 ]
 
-const DATA_SOURCES_KEY = 'factshield.settings.data-sources'
+const DATA_SOURCES_KEY = 'factshield.settings.data-sources.v2'
 const presetDataSources: DataSourceConfig[] = [
+  { id: 'efinance', name: 'efinance', description: '已接入的 A 股行情与基础金融数据 SDK', category: '已接入数据源', mode: 'python', specification: "import efinance as ef\n\n# 获取股票历史行情\ndf = ef.stock.get_quote_history('000001')", enabled: true },
+  { id: 'tickflow', name: 'TickFlow', description: '已接入的行情与逐笔数据服务', category: '已接入数据源', mode: 'python', specification: "# TickFlow 已由服务端连接器接入\n# 调用入口、鉴权与返回结构由服务端统一管理\n# 前端仅维护启用状态，不在浏览器中执行代码", enabled: true },
   { id: 'wind', name: '万得金融数据服务', description: '专业金融市场、公司与宏观数据', category: '金融数据库', mode: 'python', specification: "from WindPy import w\nw.start()\nresult = w.wsd('000001.SZ', 'close', '2026-01-01', '2026-01-31')", enabled: false },
   { id: 'tushare', name: 'Tushare Pro', description: '证券、基金、期货与宏观数据接口', category: '金融数据库', mode: 'python', specification: "import tushare as ts\npro = ts.pro_api('YOUR_TOKEN')\ndf = pro.daily(ts_code='000001.SZ')", enabled: false },
   { id: 'akshare', name: 'AKShare', description: '开源财经数据接口库', category: '金融数据库', mode: 'python', specification: "import akshare as ak\ndf = ak.stock_zh_a_hist(symbol='000001')", enabled: false },
   { id: 'custom-http', name: '自定义 HTTP 数据源', description: '连接内部或第三方数据服务', category: '自定义', mode: 'http', specification: "GET https://api.example.com/v1/market/data\nAuthorization: Bearer ${API_KEY}\nQuery: symbol, start_date, end_date\nResponse data path: $.data", enabled: false },
 ]
 function loadDataSources() {
-  try { const stored = JSON.parse(window.localStorage.getItem(DATA_SOURCES_KEY) ?? 'null'); return Array.isArray(stored) && stored.length ? stored as DataSourceConfig[] : presetDataSources }
+  try {
+    const raw = window.localStorage.getItem(DATA_SOURCES_KEY)
+    if (raw === null) return presetDataSources
+    const stored = JSON.parse(raw)
+    return Array.isArray(stored) ? stored as DataSourceConfig[] : presetDataSources
+  }
   catch { return presetDataSources }
 }
 
@@ -150,6 +157,7 @@ export function SettingsView() {
   const [dataSources, setDataSources] = useState<DataSourceConfig[]>(loadDataSources)
   const [dataSourceModalOpen, setDataSourceModalOpen] = useState(false)
   const [activeDataSourceId, setActiveDataSourceId] = useState(presetDataSources[0].id)
+  const [deleteDataSourceTarget, setDeleteDataSourceTarget] = useState<DataSourceConfig | null>(null)
 
   useEffect(() => {
     getSettings().then((settings) => {
@@ -203,6 +211,20 @@ export function SettingsView() {
     const id = `source-${Date.now()}`
     setDataSources((current) => [...current, { id, name: '未命名数据源', description: '填写接口规范后交由服务端连接', category: '自定义', mode: 'http', specification: '', enabled: false }])
     setActiveDataSourceId(id)
+  }
+  const removeActiveDataSource = () => {
+    if (!activeDataSource) return
+    setDeleteDataSourceTarget(activeDataSource)
+  }
+  const confirmRemoveDataSource = () => {
+    if (!deleteDataSourceTarget) return
+    const removedIndex = dataSources.findIndex((source) => source.id === deleteDataSourceTarget.id)
+    const remaining = dataSources.filter((source) => source.id !== deleteDataSourceTarget.id)
+    window.localStorage.setItem(DATA_SOURCES_KEY, JSON.stringify(remaining))
+    setDataSources(remaining)
+    setActiveDataSourceId(remaining[Math.min(removedIndex, remaining.length - 1)]?.id ?? '')
+    message.success(`已删除“${deleteDataSourceTarget.name}”`)
+    setDeleteDataSourceTarget(null)
   }
 
   const updateSelectedModel = (key: keyof ModelConfig, value: string) => {
@@ -473,11 +495,14 @@ export function SettingsView() {
       <Modal className="data-source-modal" title="数据源管理" open={dataSourceModalOpen} width={900} footer={null} onCancel={() => setDataSourceModalOpen(false)} closeIcon={<CloseOutlined />}>
         <div className="data-source-manager">
           <aside className="data-source-list">
-            <header><div><strong>金融与研究数据源</strong><small>选择预设或创建自己的连接</small></div><Button type="text" icon={<PlusOutlined />} onClick={addCustomDataSource}>新建</Button></header>
-            <div>{dataSources.map((source) => <button type="button" className={source.id === activeDataSource?.id ? 'active' : ''} key={source.id} onClick={() => setActiveDataSourceId(source.id)}><span>{source.mode === 'http' ? <ApiOutlined /> : <CodeOutlined />}</span><div><strong>{source.name}</strong><small>{source.description}</small></div><i className={source.enabled ? 'enabled' : ''} /></button>)}</div>
+            <header><div><strong>金融与研究数据源</strong><small>选择预设或创建自己的连接</small></div><Button className="data-source-create-button" type="primary" icon={<PlusOutlined />} onClick={addCustomDataSource}>新建数据源</Button></header>
+            <div>{dataSources.length > 0
+              ? dataSources.map((source) => <button type="button" className={source.id === activeDataSource?.id ? 'active' : ''} key={source.id} onClick={() => setActiveDataSourceId(source.id)}><span>{source.mode === 'http' ? <ApiOutlined /> : <CodeOutlined />}</span><div><strong>{source.name}</strong><small>{source.description}</small></div><i className={source.enabled ? 'enabled' : ''} /></button>)
+              : <div className="data-source-list-empty"><AppstoreOutlined /><strong>还没有数据源</strong><span>点击上方按钮新建连接</span></div>}
+            </div>
           </aside>
           {activeDataSource && <section className="data-source-editor">
-            <header><div><span>{activeDataSource.mode === 'http' ? <ApiOutlined /> : <CodeOutlined />}</span><div><strong>{activeDataSource.name}</strong><small>{activeDataSource.category}</small></div></div><label><span>{activeDataSource.enabled ? '已启用' : '未启用'}</span><Switch checked={activeDataSource.enabled} onChange={(enabled) => updateActiveDataSource({ enabled })} /></label></header>
+            <header><div><span>{activeDataSource.mode === 'http' ? <ApiOutlined /> : <CodeOutlined />}</span><div><strong>{activeDataSource.name}</strong><small>{activeDataSource.category}</small></div></div><div className="data-source-editor-actions"><Button className="data-source-delete-button" danger icon={<DeleteOutlined />} onClick={removeActiveDataSource}>删除数据源</Button><label><span>{activeDataSource.enabled ? '已启用' : '未启用'}</span><Switch checked={activeDataSource.enabled} onChange={(enabled) => updateActiveDataSource({ enabled })} /></label></div></header>
             <div className="data-source-fields">
               <label><span>数据源名称</span><Input value={activeDataSource.name} onChange={(event) => updateActiveDataSource({ name: event.target.value })} /></label>
               <label><span>用途说明</span><Input value={activeDataSource.description} onChange={(event) => updateActiveDataSource({ description: event.target.value })} /></label>
@@ -486,7 +511,24 @@ export function SettingsView() {
             </div>
             <footer><span><SafetyCertificateOutlined /> 配置保存在本机，不会在浏览器中执行代码；需由服务端连接器审核后接入研究流程。</span><Button type="primary" onClick={() => message.success('数据源配置已保存到当前浏览器')}>保存配置</Button></footer>
           </section>}
+          {!activeDataSource && <section className="data-source-editor-empty"><AppstoreOutlined /><strong>新建一个数据源开始配置</strong><span>可以填写 HTTP 接口规范或 Python SDK 调用代码。</span><Button type="primary" icon={<PlusOutlined />} onClick={addCustomDataSource}>新建数据源</Button></section>}
         </div>
+      </Modal>
+
+      <Modal
+        className="data-source-delete-modal"
+        title="删除这个数据源？"
+        open={Boolean(deleteDataSourceTarget)}
+        zIndex={1200}
+        centered
+        okText="确认删除"
+        cancelText="保留"
+        okButtonProps={{ danger: true }}
+        onOk={confirmRemoveDataSource}
+        onCancel={() => setDeleteDataSourceTarget(null)}
+        closeIcon={<CloseOutlined />}
+      >
+        <p>“{deleteDataSourceTarget?.name}”的接口规范、启用状态和本地配置都会被删除，刷新页面也不会恢复。</p>
       </Modal>
     </div>
   )

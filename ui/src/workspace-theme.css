@@ -1771,23 +1771,31 @@ svg text {
 .data-source-modal .ant-modal-content { padding: 0; overflow: hidden; border-radius: 12px; }
 .data-source-modal .ant-modal-header { margin: 0; padding: 18px 20px 14px; border-bottom: 1px solid var(--fs-border); }
 .data-source-modal .ant-modal-close { top: 12px; }
+.data-source-delete-modal .ant-modal-content { border-radius: 11px; }
+.data-source-delete-modal .ant-modal-body p { margin: 4px 0 2px; color: #667a74; font-size: 11px; line-height: 1.7; }
 .data-source-manager { min-height: 570px; display: grid; grid-template-columns: 300px minmax(0, 1fr); }
 .data-source-list { min-width: 0; background: #f7faf9; border-right: 1px solid var(--fs-border); }
 .data-source-list > header { min-height: 68px; padding: 12px 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--fs-border); }
 .data-source-list header strong, .data-source-list header small { display: block; }
 .data-source-list header strong { color: #28443e; font-size: 12px; }
 .data-source-list header small { margin-top: 4px; color: #80908c; font-size: 8px; }
-.data-source-list header .ant-btn { font-size: 9px; }
+.data-source-list header .data-source-create-button { height: 30px; padding: 0 10px; display: inline-flex; align-items: center; gap: 5px; color: #fff; border: 0; background: var(--fs-teal-700); font-size: 9px; box-shadow: none; }
+.data-source-list header .data-source-create-button:hover { color: #fff !important; background: var(--fs-teal-900) !important; }
+.data-source-list header .data-source-create-button .anticon { width: auto; height: auto; display: inline-flex; color: inherit; background: transparent; font-size: 10px; }
 .data-source-list > div { padding: 9px; display: grid; gap: 6px; }
 .data-source-list > div > button { min-width: 0; min-height: 66px; padding: 9px; display: grid; grid-template-columns: 36px minmax(0, 1fr) 8px; align-items: center; gap: 9px; text-align: left; border: 1px solid transparent; border-radius: 8px; color: #526a64; background: transparent; cursor: pointer; }
 .data-source-list > div > button:hover { border-color: #d0e1dc; background: #fff; }
 .data-source-list > div > button.active { border-color: #a9cec3; background: #eaf5f1; }
-.data-source-list button > span { width: 36px; height: 36px; display: grid; place-items: center; color: var(--fs-teal-700); border-radius: 8px; background: #e3f1ed; }
-.data-source-list button strong, .data-source-list button small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.data-source-list button strong { color: #294841; font-size: 11px; }
-.data-source-list button small { margin-top: 4px; color: #7b8c87; font-size: 8px; }
-.data-source-list button > i { width: 7px; height: 7px; border: 1px solid #b4c9c2; border-radius: 50%; }
-.data-source-list button > i.enabled { border-color: var(--fs-teal-700); background: var(--fs-teal-700); box-shadow: 0 0 0 3px #d7ebe5; }
+.data-source-list > div > button > span { width: 36px; height: 36px; display: grid; place-items: center; color: var(--fs-teal-700); border-radius: 8px; background: #e3f1ed; }
+.data-source-list > div > button strong, .data-source-list > div > button small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.data-source-list > div > button strong { color: #294841; font-size: 11px; }
+.data-source-list > div > button small { margin-top: 4px; color: #7b8c87; font-size: 8px; }
+.data-source-list > div > button > i { width: 7px; height: 7px; border: 1px solid #b4c9c2; border-radius: 50%; }
+.data-source-list > div > button > i.enabled { border-color: var(--fs-teal-700); background: var(--fs-teal-700); box-shadow: 0 0 0 3px #d7ebe5; }
+.data-source-list-empty { min-height: 150px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #91a09c; text-align: center; }
+.data-source-list-empty > .anticon { margin-bottom: 8px; font-size: 20px; }
+.data-source-list-empty strong { color: #61756f; font-size: 10px; }
+.data-source-list-empty span { margin-top: 4px; font-size: 8px; }
 .data-source-editor { min-width: 0; display: flex; flex-direction: column; }
 .data-source-editor > header { min-height: 68px; padding: 12px 18px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--fs-border); }
 .data-source-editor > header > div { display: flex; align-items: center; gap: 10px; }
@@ -1795,7 +1803,12 @@ svg text {
 .data-source-editor header strong, .data-source-editor header small { display: block; }
 .data-source-editor header strong { color: #28443e; font-size: 13px; }
 .data-source-editor header small { margin-top: 3px; color: #84938f; font-size: 8px; }
-.data-source-editor > header > label { display: flex; align-items: center; gap: 8px; color: #647873; font-size: 9px; }
+.data-source-editor-actions { display: flex !important; align-items: center; gap: 10px !important; }
+.data-source-editor-actions > .data-source-delete-button { height: 30px; padding: 0 10px; display: inline-flex; align-items: center; gap: 5px; color: #b64040; border: 1px solid #efcaca; border-radius: 7px; background: #fff1f0; font-size: 9px; box-shadow: none; }
+.data-source-editor-actions > .data-source-delete-button:hover { color: #a62d2d !important; border-color: #e5a8a8 !important; background: #ffe3e1 !important; }
+.data-source-editor-actions > .data-source-delete-button:active { background: #ffd6d3 !important; transform: translateY(1px); }
+.data-source-editor-actions > .data-source-delete-button .anticon { color: inherit; }
+.data-source-editor-actions > label { display: flex; align-items: center; gap: 8px; color: #647873; font-size: 9px; }
 .data-source-editor .ant-switch.ant-switch-checked { background: var(--fs-teal-700); }
 .data-source-fields { padding: 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .data-source-fields > label > span, .data-source-mode-field > span { display: block; margin-bottom: 6px; color: #344e48; font-size: 10px; font-weight: 600; }
@@ -1807,6 +1820,10 @@ svg text {
 .data-source-editor > footer { margin-top: auto; min-height: 64px; padding: 12px 18px; display: flex; align-items: center; justify-content: space-between; gap: 18px; border-top: 1px solid var(--fs-border); }
 .data-source-editor > footer > span { max-width: 420px; color: #7d8d88; font-size: 8px; line-height: 1.55; }
 .data-source-editor > footer .anticon { margin-right: 5px; color: var(--fs-teal-700); }
+.data-source-editor-empty { min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #8a9a95; text-align: center; }
+.data-source-editor-empty > .anticon { width: 48px; height: 48px; margin-bottom: 12px; display: grid; place-items: center; color: var(--fs-teal-700); border-radius: 12px; background: #e8f3ef; font-size: 20px; }
+.data-source-editor-empty strong { color: #35534c; font-size: 13px; }
+.data-source-editor-empty span { margin: 5px 0 14px; font-size: 9px; }
 .settings-panel-heading { padding: 18px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--fs-border); }
 .settings-panel-heading > div > span, .settings-panel-heading > div > strong { display: block; }
 .settings-panel-heading > div > span { color: #83938f; font-size: 10px; }
