@@ -48,7 +48,15 @@ function App() {
     queryKey: ['research-run', activeTask.id],
     queryFn: () => getTask(activeTask.id),
     enabled: Boolean(user && isPersistedTask),
-    refetchInterval: (query) => query.state.data?.status === 'running' ? 2500 : false,
+    refetchInterval: (query) => {
+      const latestRun = query.state.data
+      if (latestRun?.status === 'running') return 2500
+      // 流水线收尾时，任务状态和主张明细可能落在相邻的两个读取快照里。
+      // 未到 100% 或主张仍为空都不是可展示的复核终态，继续刷新直至完整。
+      if ((latestRun?.status === 'review' || latestRun?.status === 'ready')
+        && (latestRun.progress < 100 || latestRun.claims.length === 0)) return 1000
+      return false
+    },
   })
 
   useEffect(() => {
@@ -168,8 +176,10 @@ function App() {
           {activeView === 'topology' && <AgentTopology run={run} />}
           {activeView === 'analytics' && <AnalyticsView run={run} />}
           {activeView === 'reports' && <ReportsView run={run} />}
-          {activeTask.id && activeTask.phase !== 'draft' && <SupervisorAssistant run={run} />}
         </>
+      )}
+      {run && activeTask.id && activeTask.phase !== 'draft' && (
+        <SupervisorAssistant key={`${user.id}-${run.id}`} run={run} userId={user.id} />
       )}
     </AppShell>
   )

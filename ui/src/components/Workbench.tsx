@@ -22,7 +22,13 @@ import { Button, Drawer, Empty, Input, Modal, Progress, Segmented, Steps, Table,
 import { useQueryClient } from '@tanstack/react-query'
 import type { Claim, Evidence, ResearchRun } from '../types'
 import { getActiveTask, useWorkspaceStore } from '../store'
-import { resolveClaim as resolvePersistedClaim, retryClaim as retryPersistedClaim } from '../services/api'
+import {
+  guideTask,
+  resolveClaim as resolvePersistedClaim,
+  retryClaim as retryPersistedClaim,
+  streamTaskEvents,
+  type ResearchEvent,
+} from '../services/api'
 import { StatusBadge } from './StatusBadge'
 
 type ClaimVisibility = 'issues' | 'all'
@@ -34,6 +40,127 @@ type GuidanceRecord = {
   content: string
   attachments: string[]
   suspectedStages: string[]
+}
+
+type EventStreamStatus = 'idle' | 'connecting' | 'live' | 'ended' | 'error'
+
+function backendActorIcon(actor: string) {
+  if (actor === 'collector') return <CloudDownloadOutlined />
+  if (actor === 'parser') return <ReadOutlined />
+  if (actor === 'retriever') return <DatabaseOutlined />
+  if (actor === 'scorer') return <SafetyCertificateOutlined />
+  if (actor === 'reviewer') return <SwapOutlined />
+  if (actor === 'assembler') return <BookOutlined />
+  if (actor === 'researcher') return <SendOutlined />
+  if (actor === 'history') return <ClockCircleOutlined />
+  if (actor === 'system') return <CheckOutlined />
+  return <FileSearchOutlined />
+}
+
+function eventTime(value: string) {
+  const matched = value.match(/(\d{2}:\d{2}:\d{2})/)
+  return matched?.[1] ?? value
+}
+
+function compactText(value: string, maxLength = 54) {
+  const text = value.replace(/\s+/g, ' ').trim()
+  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text
+}
+
+function naturalList(items: string[]) {
+  if (items.length <= 1) return items[0] ?? ''
+  return `${items.slice(0, -1).join('、')}和${items.at(-1)}`
+}
+
+function eventMetric(event: ResearchEvent, label: string) {
+  return event.payload.metrics?.find((metric) => metric.label.includes(label))?.value
+}
+
+function buildConversationalSpeech(event: ResearchEvent, eventHistory: ResearchEvent[]) {
+  const speech = event.payload.speech?.trim() ?? ''
+  const details = event.payload.details ?? []
+  const title = event.payload.title ?? ''
+  const detailSamples = details.slice(0, 3).map((detail) => compactText(detail.text))
+  const previousEvents = eventHistory.filter((item) => item.seq <= event.seq)
+  const claimEvent = previousEvents.filter((item) => item.actor === 'parser').at(-1)
+  const evidenceEvent = previousEvents.filter((item) => item.actor === 'retriever').at(-1)
+  const materialEvent = previousEvents.filter((item) => item.actor === 'collector' && item.kind !== 'warning').at(-1)
+  const claimCount = claimEvent?.payload.details?.length
+  const evidenceCount = evidenceEvent ? eventMetric(evidenceEvent, '证据') : undefined
+  const materialCount = materialEvent ? eventMetric(materialEvent, '素材') : undefined
+
+  if (event.kind === 'error') {
+    return `这一步没有顺利完成，我先把后端返回的原因原样记下来：${speech || '暂时没有收到更具体的错误说明。'}任务记录和已经找到的材料仍然保留，方便随后定位和重试。`
+  }
+
+  if (event.actor === 'researcher') {
+    return `我收到你刚才补充的要求了：“${speech || '请按研究员的补充要求继续核验。'}”这条要求已经加入当前任务，我会在接下来的核验节点优先检查它，并把受影响的结论重新留痕。`
+  }
+
+  if (event.actor === 'collector') {
+    if (event.kind === 'warning') {
+      return `我在按核查点寻找公开材料时遇到了一处问题：${speech || title}。我会把这次失败单独记下，不会拿缺失的材料硬凑结论；其他能够正常访问的来源仍会继续采集。`
+    }
+    const collectedCount = eventMetric(event, '素材') ?? String(details.length)
+    const examples = details.slice(0, 3).map((detail) => compactText(detail.label, 34)).filter(Boolean)
+    return `我按前面拆出的核查点逐项寻找公开材料，目前已经收进 ${collectedCount} 份原始内容${examples.length ? `，其中包括${naturalList(examples)}` : ''}。这一轮我只做采集和归档：保留原始链接与正文位置，不急着替材料下结论，下一步再从原文里拆出可以逐条验证的事实。`
+  }
+
+  if (event.actor === 'parser') {
+    const examples = detailSamples.slice(0, 2)
+    return `材料到手后，我先把其中能够被外部证据核对的事实句单独拆出来，共整理出 ${details.length} 条待核查主张${examples.length ? `，例如“${examples.join('”和“')}”` : ''}。这一步只是明确“接下来要证明什么”，还没有把任何一句话直接当成可信结论。`
+  }
+
+  if (event.actor === 'retriever') {
+    const total = eventMetric(event, '证据') ?? '若干'
+    return `我把当前${claimCount ? `的 ${claimCount} 条` : '每一条'}主张逐一拿去和已归档原文比对，优先寻找能够直接支持或挑战表述的段落。目前共绑定了 ${total} 条可回查证据。这里先建立“主张—原文”的对应关系，来源是否可靠、证据是否足够支撑原句，还要继续往下检查。`
+  }
+
+  if (event.actor === 'scorer') {
+    const sourceGroups = new Map<string, number>()
+    details.forEach((detail) => {
+      const category = detail.text.replace(/\s+[\d.]+\s*$/, '').trim() || '其他来源'
+      sourceGroups.set(category, (sourceGroups.get(category) ?? 0) + 1)
+    })
+    const summary = [...sourceGroups.entries()].map(([category, count]) => `${category} ${count} 项`)
+    return `证据已经找齐后，我又逐个检查它们来自哪里，并按统一规则标记来源等级${summary.length ? `：${naturalList(summary)}` : ''}。这个分数只表示来源本身的可追溯性和权威程度，不等于“高分来源说的每句话都是真的”；接下来仍要结合原文内容判断它究竟能支持到什么程度。`
+  }
+
+  if (event.actor === 'supervisor' && title.includes('拆解')) {
+    const checkpoints = detailSamples
+    const keywords = eventMetric(event, '关键词')
+    return `我先把研究问题拆开，不急着直接给结论。现在形成了 ${details.length} 个可以分别核查的点${checkpoints.length ? `，包括${naturalList(checkpoints)}` : ''}。${keywords ? `接下来会围绕“${compactText(keywords, 80)}”定向寻找公开材料，` : '接下来会按这些核查点寻找公开材料，'}每个判断都要能回到具体原文。`
+  }
+
+  if (event.actor === 'supervisor' && event.kind === 'warning') {
+    const retry = eventMetric(event, '重试')
+    return `我把第一轮主张和证据放在一起检查时，发现现有材料还不足以稳妥支持部分表述。为了不把证据不足写成确定结论，我先把相关问题退回重新取证${detailSamples.length ? `，补充方向是${naturalList(detailSamples)}` : ''}${retry ? `，这是第 ${retry} 轮` : ''}。旧证据不会被覆盖，后面会和新材料一起比较。`
+  }
+
+  if (event.actor === 'supervisor') {
+    return `证据绑定和来源检查完成后，我开始做第一轮核验。我把${claimCount ? ` ${claimCount} 条主张` : '每条主张'}和${evidenceCount ? ` ${evidenceCount} 条原文证据` : '对应原文'}逐一并排，重点检查两件事：不同材料之间有没有冲突，以及现有引文是否真的足以支撑原句的范围和强度。这一步只完成初步判断，接下来还要交给独立复核重新检查，避免同一轮判断直接定案。`
+  }
+
+  if (event.actor === 'reviewer') {
+    const conflict = eventMetric(event, '高度存疑')
+    return `第一轮核验结束后，我把${claimCount ? ` ${claimCount} 条主张` : '全部待核主张'}和对应原文交给独立复核重新检查。这一轮会重新看引用是否忠于上下文、数字口径是否一致、表述有没有超过证据能够支持的边界。${conflict === '0' ? '本轮没有标出高度存疑项，但完整复核记录仍会保留。' : conflict ? `本轮标出了 ${conflict} 条高度存疑内容，它们不会自动写成正式结论。` : '发现的疑点会保留给你判断，不会自动写成正式结论。'}`
+  }
+
+  if (event.actor === 'assembler') {
+    return `核验和独立复核都完成后，我开始整理底稿。这里不会再创造新的判断，只把已经形成的${claimCount ? ` ${claimCount} 条主张` : '事实主张'}、${evidenceCount ? ` ${evidenceCount} 条原文证据` : '对应原文证据'}及其复核记录按模板排好，并保留引用位置，方便你逐条回到来源检查。`
+  }
+
+  if (event.actor === 'history') {
+    return `${speech}这一部分只记录公开数据和客观统计，不拿历史样本直接推断未来；${details.length ? `本次留下了 ${details.length} 组可回查记录，` : ''}需要使用时可以作为底稿附件单独核对。`
+  }
+
+  if (event.actor === 'system' && event.kind === 'done') {
+    const scale = [materialCount ? `${materialCount} 份原始材料` : '', claimCount ? `${claimCount} 条事实主张` : '', evidenceCount ? `${evidenceCount} 条原文证据` : ''].filter(Boolean)
+    return `这轮自动研究已经走完${scale.length ? `：${naturalList(scale)}` : ''}以及两轮核验记录都已保存。接下来只把系统无法代替你决定的疑点交给你复核，其他过程记录仍然可以随时回看。`
+  }
+
+  const detailSummary = detailSamples.length ? `这一步同时留下了这些可回查记录：${naturalList(detailSamples)}。` : ''
+  return `${speech || title || '这一步已经完成。'}${detailSummary}我会保留当前结果和依据，再进入下一项检查。`
 }
 
 function TypewriterBroadcast({ text, active, complete }: { text: string; active: boolean; complete: boolean }) {
@@ -421,10 +548,25 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   const [guidanceHistory, setGuidanceHistory] = useState<GuidanceRecord[]>([])
   const [guidanceAttachments, setGuidanceAttachments] = useState<File[]>([])
   const [suspectedEventSteps, setSuspectedEventSteps] = useState<number[]>([])
+  const [backendEvents, setBackendEvents] = useState<ResearchEvent[]>([])
+  const [eventStreamStatus, setEventStreamStatus] = useState<EventStreamStatus>('idle')
+  const [realGuidanceOpen, setRealGuidanceOpen] = useState(false)
+  const [realGuidanceSubmitting, setRealGuidanceSubmitting] = useState(false)
+  const [selectedBackendEventSeqs, setSelectedBackendEventSeqs] = useState<number[]>([])
   const processListRef = useRef<HTMLDivElement>(null)
   const guidanceAttachmentInputRef = useRef<HTMLInputElement>(null)
   const activeTask = useWorkspaceStore(getActiveTask)
-  const taskPhase = preview ? 'review' : activeTask.phase
+  // 持久化任务在详情页以 ResearchRun 完整快照为准，避免任务列表摘要先一步
+  // 切到 review，和上一轮仍在 running 的空主张明细拼成短暂空页。
+  const persistedRunPhase = (run.status === 'review' || run.status === 'ready')
+    && (run.progress < 100 || run.claims.length === 0)
+    ? 'running'
+    : run.status
+  const taskPhase = preview
+    ? 'review'
+    : activeTask.persisted && persistedRunPhase
+      ? persistedRunPhase
+      : activeTask.phase
   const researchTopic = preview ? run.title : activeTask.researchTopic
   const demoStep = preview ? 8 : activeTask.demoStep
   const isDemoRunning = preview ? false : activeTask.isDemoRunning
@@ -443,6 +585,41 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
     () => selectedClaim ? run.evidence.filter((evidence) => selectedClaim.evidenceIds.includes(evidence.id)) : [],
     [run.evidence, selectedClaim],
   )
+
+  useEffect(() => {
+    if (!activeTask.persisted || preview || taskPhase !== 'running') {
+      setBackendEvents([])
+      setEventStreamStatus('idle')
+      return
+    }
+
+    const controller = new AbortController()
+    let disposed = false
+    setBackendEvents([])
+    setEventStreamStatus('connecting')
+
+    streamTaskEvents(run.id, (event) => {
+      if (disposed) return
+      setEventStreamStatus('live')
+      setBackendEvents((current) => {
+        if (current.some((item) => item.seq === event.seq)) return current
+        return [...current, event].sort((left, right) => left.seq - right.seq)
+      })
+    }, controller.signal)
+      .then(() => {
+        if (!disposed) setEventStreamStatus('ended')
+      })
+      .catch((error) => {
+        if (!disposed && error instanceof Error && error.name !== 'AbortError') {
+          setEventStreamStatus('error')
+        }
+      })
+
+    return () => {
+      disposed = true
+      controller.abort()
+    }
+  }, [activeTask.persisted, preview, run.id, taskPhase])
 
   const handleResolve = async (action: 'reject' | 'keep' | 'remove' | 'rewrite', decision: string) => {
     if (!selectedClaim) return
@@ -479,6 +656,37 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
     }
   }
 
+  const toggleBackendEvent = (seq: number) => {
+    setSelectedBackendEventSeqs((current) => current.includes(seq)
+      ? current.filter((item) => item !== seq)
+      : [...current, seq])
+  }
+
+  const submitRealGuidance = async () => {
+    const content = guidance.trim()
+    const selectedEvents = backendEvents.filter((event) => selectedBackendEventSeqs.includes(event.seq))
+    if (!content && selectedEvents.length === 0) {
+      message.warning('请写下要调整的内容，或先选择一个有问题的研究步骤')
+      return
+    }
+    const stageContext = selectedEvents.length > 0
+      ? `请重点重新检查这些步骤：${selectedEvents.map((event) => `「${event.payload.title || '研究进度更新'}」`).join('、')}。`
+      : ''
+    const instruction = [stageContext, content].filter(Boolean).join('\n')
+    setRealGuidanceSubmitting(true)
+    try {
+      await guideTask(run.id, instruction)
+      setGuidance('')
+      setSelectedBackendEventSeqs([])
+      setRealGuidanceOpen(false)
+      message.success('小盾记下了，会在当前研究的下一个核验点按你的要求调整')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '介入指令提交失败')
+    } finally {
+      setRealGuidanceSubmitting(false)
+    }
+  }
+
   const changeClaimVisibility = (visibility: ClaimVisibility) => {
     setClaimVisibility(visibility)
     if (visibility === 'issues' && selectedClaim?.status === 'verified' && pendingClaims[0]) {
@@ -493,24 +701,50 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
       processListRef.current?.querySelector('[data-current="true"]')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [demoStep, guidanceHistory.length, taskPhase])
+  }, [backendEvents.length, demoStep, guidanceHistory.length, taskPhase])
 
   if (taskPhase === 'running' && activeTask.persisted) {
     const completedAgents = run.agents.filter((agent) => agent.status === 'done').length
     const currentAgent = run.agents.find((agent) => agent.status === 'running')
+    const latestEventSeq = backendEvents.at(-1)?.seq
+    const latestRetryEvent = backendEvents.slice().reverse().find((event) => (
+      event.actor === 'supervisor'
+      && event.kind === 'warning'
+      && (event.payload.title?.includes('二次取证') || event.payload.title?.includes('疑点'))
+    ))
+    const retryFinished = latestRetryEvent ? backendEvents.some((event) => (
+      event.seq > latestRetryEvent.seq
+      && ((event.actor === 'supervisor' && event.kind === 'progress' && event.payload.title?.includes('一级核验'))
+        || ['reviewer', 'assembler', 'system'].includes(event.actor))
+    )) : false
+    const activeRetryEvent = latestRetryEvent && !retryFinished ? latestRetryEvent : undefined
+    const retryRound = activeRetryEvent?.payload.metrics?.find((metric) => metric.label.includes('重试'))?.value
+    const latestStageTitle = backendEvents.at(-1)?.payload.title
+    const progressStatus = activeRetryEvent
+      ? `${retryRound ? `第 ${retryRound} 轮` : ''}补充取证 · ${latestStageTitle || '正在补充材料'}`
+      : currentAgent
+        ? '小盾正在继续查证'
+        : '小盾正在整理刚才的结果'
+    const streamLabel = eventStreamStatus === 'connecting'
+      ? '正在连接'
+      : eventStreamStatus === 'error'
+        ? '连接中断'
+        : eventStreamStatus === 'ended'
+          ? '本轮已记录'
+          : '实时记录'
     return (
       <div className="research-running-page">
         <div className="running-two-column-layout">
           <section className="running-progress-card">
             <div className="running-card-heading">
               <div>
-                <span className="start-kicker"><i /> FastAPI 正在执行真实研究</span>
+                <span className="start-kicker"><i /> 小盾正在帮你查</span>
                 <h2>{researchTopic || run.title}</h2>
-                <p>这里读取后端持久化进度；切换到其他任务不会中断当前流水线。</p>
+                <p>我会一边核查，一边把做到哪一步、依据是什么都记下来；切换任务也不会打断我。</p>
               </div>
             </div>
             <Progress percent={Math.round(run.progress)} showInfo={false} strokeColor="#0d6575" trailColor="#dfeae6" />
-            <div className="running-progress-meta"><strong>{Math.round(run.progress)}%</strong><span>{currentAgent ? `${currentAgent.name}正在处理` : '等待下一项进度回传'}</span></div>
+            <div className="running-progress-meta"><strong>{Math.round(run.progress)}%</strong><span>{progressStatus}</span></div>
             <div className="running-progress-summary">
               <div><span>执行单元</span><strong>{completedAgents} / {run.agents.length}</strong><small>已完成</small></div>
               <div><span>已生成主张</span><strong>{run.claims.length}</strong><small>条事实主张</small></div>
@@ -519,21 +753,130 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
             <div className="running-footer-actions"><Button onClick={() => setActiveView('topology')}>查看执行监控</Button><Button onClick={() => setActiveView('tasks')}>返回任务列表</Button></div>
           </section>
           <section className="research-process-panel running-process-card">
-            <div className="process-panel-heading"><div><strong>真实执行状态</strong><span>状态由后端任务详情定时同步</span></div><span className="process-recording"><i /> 实时刷新</span></div>
-            <div className="research-process-list">
-              {run.agents.map((agent) => (
-                <div className={`research-process-item ${agent.status === 'running' ? 'current' : ''}`} key={agent.id}>
-                  <span className="process-item-icon"><SafetyCertificateOutlined /></span>
-                  <div className="process-item-content">
-                    <div className="process-item-title"><strong>{agent.name}</strong><span>{agent.role}</span></div>
-                    <p className="process-agent-broadcast">{agent.detail || (agent.status === 'done' ? '该环节已完成并写入任务记录。' : agent.status === 'running' ? '当前环节正在执行。' : '等待前序环节完成。')}</p>
-                  </div>
-                  <div className="process-item-controls"><small>{agent.status === 'done' ? '已完成' : agent.status === 'running' ? '进行中' : agent.status === 'warning' ? '需处理' : '等待中'}</small></div>
+            <div className="process-panel-heading">
+              <div><strong>小盾的研究动态</strong><span>我会边查边说，把每一步怎么做、查到了什么都讲清楚</span></div>
+              <div className="process-panel-actions">
+                <span className={eventStreamStatus === 'error' || eventStreamStatus === 'ended' ? 'process-recording paused' : 'process-recording'}><i /> {streamLabel}</span>
+                <Button danger icon={<PauseCircleOutlined />} onClick={() => setRealGuidanceOpen(true)}>打断一下</Button>
+              </div>
+            </div>
+            <div className="research-process-list" ref={processListRef}>
+              {backendEvents.length === 0 ? (
+                <div className={`process-stream-empty ${eventStreamStatus === 'error' ? 'error' : ''}`}>
+                  <span><FileSearchOutlined /></span>
+                  <strong>{eventStreamStatus === 'error' ? '暂时没有接到研究动态' : '小盾正在理解这项研究'}</strong>
+                  <p>{eventStreamStatus === 'error' ? '任务仍由后端继续执行，刷新页面后会回放已经写入的全部记录。' : '正在等待后端写入第一条执行播报，收到后会在这里逐字显示。'}</p>
                 </div>
-              ))}
+              ) : backendEvents.map((event) => {
+                const isCurrent = event.seq === latestEventSeq && !['done', 'stopped', 'error'].includes(event.kind)
+                const details = event.payload.details ?? []
+                const metrics = event.payload.metrics ?? []
+                const conversationalSpeech = buildConversationalSpeech(event, backendEvents)
+                const tone = event.payload.tone === 'danger' || event.kind === 'error'
+                  ? 'danger'
+                  : event.payload.tone === 'warning' || event.kind === 'warning'
+                    ? 'warning'
+                    : ''
+                const status = event.kind === 'error'
+                  ? '执行失败'
+                  : event.kind === 'warning'
+                    ? '需要留意'
+                    : event.kind === 'done'
+                      ? '已完成'
+                      : isCurrent
+                        ? '最新播报'
+                        : '已记录'
+                return (
+                  <div
+                    className={`research-process-item backend-event${isCurrent ? ' current' : ''}${tone ? ` ${tone}` : ''}`}
+                    data-current={isCurrent ? 'true' : undefined}
+                    key={event.seq}
+                  >
+                    <span className="process-item-icon">{backendActorIcon(event.actor)}</span>
+                    <div className="process-item-content">
+                      <div className="process-item-title">
+                        <strong>{event.payload.title || '研究进度更新'}</strong>
+                        <span>小盾 · {eventTime(event.ts)}</span>
+                      </div>
+                      {conversationalSpeech && (
+                        <TypewriterBroadcast
+                          text={conversationalSpeech}
+                          active={isCurrent && eventStreamStatus === 'live'}
+                          complete={!isCurrent || eventStreamStatus !== 'live'}
+                        />
+                      )}
+                      {details.length > 0 && (
+                        <>
+                          <div className="process-evidence-label">本步执行依据</div>
+                          <ul>{details.map((detail, index) => <li key={`${detail.label}-${index}`}><b>{detail.label}</b><span>{detail.text}</span></li>)}</ul>
+                        </>
+                      )}
+                      {metrics.length > 0 && (
+                        <div className="process-item-metrics">
+                          {metrics.map((metric, index) => <span key={`${metric.label}-${index}`}>{metric.label} {metric.value}</span>)}
+                        </div>
+                      )}
+                    </div>
+                    <div className="process-item-controls"><small>{status}</small></div>
+                  </div>
+                )
+              })}
             </div>
           </section>
         </div>
+        <Modal
+          className="real-guidance-modal"
+          title="打断一下，告诉小盾哪里要调整"
+          open={realGuidanceOpen}
+          onCancel={() => setRealGuidanceOpen(false)}
+          onOk={submitRealGuidance}
+          okText="提交并继续"
+          cancelText="先不打断"
+          confirmLoading={realGuidanceSubmitting}
+          width={680}
+        >
+          <div className="real-guidance-intro">
+            <span><PauseCircleOutlined /></span>
+            <div><strong>当前进度和已经找到的证据都会保留</strong><p>你的要求会真实提交给研究任务，小盾会在下一个核验点读取并据此调整。</p></div>
+          </div>
+          {backendEvents.length > 0 && (
+            <div className="real-guidance-section">
+              <div className="real-guidance-section-title"><strong>哪一步需要重新看？</strong><span>可多选，也可以只写要求</span></div>
+              <div className="real-guidance-stage-list">
+                {backendEvents.filter((event) => event.actor !== 'system').map((event) => {
+                  const selected = selectedBackendEventSeqs.includes(event.seq)
+                  return (
+                    <button
+                      type="button"
+                      className={selected ? 'selected' : ''}
+                      key={event.seq}
+                      onClick={() => toggleBackendEvent(event.seq)}
+                    >
+                      <span>{backendActorIcon(event.actor)}</span>
+                      <div><strong>{event.payload.title || '研究进度更新'}</strong><small>{eventTime(event.ts)}</small></div>
+                      <i>{selected ? <CheckOutlined /> : null}</i>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+          <div className="real-guidance-section">
+            <div className="real-guidance-section-title"><strong>告诉小盾怎么调整</strong><span>Enter 提交 · Shift + Enter 换行</span></div>
+            <Input.TextArea
+              value={guidance}
+              onChange={(event) => setGuidance(event.target.value)}
+              onPressEnter={(event) => {
+                if (!event.shiftKey) {
+                  event.preventDefault()
+                  void submitRealGuidance()
+                }
+              }}
+              autoSize={{ minRows: 4, maxRows: 7 }}
+              placeholder="例如：先不要采用媒体转述，优先回到公司公告核对；收入和利润请统一按同一报告期比较……"
+            />
+          </div>
+        </Modal>
       </div>
     )
   }

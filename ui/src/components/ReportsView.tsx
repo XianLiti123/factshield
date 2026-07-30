@@ -1,10 +1,17 @@
 import { BarChartOutlined, CheckCircleFilled, DownloadOutlined, EyeOutlined, FilePdfOutlined, FileWordOutlined, HistoryOutlined, PaperClipOutlined } from '@ant-design/icons'
 import { Button, Modal, Tag, message } from 'antd'
 import { useState } from 'react'
+import ReactMarkdown, { type Components } from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type { ResearchRun } from '../types'
 import { getActiveTask, useWorkspaceStore } from '../store'
 import { StatusBadge } from './StatusBadge'
 import { getAuditLog, getReport } from '../services/api'
+
+const reportMarkdownComponents: Components = {
+  a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
+  table: ({ children }) => <div className="report-markdown-table"><table>{children}</table></div>,
+}
 
 export function ReportsView({ run }: { run: ResearchRun }) {
   const setActiveView = useWorkspaceStore((state) => state.setActiveView)
@@ -89,8 +96,10 @@ export function ReportsView({ run }: { run: ResearchRun }) {
         <div className="version-item"><i /><strong>v0.2 · 一级汇总版</strong><span>14:40</span><p>小盾完成证据汇总</p></div>
         <Button block icon={<DownloadOutlined />} onClick={downloadAudit}>下载审计日志</Button>
       </aside>
-      <Modal title={`${run.id} · Markdown 底稿`} open={reportOpen} onCancel={() => setReportOpen(false)} footer={null} width={900}>
-        <pre style={{ whiteSpace: 'pre-wrap', maxHeight: '65vh', overflow: 'auto' }}>{reportContent}</pre>
+      <Modal className="report-preview-modal" title={`${run.id} · 底稿预览`} open={reportOpen} onCancel={() => setReportOpen(false)} footer={null} width={900}>
+        <article className="report-markdown-preview">
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={reportMarkdownComponents}>{reportContent}</ReactMarkdown>
+        </article>
       </Modal>
     </div>
   )

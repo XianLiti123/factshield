@@ -9,17 +9,22 @@ import { getActiveTask, useWorkspaceStore } from '../store'
 export function ResearchHeader({ run, preview = false }: { run: ResearchRun; preview?: boolean }) {
   const activeTask = useWorkspaceStore(getActiveTask)
   const setActiveView = useWorkspaceStore((state) => state.setActiveView)
+  const persistedRunPhase = (run.status === 'review' || run.status === 'ready')
+    && (run.progress < 100 || run.claims.length === 0)
+    ? 'running'
+    : run.status
+  const displayPhase = !preview && activeTask.persisted && persistedRunPhase ? persistedRunPhase : activeTask.phase
   const phaseCopy = preview
     ? 'UI 预览'
-    : activeTask.isDemo && activeTask.phase === 'running'
+    : activeTask.isDemo && displayPhase === 'running'
       ? '演示处理中'
-      : activeTask.phase === 'running'
+      : displayPhase === 'running'
         ? '自动研究中'
-        : activeTask.phase === 'ready'
+        : displayPhase === 'ready'
           ? '底稿已就绪'
-          : activeTask.phase === 'stopped'
+          : displayPhase === 'stopped'
             ? '任务已终止'
-            : activeTask.phase === 'failed'
+            : displayPhase === 'failed'
               ? '执行失败'
               : '待人工复核'
 

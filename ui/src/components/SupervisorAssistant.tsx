@@ -1,6 +1,7 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUpOutlined,
+  BulbOutlined,
   CheckCircleFilled,
   CloseOutlined,
   FileOutlined,
@@ -9,28 +10,121 @@ import {
   PaperClipOutlined,
   RetweetOutlined,
   SafetyCertificateOutlined,
+  ToolOutlined,
 } from '@ant-design/icons'
 import { Button, Drawer, Input, Tag, message } from 'antd'
+import ReactMarkdown, { type Components } from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type { ResearchRun } from '../types'
 import { getActiveTask, useWorkspaceStore } from '../store'
-import { streamChat, uploadDocument } from '../services/api'
+import { getChatHistory, streamChat, uploadDocument } from '../services/api'
 
 type AssistantMessage = {
   id: number
   role: 'assistant' | 'user'
   content: string
+  thinking?: string
+  tools?: string[]
+  contexts?: string[]
   attachments?: AttachmentInfo[]
   replyTo?: {
     id: number
     content: string
   }
   status?: string
+  streaming?: boolean
+  restoredFromBackend?: boolean
 }
 
 type AttachmentInfo = {
   name: string
   size: number
   type: string
+}
+
+const ASSISTANT_HISTORY_KEY_PREFIX = 'factshield.assistant.history.'
+const initialAssistantMessage: AssistantMessage = {
+  id: 1,
+  role: 'assistant',
+  content: '哪条结论看着不对，直接问我就好。你也可以补充要求或让我重新找证据，当前任务和证据会自动带入对话。',
+}
+
+function getInitialAssistantMessages() {
+  return [{ ...initialAssistantMessage }]
+}
+
+function getAssistantHistoryKey(userId: number, taskId: string) {
+  return `${ASSISTANT_HISTORY_KEY_PREFIX}${userId}.${taskId}`
+}
+
+function parseAssistantMessages(stored: string | null): AssistantMessage[] {
+  if (!stored) return []
+  try {
+    const parsed = JSON.parse(stored) as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((item): item is AssistantMessage => {
+      if (!item || typeof item !== 'object') return false
+      const candidate = item as Partial<AssistantMessage>
+      return typeof candidate.id === 'number'
+        && (candidate.role === 'assistant' || candidate.role === 'user')
+        && typeof candidate.content === 'string'
+    })
+  } catch {
+    return []
+  }
+}
+
+function hasProcessDetails(message: AssistantMessage) {
+  return Boolean(message.thinking || message.tools?.length || message.contexts?.length)
+}
+
+function enrichWithLegacyDetails(current: AssistantMessage[], legacy: AssistantMessage[]) {
+  if (!legacy.some(hasProcessDetails)) return current
+  if (current.length <= 1) return legacy
+  return current.map((message) => {
+    const legacyMessage = legacy.find((item) => item.role === message.role && item.content === message.content)
+    if (!legacyMessage) return message
+    return {
+      ...message,
+      thinking: message.thinking || legacyMessage.thinking,
+      tools: message.tools?.length ? message.tools : legacyMessage.tools,
+      contexts: message.contexts?.length ? message.contexts : legacyMessage.contexts,
+      attachments: message.attachments?.length ? message.attachments : legacyMessage.attachments,
+      replyTo: message.replyTo ?? legacyMessage.replyTo,
+      restoredFromBackend: hasProcessDetails(legacyMessage) ? false : message.restoredFromBackend,
+    }
+  })
+}
+
+function loadAssistantMessages(userId: number, taskId: string): AssistantMessage[] {
+  try {
+    const scopedKey = getAssistantHistoryKey(userId, taskId)
+    const scoped = parseAssistantMessages(window.localStorage.getItem(scopedKey))
+    const legacy = parseAssistantMessages(window.localStorage.getItem(`${ASSISTANT_HISTORY_KEY_PREFIX}${taskId}`))
+    const messages = enrichWithLegacyDetails(scoped, legacy)
+    if (messages.length === 0) return getInitialAssistantMessages()
+    if (legacy.some(hasProcessDetails)) window.localStorage.setItem(scopedKey, JSON.stringify(messages))
+    return messages
+  } catch {
+    return getInitialAssistantMessages()
+  }
+}
+
+function saveAssistantMessages(userId: number, taskId: string, messages: AssistantMessage[]) {
+  try {
+    window.localStorage.setItem(getAssistantHistoryKey(userId, taskId), JSON.stringify(messages))
+  } catch {
+    // The current page still keeps the conversation when browser storage is unavailable.
+  }
+}
+
+function getRecoveredMessageContent(role: AssistantMessage['role'], content: string) {
+  if (role !== 'user') return content
+  const requestMarker = '\n\n用户要求：'
+  const requestIndex = content.indexOf(requestMarker)
+  if (requestIndex < 0) return content
+  const request = content.slice(requestIndex + requestMarker.length)
+  return request.split('\n用户补充材料摘要：')[0].trim() || content
 }
 
 function getFileExtension(fileName: string) {
@@ -46,20 +140,49 @@ function formatFileSize(size: number) {
 
 const quickRequests = ['解释当前结论', '补充取证', '调整研究范围', '修正当前表述']
 
-export function SupervisorAssistant({ run }: { run: ResearchRun }) {
+const markdownComponents: Components = {
+  a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
+  table: ({ children }) => <div className="assistant-markdown-table"><table>{children}</table></div>,
+}
+
+function MarkdownContent({ content, className }: { content: string; className: string }) {
+  return (
+    <div className={className}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{content}</ReactMarkdown>
+    </div>
+  )
+}
+
+function ToolCall({ content }: { content: string }) {
+  const separatorIndex = content.indexOf(':')
+  const name = separatorIndex > 0 ? content.slice(0, separatorIndex).trim() : content.trim()
+  const details = separatorIndex > 0 ? content.slice(separatorIndex + 1).trim() : ''
+
+  return (
+    <li>
+      <strong>{name || '工具'}</strong>
+      {details && <code>{details}</code>}
+    </li>
+  )
+}
+
+export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId: number }) {
   const [open, setOpen] = useState(false)
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<File[]>([])
   const [replyTarget, setReplyTarget] = useState<{ id: number; content: string } | null>(null)
   const [sending, setSending] = useState(false)
   const attachmentInputRef = useRef<HTMLInputElement>(null)
-  const [messages, setMessages] = useState<AssistantMessage[]>([
-    {
-      id: 1,
-      role: 'assistant',
-      content: '哪条结论看着不对，直接问我就好。你也可以补充要求或让我重新找证据，当前任务和证据会自动带入对话。',
-    },
-  ])
+  const [messages, setMessagesState] = useState<AssistantMessage[]>(() => loadAssistantMessages(userId, run.id))
+  const messagesRef = useRef(messages)
+  const setMessages = (update: (current: AssistantMessage[]) => AssistantMessage[]) => {
+    const stored = loadAssistantMessages(userId, run.id)
+    const current = stored.length > messagesRef.current.length ? stored : messagesRef.current
+    const next = update(current)
+    messagesRef.current = next
+    saveAssistantMessages(userId, run.id, next)
+    setMessagesState(next)
+  }
   const activeView = useWorkspaceStore((state) => state.activeView)
   const selectedClaimId = useWorkspaceStore(getActiveTask).selectedClaimId
   const selectedClaim = useMemo(
@@ -67,6 +190,26 @@ export function SupervisorAssistant({ run }: { run: ResearchRun }) {
     [run.claims, selectedClaimId],
   )
   const hasClaimContext = activeView === 'workbench' && selectedClaim
+
+  useEffect(() => {
+    if (loadAssistantMessages(userId, run.id).length > 1) return
+    let cancelled = false
+    getChatHistory(run.id, userId).then((history) => {
+      if (cancelled || history.length === 0) return
+      setMessages((current) => current.length > 1 ? current : [
+        ...current,
+        ...history.map((item, index): AssistantMessage => ({
+          id: index + 2,
+          role: item.role,
+          content: getRecoveredMessageContent(item.role, item.content),
+          restoredFromBackend: item.role === 'assistant',
+        })),
+      ])
+    }).catch(() => {
+      // Local history remains available if the backend cannot be reached.
+    })
+    return () => { cancelled = true }
+  }, [run.id, userId])
 
   const sendRequest = async (request: string) => {
     const content = request.trim()
@@ -82,7 +225,7 @@ export function SupervisorAssistant({ run }: { run: ResearchRun }) {
     setMessages((current) => [
       ...current,
       { id: timestamp, role: 'user', content: userContent, attachments: attachmentInfos, replyTo: replyTarget ?? undefined },
-      { id: timestamp + 1, role: 'assistant', content: '', status: '小盾正在想…' },
+      { id: timestamp + 1, role: 'assistant', content: '', status: '正在理解你的问题…', streaming: true },
     ])
     setInput('')
     setReplyTarget(null)
@@ -93,24 +236,39 @@ export function SupervisorAssistant({ run }: { run: ResearchRun }) {
       const attachmentContext = converted.length > 0
         ? `\n用户补充材料摘要：\n${converted.map((item) => `【${item.filename}】\n${item.content}`).join('\n\n')}`
         : ''
-      await streamChat(`${context}\n\n用户要求：${userContent}${attachmentContext}`, run.id, (event) => {
+      await streamChat(`${context}\n\n用户要求：${userContent}${attachmentContext}`, run.id, userId, (event) => {
         if (event.type === 'error') throw new Error(event.content || '对话失败')
-        setMessages((current) => current.map((item) => item.id === timestamp + 1
-          ? event.type === 'token'
-            ? { ...item, content: item.content + event.content, status: undefined }
-            : event.type === 'tool' || event.type === 'think' || event.type === 'context'
-              ? { ...item, status: event.type === 'tool' ? `正在使用工具：${event.content}` : event.type === 'context' ? event.content : '小盾正在分析…' }
-              : item
-          : item))
+        setMessages((current) => current.map((item) => {
+          if (item.id !== timestamp + 1) return item
+          if (event.type === 'token') {
+            return { ...item, content: item.content + event.content, status: undefined }
+          }
+          if (event.type === 'think') {
+            return { ...item, thinking: `${item.thinking ?? ''}${event.content}`, status: undefined }
+          }
+          if (event.type === 'tool') {
+            return { ...item, tools: [...(item.tools ?? []), event.content], status: undefined }
+          }
+          if (event.type === 'context') {
+            return { ...item, contexts: [...(item.contexts ?? []), event.content], status: undefined }
+          }
+          if (event.type === 'done') return { ...item, streaming: false, status: undefined }
+          return item
+        }))
       })
-      setMessages((current) => current.map((item) => item.id === timestamp + 1 && !item.content
-        ? { ...item, content: '这次没有返回正文，请检查模型配置后重试。', status: undefined }
+      setMessages((current) => current.map((item) => item.id === timestamp + 1
+        ? {
+            ...item,
+            content: item.content || '这次没有返回正文，请检查模型配置后重试。',
+            status: undefined,
+            streaming: false,
+          }
         : item))
       setAttachments([])
     } catch (error) {
       const errorText = error instanceof Error ? error.message : '对话失败'
       setMessages((current) => current.map((item) => item.id === timestamp + 1
-        ? { ...item, content: `没能完成这次请求：${errorText}`, status: undefined }
+        ? { ...item, content: `没能完成这次请求：${errorText}`, status: undefined, streaming: false }
         : item))
       message.error(errorText)
     } finally {
@@ -127,6 +285,8 @@ export function SupervisorAssistant({ run }: { run: ResearchRun }) {
     })
     if (attachmentInputRef.current) attachmentInputRef.current.value = ''
   }
+
+  if (activeView === 'tasks' || activeView === 'settings') return null
 
   return (
     <>
@@ -151,7 +311,7 @@ export function SupervisorAssistant({ run }: { run: ResearchRun }) {
           <div className="assistant-context-heading"><span>当前上下文</span><Tag icon={<CheckCircleFilled />}>已自动绑定</Tag></div>
           <strong>{run.title}</strong>
           {hasClaimContext && <p><FileSearchOutlined /> C{String(selectedClaim.index).padStart(2, '0')} · {selectedClaim.statement}</p>}
-          {!hasClaimContext && <p>任务编号 {run.id} · 当前页面：{activeView === 'tasks' ? '开始研究' : activeView === 'reports' ? '研究底稿' : '研究辅助视图'}</p>}
+          {!hasClaimContext && <p>任务编号 {run.id} · 当前页面：{activeView === 'reports' ? '研究底稿' : '研究辅助视图'}</p>}
         </div>
 
         <div className="assistant-isolation-note">
@@ -176,8 +336,42 @@ export function SupervisorAssistant({ run }: { run: ResearchRun }) {
                     <div><strong>追问小盾</strong><span>{message.replyTo.content}</span></div>
                   </div>
                 )}
-                <p>{message.content}</p>
-                {message.status && <small>{message.status}</small>}
+                {message.role === 'user' && <p>{message.content}</p>}
+                {message.role === 'assistant' && (
+                  <div className="assistant-response">
+                    {message.contexts && message.contexts.length > 0 && (
+                      <div className="assistant-context-notices">
+                        {message.contexts.map((notice, index) => <span key={`${notice}-${index}`}>{notice}</span>)}
+                      </div>
+                    )}
+                    {message.thinking && (
+                      <section className="assistant-response-section assistant-thinking-section">
+                        <div className="assistant-response-heading">
+                          <BulbOutlined />
+                          <span>思考过程</span>
+                          {message.streaming && !message.content && <i>思考中</i>}
+                        </div>
+                        <MarkdownContent content={message.thinking} className="assistant-process-markdown" />
+                      </section>
+                    )}
+                    {message.tools && message.tools.length > 0 && (
+                      <section className="assistant-response-section assistant-tools-section">
+                        <div className="assistant-response-heading"><ToolOutlined /><span>调用工具</span></div>
+                        <ul>{message.tools.map((tool, index) => <ToolCall content={tool} key={`${tool}-${index}`} />)}</ul>
+                      </section>
+                    )}
+                    {message.content && (
+                      <section className="assistant-answer-section">
+                        <div className="assistant-answer-heading"><MessageOutlined /><span>回答</span></div>
+                        {message.restoredFromBackend && !message.thinking && !message.tools?.length && (
+                          <div className="assistant-restored-note">这条旧记录由后端恢复；当时的思考过程和工具事件未被历史接口保存。</div>
+                        )}
+                        <MarkdownContent content={message.content} className="assistant-markdown" />
+                      </section>
+                    )}
+                    {message.status && <div className="assistant-live-status"><i />{message.status}</div>}
+                  </div>
+                )}
                 {message.role === 'assistant' && (
                   <button
                     className={replyTarget?.id === message.id ? 'assistant-reply-button selected' : 'assistant-reply-button'}

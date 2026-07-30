@@ -248,9 +248,33 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     const localDemos = preserveLocalDemos
       ? state.tasks.filter((task) => task.isDemo && !task.persisted)
       : []
+    const mergedTasks = tasks.map((task) => {
+      const current = state.tasks.find((item) => item.id === task.id)
+      if (!current) return task
+
+      const merged = {
+        ...task,
+        selectedClaimId: current.selectedClaimId,
+        reviewClaimIds: current.reviewClaimIds,
+        reviewedClaimIds: current.reviewedClaimIds,
+      }
+
+      // 当前详情由 GET /tasks/:id 的完整快照驱动。任务列表只有摘要，不能在两次
+      // 详情轮询之间抢先覆盖 phase，否则会把“运行中的空主张快照”误画成复核空页。
+      if (task.id === state.activeTaskId && current.persisted) {
+        return {
+          ...merged,
+          phase: current.phase,
+          progress: current.progress,
+          claimCount: current.claimCount,
+          isDemoRunning: current.phase === 'running',
+        }
+      }
+      return merged
+    })
     const hydratedTasks = [
       ...localDemos,
-      ...tasks.filter((task) => !localDemos.some((demo) => demo.id === task.id)),
+      ...mergedTasks.filter((task) => !localDemos.some((demo) => demo.id === task.id)),
     ]
     return {
       tasks: hydratedTasks,
@@ -271,14 +295,18 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       const reviewedClaimIds = run.claims
         .filter((claim) => Boolean(claim.humanAction))
         .map((claim) => claim.id)
-      const phase: TaskPhase = run.status === 'running' || run.status === 'review' || run.status === 'ready'
+      const reportedPhase: TaskPhase = run.status === 'running' || run.status === 'review' || run.status === 'ready'
         || run.status === 'stopped' || run.status === 'failed'
         ? run.status
         : task.phase
+      const phase: TaskPhase = (reportedPhase === 'review' || reportedPhase === 'ready')
+        && (run.progress < 100 || run.claims.length === 0)
+        ? 'running'
+        : reportedPhase
       return {
         ...task,
         phase,
-        progress: run.progress,
+        progress: Math.max(task.progress ?? 0, run.progress),
         claimCount: run.claims.length,
         reviewClaimIds,
         reviewedClaimIds,
