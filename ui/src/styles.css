@@ -238,8 +238,8 @@ button { color: inherit; }
 .showcase-task-grid { margin-top: 17px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
 .showcase-task-card { height: 145px; padding: 12px; display: flex; flex-direction: column; border: 1px solid #dce7e3; border-radius: 7px; background: #fff; }
 .showcase-task-card.primary { border-color: #91c3b8; box-shadow: inset 0 3px #247a64; }
-.showcase-task-card > span { display: flex; align-items: center; gap: 4px; color: #788b86; font-size: 7px; }
-.showcase-task-card > span i { width: 5px; height: 5px; border-radius: 50%; background: #31a078; }
+.showcase-task-card > span { display: inline-flex; align-items: center; gap: 5px; color: #788b86; font-size: 7px; line-height: 1.35; }
+.showcase-task-card > span i { width: 5px; height: 5px; display: block; flex: 0 0 5px; border-radius: 50%; background: #31a078; }
 .showcase-task-card:nth-child(2) > span i { background: #d99b3b; }
 .showcase-task-card:nth-child(3) > span i { background: #6e9890; }
 .showcase-task-card > strong { margin-top: 10px; color: #29453f; font-size: 9px; line-height: 1.55; }
@@ -383,8 +383,8 @@ button { color: inherit; }
 
 .main-column { flex: 1; margin-left: 226px; min-width: 954px; }
 .topbar { height: 49px; background: #fff; border-bottom: 1px solid #e7eaf1; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; position: sticky; top: 0; z-index: 10; }
-.environment-pill { color: #68738a; font-size: 11px; display: flex; align-items: center; gap: 7px; background: #f6f8fb; border: 1px solid #e7eaf1; padding: 5px 9px; border-radius: 15px; }
-.environment-pill > span { width: 6px; height: 6px; border-radius: 50%; background: #2cac7c; }
+.environment-pill { color: #68738a; font-size: 11px; display: inline-flex; align-items: center; gap: 8px; background: #f6f8fb; border: 1px solid #e7eaf1; padding: 5px 9px; border-radius: 15px; line-height: 1.35; }
+.environment-pill > span { width: 6px; height: 6px; display: block; flex: 0 0 6px; border-radius: 50%; background: #2cac7c; }
 .topbar-actions { color: #8490a7; font-size: 10px; display: flex; align-items: center; gap: 12px; }
 .topbar-separator { height: 18px; width: 1px; background: #e5e8ee; }
 .content { padding: 0 22px 26px; max-width: 1780px; margin: 0 auto; }
@@ -440,13 +440,16 @@ button { color: inherit; }
 .claim-score { margin-left: auto; font-size: 10px; color: #6c778d; font-weight: 600; }
 .claim-item p { margin: 8px 0 9px; font-size: 11px; line-height: 1.55; color: #303c52; }
 .claim-item-footer { display: flex; justify-content: space-between; color: #9aa3b4; font-size: 9px; }
-.status-badge { display: inline-flex; align-items: center; gap: 5px; border-radius: 12px; padding: 3px 8px; font-size: 10px; font-weight: 500; white-space: nowrap; }
+.status-badge { display: inline-flex; align-items: center; gap: 6px; border-radius: 12px; padding: 3px 8px; font-size: 10px; font-weight: 500; line-height: 1.35; white-space: nowrap; }
+.status-badge > .anticon { margin: 0; display: inline-flex; align-items: center; justify-content: center; line-height: 1; }
+.status-badge > span:last-child { line-height: 1.35; }
 .status-badge.compact { padding: 2px 6px; font-size: 8px; gap: 3px; }
 .status-badge.verified { color: #157958; background: #eaf7f1; border: 1px solid #bde2d3; }
 .status-badge.review { color: #a8670c; background: #fff7e7; border: 1px solid #f0d7a5; }
 .status-badge.conflict { color: #bc3f45; background: #fff0f0; border: 1px solid #efc1c4; }
 .panel-legend { height: 37px; display: flex; justify-content: center; align-items: center; gap: 15px; border-top: 1px solid #e8ebf1; color: #818da2; font-size: 9px; background: #fbfcfd; }
-.panel-legend i, .topology-legend i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; }
+.panel-legend > span, .topology-legend > span { display: inline-flex; align-items: center; gap: 7px; line-height: 1.35; white-space: nowrap; }
+.panel-legend i, .topology-legend i { width: 6px; height: 6px; margin: 0; display: block; flex: 0 0 6px; border-radius: 50%; }
 .panel-legend i.verified, .topology-legend i.done { background: #2aa378; }
 .panel-legend i.review { background: #d78d24; }
 .panel-legend i.conflict, .topology-legend i.warning { background: #d95157; }

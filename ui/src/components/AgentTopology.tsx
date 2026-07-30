@@ -15,7 +15,70 @@ import { Button } from 'antd'
 import { useWorkspaceStore } from '../store'
 import type { AgentInfo, ResearchRun } from '../types'
 
-type AgentNodeData = AgentInfo & { kind?: 'supervisor' | 'reviewer'; [key: string]: unknown }
+type AgentNodeData = AgentInfo & {
+  kind?: 'supervisor' | 'reviewer'
+  detailLabel: string
+  displayDetail: string
+  [key: string]: unknown
+}
+
+const agentDetailLabels: Record<string, string> = {
+  supervisor: '核验进展',
+  collector: '采集进展',
+  parser: '解析产出',
+  retriever: '取证进展',
+  scorer: '标注进展',
+  assembler: '底稿进展',
+  reviewer: '复核结论',
+}
+
+function getAgentFallbackDetail(
+  agent: AgentInfo,
+  run: ResearchRun,
+  pendingReviewCount: number,
+  conflictCount: number,
+) {
+  const isDone = agent.status === 'done'
+  const isRunning = agent.status === 'running'
+
+  switch (agent.id) {
+    case 'supervisor':
+      if (isRunning) return '正在协调当前研究链路'
+      if (isDone && pendingReviewCount > 0) return `已整理 ${run.claims.length} 条主张，${pendingReviewCount} 条待判断`
+      if (isDone) return `已完成 ${run.claims.length} 条主张的核验协调`
+      return '等待研究任务启动'
+    case 'collector':
+      if (isDone) return '公开信源采集已完成'
+      if (isRunning) return '正在采集公开信源'
+      return '等待研究拆解完成'
+    case 'parser':
+      if (isDone) return `已形成 ${run.claims.length} 条事实主张`
+      if (isRunning) return '正在解析材料并提取主张'
+      return '等待原始材料'
+    case 'retriever':
+      if (isDone) return `已绑定 ${run.evidence.length} 条原文证据`
+      if (isRunning) return '正在为主张定位原文证据'
+      return '等待主张提取完成'
+    case 'scorer':
+      if (isDone) return `已完成 ${run.evidence.length} 条证据的来源标注`
+      if (isRunning) return '正在标注信源类型与可信度'
+      return '等待证据检索完成'
+    case 'assembler':
+      if (isDone) return '研究底稿已生成'
+      if (isRunning) return '正在组装主张、证据与复核记录'
+      return '等待双层核验完成'
+    case 'reviewer':
+      if (agent.status === 'warning' && conflictCount > 0) return `发现 ${conflictCount} 条高度存疑主张`
+      if (isDone && pendingReviewCount > 0) return `独立复核完成，${pendingReviewCount} 条留待判断`
+      if (isDone) return '独立复核已完成，未发现待处理冲突'
+      if (isRunning) return '正在独立检查事实与证据'
+      return '等待一级核验完成'
+    default:
+      if (isDone) return '当前环节已完成'
+      if (isRunning) return '当前环节正在处理'
+      return '等待前序环节完成'
+  }
+}
 
 function AgentNode({ data }: NodeProps<Node<AgentNodeData>>) {
   const displayName = data.name.replace(/\s*SubAgent$/, '')
@@ -42,7 +105,7 @@ function AgentNode({ data }: NodeProps<Node<AgentNodeData>>) {
         <div className="agent-node-copy"><strong>{displayName}</strong><span>{data.role}</span></div>
         <i>{statusIcon}</i>
       </div>
-      <div className="agent-node-detail"><span>执行结果</span><strong>{data.detail}</strong></div>
+      <div className="agent-node-detail"><span>{data.detailLabel}</span><strong>{data.displayDetail}</strong></div>
       <div className="agent-node-footer"><span className={`agent-status-label ${data.status}`}>{statusLabel}</span><span>{data.duration ? `耗时 ${data.duration}` : '尚未启动'}</span></div>
       <Handle type="source" position={Position.Bottom} />
     </div>
@@ -63,22 +126,31 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
 
   const { nodes, edges } = useMemo(() => {
     const find = (id: string) => run.agents.find((agent) => agent.id === id)!
-    const asNodeData = (agent: AgentInfo): AgentNodeData => ({
-      ...agent,
+    const asNodeData = (agent: AgentInfo, kind?: 'supervisor' | 'reviewer'): AgentNodeData => {
       // 后端的 reviewer warning 可能来自历史复核事件；当前没有未处理冲突时，
       // 独立复核已经完成，不能继续在执行监控中显示为阻塞节点。
-      status: agent.id === 'reviewer' && agent.status === 'warning' && conflictCount === 0
+      const status = agent.id === 'reviewer' && agent.status === 'warning' && conflictCount === 0
         ? 'done'
-        : agent.status,
-    })
+        : agent.status
+      const normalizedAgent = { ...agent, status }
+
+      return {
+        ...normalizedAgent,
+        kind,
+        detailLabel: agentDetailLabels[agent.id] ?? '当前进展',
+        displayDetail: agent.detail.trim()
+          || getAgentFallbackDetail(normalizedAgent, run, pendingReviewClaims.length, conflictCount),
+      }
+    }
+    const rowGap = 170
     const topologyNodes: Node<AgentNodeData>[] = [
-      { id: 'supervisor', type: 'agent', position: { x: 300, y: 0 }, data: { ...find('supervisor'), kind: 'supervisor' } },
-      { id: 'collector', type: 'agent', position: { x: 0, y: 150 }, data: asNodeData(find('collector')) },
-      { id: 'parser', type: 'agent', position: { x: 300, y: 150 }, data: asNodeData(find('parser')) },
-      { id: 'retriever', type: 'agent', position: { x: 600, y: 150 }, data: asNodeData(find('retriever')) },
-      { id: 'scorer', type: 'agent', position: { x: 0, y: 300 }, data: asNodeData(find('scorer')) },
-      { id: 'assembler', type: 'agent', position: { x: 300, y: 300 }, data: asNodeData(find('assembler')) },
-      { id: 'reviewer', type: 'agent', position: { x: 300, y: 460 }, data: { ...asNodeData(find('reviewer')), kind: 'reviewer' } },
+      { id: 'supervisor', type: 'agent', position: { x: 300, y: 0 }, data: asNodeData(find('supervisor'), 'supervisor') },
+      { id: 'collector', type: 'agent', position: { x: 0, y: rowGap }, data: asNodeData(find('collector')) },
+      { id: 'parser', type: 'agent', position: { x: 300, y: rowGap }, data: asNodeData(find('parser')) },
+      { id: 'retriever', type: 'agent', position: { x: 600, y: rowGap }, data: asNodeData(find('retriever')) },
+      { id: 'scorer', type: 'agent', position: { x: 0, y: rowGap * 2 }, data: asNodeData(find('scorer')) },
+      { id: 'assembler', type: 'agent', position: { x: 300, y: rowGap * 2 }, data: asNodeData(find('assembler')) },
+      { id: 'reviewer', type: 'agent', position: { x: 300, y: rowGap * 3 }, data: asNodeData(find('reviewer'), 'reviewer') },
     ]
 
     const normalStyle = { stroke: '#79aaa4', strokeWidth: 1.6 }
@@ -104,7 +176,7 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
       }] : []),
     ]
     return { nodes: topologyNodes, edges: topologyEdges }
-  }, [conflictCount, run.agents])
+  }, [conflictCount, pendingReviewClaims.length, run.agents, run.claims.length, run.evidence.length])
 
   return (
     <div className="page-card topology-page">
