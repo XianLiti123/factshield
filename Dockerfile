@@ -1,0 +1,35 @@
+# FactShield 整体镜像（前端构建 + FastAPI 后端 + Agent 引擎）
+# 构建：docker build -t factshield-api .
+# 运行见 README.md「Docker 部署」一节
+
+# ---- 阶段一：构建前端静态产物（pnpm 11 依赖 node:sqlite，需 Node 22+） ----
+FROM node:22-alpine AS ui-build
+WORKDIR /ui
+COPY ui/package.json ui/pnpm-lock.yaml ui/pnpm-workspace.yaml ./
+# NPM_REGISTRY 构建参数可指定 npm 镜像（默认官方源）
+ARG NPM_REGISTRY=""
+RUN corepack enable && pnpm install --frozen-lockfile ${NPM_REGISTRY:+--registry=$NPM_REGISTRY}
+COPY ui ./
+RUN pnpm build
+
+# ---- 阶段二：后端运行环境（FastAPI + Agent，托管前端产物） ----
+FROM python:3.13-slim
+
+WORKDIR /app
+
+# 先装依赖，利用镜像层缓存；PIP_INDEX_URL 构建参数可指定 PyPI 镜像（默认官方源）
+ARG PIP_INDEX_URL=""
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL}
+
+COPY agent ./agent
+COPY api ./api
+COPY --from=ui-build /ui/dist ./ui/dist
+
+# 运行期数据（会话库/检查点/向量库/master key）落在以下目录，容器外应挂卷持久化：
+#   /app/agent/session   /app/agent/memory
+EXPOSE 8000
+
+# 全局密钥一律经环境变量注入（见 README），不要使用 .env 文件打入镜像
+# 单容器同时提供：前端页面 /、API /api/*（根路径 /* 同样可用）、Agent 能力内嵌于后端进程
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

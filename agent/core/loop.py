@@ -50,7 +50,7 @@ def build_graph(with_subagent:bool,with_checkpointer:bool=False):
         names = state.get("active_toolsets") or ["terminal"]#type:ignore #当前激活的工具集，默认终端
         tools = resident+[t for n in names for t in toolsets.get(n,[])]#元工具常驻，其余按激活状态动态绑定
         client = get_llm_client(state["user_id"])#按当前用户装配（user_id 随图输入传入，线程安全）
-        response = client.llm.bind_tools(tools).invoke(state["messages"])
+        response = client.invoke(state["messages"], tools=tools)
         return {"messages":[response]}
 
     agentloop = StateGraph(AgentState)#绑定state状态

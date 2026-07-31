@@ -7,6 +7,7 @@ from langchain_core.messages import HumanMessage,SystemMessage,BaseMessage,ToolM
 from .core.loop import graph,get_stream_config
 from .core.context import estimate_tokens,needs_compaction,compact_messages
 from .core.prompt import build_system_prompt
+from .failures import retry_call
 from .session import store as session_store
 from .session.users import ensure_admin, get_user
 
@@ -107,9 +108,13 @@ class Agent:
             raise RuntimeError("有暂停中的轮次，请先 resume 或 abort")
         self._maybe_compact()
         self.messages.append(HumanMessage(content=user_input))
-        result = self.graph.invoke({
-            "messages":self.messages,"active_toolsets":self.active_toolsets,"user_id":self.user_id
-        },config=get_stream_config(self.session_id,self._turn_seq+1))#type:ignore
+        result = retry_call(
+            lambda: self.graph.invoke({  #type:ignore
+                "messages": self.messages, "active_toolsets": self.active_toolsets,
+                "user_id": self.user_id, "session_id": self.session_id,
+            }, config=get_stream_config(self.session_id, self._turn_seq + 1)),
+            attempts=2, base_delay=1.0,
+        )
         self.messages = result["messages"]
         self.active_toolsets = result.get("active_toolsets",self.active_toolsets)
         self._update_context_tokens(result["messages"])
@@ -180,7 +185,8 @@ class Agent:
         self._paused = False
         thread_id = get_stream_config(self.session_id,self._turn_seq+1)["configurable"]["thread_id"]
         stream = self.graph.stream(
-            {"messages":self.messages,"active_toolsets":self.active_toolsets,"user_id":self.user_id},
+            {"messages":self.messages,"active_toolsets":self.active_toolsets,
+             "user_id":self.user_id,"session_id":self.session_id},
             config=get_stream_config(self.session_id,self._turn_seq+1),
             stream_mode=["messages","updates"]
         )#type:ignore

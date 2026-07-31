@@ -137,6 +137,9 @@ def resume(session_id: str, user_id: int = Depends(get_current_user)) -> Streami
                     yield sse_event(kind, text)
                 yield sse_event("done")
             except Exception as e:
+                from agent.failures import format_traceback, record_error
+                record_error(user_id, "chat", session_id, error=str(e), node="resume",
+                             traceback=format_traceback(), auto_repair=False)
                 yield sse_event("error", str(e))
             finally:
                 unmark_running(session_id)

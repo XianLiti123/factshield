@@ -15,8 +15,10 @@ def _load_master_key() -> bytes:
     #缺省时从本地文件读取，文件不存在则生成一把新 key 存入（权限 0o600，Windows 上 chmod 无效则忽略）
     env_key = os.getenv("FS_MASTER_KEY")
     if env_key:
+        logger.info("master key 来自环境变量 FS_MASTER_KEY")
         return env_key.encode()
     if _KEY_FILE.exists():
+        logger.info("master key 来自本地文件 %s", _KEY_FILE)
         return _KEY_FILE.read_bytes().strip()
     key = Fernet.generate_key()
     _KEY_FILE.write_bytes(key)
@@ -24,11 +26,18 @@ def _load_master_key() -> bytes:
         os.chmod(_KEY_FILE, 0o600)
     except OSError:
         pass
-    logger.warning("已自动生成 master key 存于 %s；生产环境请改用 FS_MASTER_KEY 环境变量注入", _KEY_FILE)
+    logger.warning("已自动生成 master key 存于 %s；生产环境请改用 FS_MASTER_KEY 环境变量注入，"
+                   "并确保该文件随数据卷持久化（丢失后已保存的 api_key 将无法解密）", _KEY_FILE)
     return key
 
 
-_fernet = Fernet(_load_master_key())
+try:
+    _fernet = Fernet(_load_master_key())
+except (ValueError, TypeError) as e:
+    raise RuntimeError(
+        f"FS_MASTER_KEY 非法，无法初始化加密器（需 32 字节 urlsafe-base64 编码的 Fernet key，"
+        f"可用 `python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\"` 生成）: {e}"
+    ) from e
 
 
 def encrypt(plain: str) -> str:

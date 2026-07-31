@@ -4,8 +4,10 @@ from typing import Callable
 from langchain_core.messages import HumanMessage
 
 from ..core.loop import get_llm_client
+from ..searchengine import search as web_search
+from ..session.search_config import get_engine
 from . import prompts, store
-from .pipeline import _llm_json, _search
+from .pipeline import _llm_json
 
 #历史情景时序统计单元（方案 SubAgent 6）：
 #只做公开时序数据的查询与客观统计，禁止总结规律、预判趋势、给出解读结论。
@@ -101,8 +103,8 @@ def run_history_analysis(task_id: str, user_id: int, emit: Callable, config: dic
     for e in planned:
         name = str(e.get("name", ""))
         try:
-            result = _search.invoke({"query": str(e["search_query"])})
-            items = result.get("results", []) if isinstance(result, dict) else []
+            items = web_search(str(e["search_query"]), get_engine(user_id),
+                               max_results=5, user_id=user_id)
         except Exception:
             items = []
         search_text = "\n\n".join(

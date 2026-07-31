@@ -15,7 +15,7 @@ def web_search(query: str, user_id: Annotated[int, InjectedState("user_id")] = N
     """当需要查询最新资讯、实时信息或不确定的事实时，联网搜索并返回相关结果"""
     engine = get_engine(user_id)
     try:
-        items = search(query, engine, max_results=5)
+        items = search(query, engine, max_results=5, user_id=user_id)
     except Exception as e:
         return f"搜索失败（引擎：{engine}）: {e}"
 
@@ -31,7 +31,7 @@ def web_extract(url: str, user_id: Annotated[int, InjectedState("user_id")] = No
     """打开指定网址，提取网页正文内容。当搜索结果摘要不够详细、需要阅读网页全文时使用"""
     engine = get_engine(user_id)
     try:
-        content = extract(url, engine)
+        content = extract(url, engine, user_id=user_id)
     except Exception as e:
         return f"网页读取失败（引擎：{engine}）: {e}"
     return content[:3000] or "网页内容为空"  #正文限3000字，防止上下文过长

@@ -31,10 +31,28 @@ def save_config(user_id: int, slot: str, base_url: str, api_key: str, model_name
         invalidate_llm_cache(user_id)
     except ImportError:
         pass  #loop 模块尚在加载中（如迁移阶段），此时缓存必然为空，跳过即可
+    try:
+        from ..tools.convert import invalidate_vision_cache  #延迟导入，避免循环依赖
+        invalidate_vision_cache(user_id)
+    except ImportError:
+        pass  #convert 模块尚在加载中，视觉缓存必然为空，跳过即可
+
+
+def _safe_decrypt(cipher: str) -> str | None:
+    #解密密文字符串；master key 变更或密文损坏时返回 None 并给出可诊断日志（不抛异常打死调用链）
+    try:
+        return decrypt(cipher)
+    except Exception as e:  # noqa: BLE001
+        logger.error(
+            "api_key 解密失败（FS_MASTER_KEY 变更或密文损坏？），该配置按未配置处理，"
+            "请在设置页重新填写模型配置: %s", e
+        )
+        return None
 
 
 def get_config(user_id: int, slot: str) -> dict | None:
-    #读取用户某槽位的配置并解密 api_key，仅供服务端内部装配使用，严禁经接口外发
+    #读取用户某槽位的配置并解密 api_key，仅供服务端内部装配使用，严禁经接口外发；
+    #解密失败（master key 不匹配）时返回 None，由调用方按"未配置"给出提示
     with get_connection() as conn:
         row = conn.execute(
             "SELECT base_url, api_key_enc, model_name FROM user_model_configs WHERE user_id=? AND slot=?",
@@ -42,7 +60,10 @@ def get_config(user_id: int, slot: str) -> dict | None:
         ).fetchone()
     if row is None:
         return None
-    return {"base_url": row["base_url"], "api_key": decrypt(row["api_key_enc"]), "model_name": row["model_name"]}
+    api_key = _safe_decrypt(row["api_key_enc"])
+    if api_key is None:
+        return None
+    return {"base_url": row["base_url"], "api_key": api_key, "model_name": row["model_name"]}
 
 
 def _mask(api_key: str) -> str:
@@ -62,7 +83,7 @@ def get_masked_configs(user_id: int) -> dict[str, dict]:
         if row:
             result[slot] = {
                 "base_url": row["base_url"],
-                "api_key": _mask(decrypt(row["api_key_enc"])),
+                "api_key": _mask(_safe_decrypt(row["api_key_enc"]) or ""),  #解密失败显示 ***
                 "model_name": row["model_name"],
                 "updated_at": row["updated_at"],
             }

@@ -1,0 +1,23 @@
+# 便捷方式，非必需；根目录 Dockerfile 单独可用
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    # 全局密钥经环境变量注入：可直接 environment 列出，也可用 env_file 指向一份不入库的 .env；
+    # .env 为可选项（required: false）：没有 .env 也能启动，用户可在前端设置页自行配置模型密钥
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # 加密 master key：注入后换机/重建容器也能解开存量密文；不注入则自动生成并随数据卷持久化
+      FS_MASTER_KEY: ${FS_MASTER_KEY:-}
+    volumes:
+      # 会话库/检查点/master key 与知识库/向量库必须持久化，否则重建容器后账号与密文配置全部丢失
+      - factshield-session:/app/agent/session
+      - factshield-memory:/app/agent/memory
+    restart: unless-stopped
+
+volumes:
+  factshield-session:
+  factshield-memory:

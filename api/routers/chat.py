@@ -37,6 +37,10 @@ def chat_stream(request: ChatRequest, user_id: int = Depends(get_current_user)) 
                     yield sse_event(kind, text)
                 yield sse_event("done")
             except Exception as e:
+                #执行失败登记到错误库（可经 /errors 查看，或触发修复重跑该轮）
+                from agent.failures import format_traceback, record_error
+                record_error(user_id, "chat", session_id, error=str(e), node="chat",
+                             prompt=request.message, traceback=format_traceback(), auto_repair=False)
                 yield sse_event("error", str(e))
             finally:
                 unmark_running(session_id)

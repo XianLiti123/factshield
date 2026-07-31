@@ -18,21 +18,30 @@ _HEADERS = {
     "Accept-Language": "zh-CN,zh;q=0.9",
 }
 
-_tavily_search = None
-_tavily_extract = None
+_tavily_clients: dict[str, tuple] = {}
 
 
-def _get_tavily():
-    #Tavily 客户端惰性装配：未配置 key 时明确报错（用户选择了 tavily 就必须用 tavily）
-    global _tavily_search, _tavily_extract
-    if not config.TAVILY_API_KEY:
-        raise RuntimeError("当前搜索引擎为 Tavily，但服务端未配置 TAVILY_API_KEY；"
-                           "请运维在 .env 配置后重启服务，或在设置中改用 Python 搜索引擎")
-    if _tavily_search is None or _tavily_extract is None:
+def _get_tavily(api_key: str):
+    #Tavily 客户端按 key 惰性装配并缓存：key 为空时明确报错（用户选择了 tavily 就必须有 key）
+    global _tavily_clients
+    if not api_key:
+        raise RuntimeError("当前搜索引擎为 Tavily，但未配置 Tavily API Key；"
+                           "请在设置中填写 API Key，或改用 Python 搜索引擎")
+    if api_key not in _tavily_clients:
         from langchain_tavily import TavilyExtract, TavilySearch
-        _tavily_search = TavilySearch(max_results=5)
-        _tavily_extract = TavilyExtract()
-    return _tavily_search, _tavily_extract
+        _tavily_clients[api_key] = (
+            TavilySearch(max_results=5, api_key=api_key),
+            TavilyExtract(api_key=api_key),
+        )
+    return _tavily_clients[api_key]
+
+
+def _resolve_api_key(user_id: int | None) -> str:
+    #搜索引擎 key 解析：用户级 Tavily key 优先，缺省回退 .env（search_config 内部已回退）
+    if user_id is None:
+        return config.TAVILY_API_KEY or ""
+    from .session.search_config import get_search_config  #延迟导入，避免循环依赖
+    return get_search_config(user_id)["api_key"] or ""
 
 
 def _bing_search(query: str, max_results: int) -> list[dict]:
@@ -69,10 +78,10 @@ def _html_text(html: str) -> str:
     return soup.get_text(separator="\n", strip=True)
 
 
-def search(query: str, engine: str, max_results: int = 5) -> list[dict]:
+def search(query: str, engine: str, max_results: int = 5, user_id: int | None = None) -> list[dict]:
     #统一搜索入口，返回 [{"title","url","content"}]；失败抛异常由调用方处理
     if engine == "tavily":
-        tavily, _ = _get_tavily()
+        tavily, _ = _get_tavily(_resolve_api_key(user_id))
         result = tavily.invoke({"query": query})
         items = result.get("results", []) if isinstance(result, dict) else []
         return [{"title": i.get("title", ""), "url": i.get("url", ""),
@@ -82,10 +91,10 @@ def search(query: str, engine: str, max_results: int = 5) -> list[dict]:
     raise ValueError(f"无效的搜索引擎: {engine}，可选: {ENGINES}")
 
 
-def extract(url: str, engine: str) -> str:
+def extract(url: str, engine: str, user_id: int | None = None) -> str:
     #统一网页正文提取入口，失败抛异常由调用方处理（调用方一般退化为搜索摘要）
     if engine == "tavily":
-        _, tavily_ext = _get_tavily()
+        _, tavily_ext = _get_tavily(_resolve_api_key(user_id))
         result = tavily_ext.invoke({"urls": [url]})
         pages = result.get("results", []) if isinstance(result, dict) else []
         return str(pages[0].get("raw_content", "")) if pages else ""

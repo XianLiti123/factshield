@@ -1,9 +1,12 @@
+import logging
 import uuid
 from pathlib import Path
 from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from ...config import EMBEDDING_API_KEY,EMBEDDING_BASE_URL,EMBEDDING_MODEL
+
+logger = logging.getLogger(__name__)
 
 #向量库持久化目录，与本模块同目录
 PERSIST_DIR = str(Path(__file__).parent / "chroma_db")
@@ -55,6 +58,21 @@ def search(query:str,k:int=5)->list[str]:
     store = _get_store()
     docs = store.similarity_search(query,k=k)
     return [doc.page_content for doc in docs]
+
+
+def delete_documents(group_id_prefix:str|None=None)->None:
+    #按组前缀删除向量块（如 task:FS-2026-001: 清理某任务的全部素材），
+    #供任务重启（自动修复）时清空失败产生的半成品；embedding 未配置或删除失败时静默跳过
+    if _embeddings is None or not group_id_prefix:
+        return
+    try:
+        collection = _get_store()._chroma_collection  #type:ignore #直接操作底层集合，支持 where 过滤
+        hits = collection.get(where={"group_id": {"$contains": group_id_prefix}}, include=[])  #type:ignore
+        ids = hits.get("ids", []) if hits else []
+        if ids:
+            collection.delete(ids=ids)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("向量库删除 %s 失败: %s", group_id_prefix, e)
 
 
 if __name__ == "__main__":

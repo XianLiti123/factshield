@@ -7,3 +7,4 @@ def _merge_toolsets(a:list[str],b:list[str])->list[str]:
 class AgentState(MessagesState):
     active_toolsets: Annotated[list[str],_merge_toolsets]#已激活的工具集，累积语义
     user_id: int#当前用户，供图内节点/工具按用户装配（LLM client、画像、视觉模型）
+    session_id: str|None = None#当前会话 id，供子代理等工具定位归属（错误登记/修复用）

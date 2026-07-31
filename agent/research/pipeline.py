@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 from typing import Any, Callable, TypedDict
 
 from langchain_core.messages import HumanMessage
@@ -43,12 +44,12 @@ MAX_DEEPEN_CLAIMS = 4   #单次定向深挖的主张上限（按证据薄弱程�
 
 def _web_search(query: str, user_id: int, max_results: int = 3) -> list[dict]:
     #按用户选择的搜索引擎联网检索，返回 [{"title","url","content"}]；失败抛异常由调用方降级
-    return search(query, get_engine(user_id), max_results=max_results)
+    return search(query, get_engine(user_id), max_results=max_results, user_id=user_id)
 
 
 def _web_extract(url: str, user_id: int) -> str:
     #按用户选择的搜索引擎提取网页正文；失败抛异常由调用方退化为搜索摘要
-    return extract(url, get_engine(user_id))
+    return extract(url, get_engine(user_id), user_id=user_id)
 
 
 class TaskStopped(Exception):
@@ -71,6 +72,39 @@ class ResearchState(TypedDict, total=False):
     retry_count: int
     need_retry: bool
     guidance: list[str]       #研究员中途介入指令（各节点边界消费并累计，verify 统一拼入提示词）
+
+
+#节点（子智能体）重试机制：单节点失败按固定退避重启该节点（子智能体），重试耗尽后抛出
+#NodeFailedError，由 runner 记录错误并触发流程级自动修复（重启整条流水线）
+NODE_MAX_ATTEMPTS = 3              #单节点最大执行次数（1 次首次 + 2 次重试）
+NODE_RETRY_DELAYS = (1.0, 2.0)     #逐次退避间隔（秒）
+
+
+class NodeFailedError(Exception):
+    #携带失败节点名与总尝试次数的包装异常，供 runner 记录错误与自动修复
+    def __init__(self, node: str, cause: Exception, attempts: int):
+        super().__init__(f"节点 {node} 执行失败: {cause}")
+        self.node = node
+        self.cause = cause
+        self.attempts = attempts
+
+
+def _node_with_retry(node: str, fn: Callable[[ResearchState, RunnableConfig], dict]) -> Callable:
+    #给节点包一层重试：失败即重启该节点，重试耗尽抛 NodeFailedError；手动终止不重试
+    def wrapped(state: ResearchState, config: RunnableConfig) -> dict:
+        last: Exception | None = None
+        for attempt in range(NODE_MAX_ATTEMPTS):
+            _check_stop(config)
+            try:
+                return fn(state, config)
+            except TaskStopped:
+                raise
+            except Exception as e:  # noqa: BLE001
+                last = e
+                if attempt < NODE_MAX_ATTEMPTS - 1:
+                    time.sleep(NODE_RETRY_DELAYS[min(attempt, len(NODE_RETRY_DELAYS) - 1)])
+        raise NodeFailedError(node, last, NODE_MAX_ATTEMPTS) from last  # type: ignore[arg-type]
+    return wrapped
 
 
 def _emit(config: RunnableConfig, actor: str, kind: str, **payload) -> None:
@@ -730,15 +764,15 @@ def retry_single_claim(task_id: str, claim_id: str, emit: Callable, llm: ChatCli
 
 def build_research_graph():
     g = StateGraph(ResearchState)
-    g.add_node("plan", plan_node)
-    g.add_node("collect", collect_node)
-    g.add_node("parse", parse_node)
-    g.add_node("retrieve", retrieve_node)
-    g.add_node("deepen", deepen_node)
-    g.add_node("score", score_node)
-    g.add_node("verify", verify_node)
-    g.add_node("review", review_node)
-    g.add_node("assemble", assemble_node)
+    g.add_node("plan", _node_with_retry("plan", plan_node))
+    g.add_node("collect", _node_with_retry("collect", collect_node))
+    g.add_node("parse", _node_with_retry("parse", parse_node))
+    g.add_node("retrieve", _node_with_retry("retrieve", retrieve_node))
+    g.add_node("deepen", _node_with_retry("deepen", deepen_node))
+    g.add_node("score", _node_with_retry("score", score_node))
+    g.add_node("verify", _node_with_retry("verify", verify_node))
+    g.add_node("review", _node_with_retry("review", review_node))
+    g.add_node("assemble", _node_with_retry("assemble", assemble_node))
     g.set_entry_point("plan")
     g.add_edge("plan", "collect")
     g.add_edge("collect", "parse")

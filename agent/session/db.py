@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS user_data_sources (
 CREATE TABLE IF NOT EXISTS user_search_settings (
     user_id INTEGER PRIMARY KEY,
     engine TEXT NOT NULL DEFAULT 'tavily',
+    api_key_enc TEXT NOT NULL DEFAULT '',  -- 用户级 Tavily API key（加密入库，可空：回退 .env）
     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 -- 以下为事实核查流水线（agent/research）的结构化存储
@@ -174,6 +175,24 @@ CREATE TABLE IF NOT EXISTS history_analyses (
     attached INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
+-- 流程执行错误登记（重试/自动修复/人工修复共用，供 /errors 接口查询）
+CREATE TABLE IF NOT EXISTS flow_errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    flow_type TEXT NOT NULL,             -- chat | subagent | research | research_retry | history_analysis
+    flow_id TEXT NOT NULL,               -- 会话 session_id / 任务 task_id
+    node TEXT NOT NULL DEFAULT '',       -- 失败的节点/子智能体名（如 plan、subagent），重取证时为主张 id
+    prompt TEXT NOT NULL DEFAULT '',     -- 触发输入（重启时复用：子代理提示词/用户消息/研究主题）
+    error TEXT NOT NULL,                 -- 错误信息
+    traceback TEXT NOT NULL DEFAULT '',  -- 完整堆栈
+    attempts INTEGER NOT NULL DEFAULT 1, -- 已尝试次数（重试次数 + 1）
+    auto_repair INTEGER NOT NULL DEFAULT 0,  -- 是否带自动修复（失败后自动重启对应流程）
+    repair_count INTEGER NOT NULL DEFAULT 0, -- 已修复次数
+    status TEXT NOT NULL DEFAULT 'failed',   -- failed | repairing | repaired | repair_failed
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    repaired_at TEXT
+);
 """
 
 
@@ -205,5 +224,6 @@ def init_db() -> None:
         _add_column_if_missing(conn, "task_materials", "credibility_level", "credibility_level TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "task_materials", "content", "content TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "evidence", "credibility_level", "credibility_level TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "user_search_settings", "api_key_enc", "api_key_enc TEXT NOT NULL DEFAULT ''")
         #存量用户显示名为空时回填邮箱前缀
         conn.execute("UPDATE users SET display_name=substr(email,1,instr(email,'@')-1) WHERE display_name=''")

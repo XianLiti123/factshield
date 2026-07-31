@@ -120,6 +120,14 @@ def delete_task(task_id: str, user_id: int) -> bool:
     return True
 
 
+def reset_task_data(task_id: str) -> None:
+    #清空任务运行产生的半成品数据（素材/主张/证据），保留任务行/事件/附件；
+    #流程重启（自动修复）前调用，附件素材由 runner.reset_task 重新入库
+    with get_connection() as conn:
+        for table in ("task_materials", "claims", "evidence", "claim_evidence"):
+            conn.execute(f"DELETE FROM {table} WHERE task_id=?", (task_id,))
+
+
 # ---------------- 素材（采集到的原始资料，group_id 对应知识库向量块） ----------------
 
 def add_material(task_id: str, group_id: str, title: str, publisher: str, url: str,
@@ -157,6 +165,15 @@ def get_upload(upload_id: str, user_id: int) -> dict | None:
 def bind_upload(upload_id: str, task_id: str) -> None:
     with get_connection() as conn:
         conn.execute("UPDATE task_uploads SET task_id=? WHERE upload_id=?", (task_id, upload_id))
+
+
+def list_uploads(task_id: str) -> list[dict]:
+    #任务已绑定的附件（流程重启时按原样重新入库为素材）
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM task_uploads WHERE task_id=? ORDER BY rowid", (task_id,)
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def update_material_score(task_id: str, group_id: str, source_type: str, credibility: float,

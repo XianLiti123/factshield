@@ -20,6 +20,14 @@ _IMAGE_EXTS = {".jpg",".jpeg",".png",".gif",".bmp",".webp",".tiff"}
 _vision_clients:dict[int,tuple[OpenAI,str]] = {}
 
 
+def invalidate_vision_cache(user_id:int|None=None)->None:
+    #用户更新视觉模型配置后调用，丢弃其缓存 client（不传 user_id 时清空全部）
+    if user_id is None:
+        _vision_clients.clear()
+    else:
+        _vision_clients.pop(user_id,None)
+
+
 def _get_vision_client(user_id:int)->tuple[OpenAI,str]|None:
     #取当前用户的视觉模型客户端和模型名；未配置时返回 None
     if user_id not in _vision_clients:
