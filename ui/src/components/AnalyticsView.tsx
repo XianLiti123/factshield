@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import ReactECharts from 'echarts-for-react'
 import dayjs from 'dayjs'
+import advancedFormat from 'dayjs/plugin/advancedFormat'
+import customParseFormat from 'dayjs/plugin/customParseFormat'
+import localeData from 'dayjs/plugin/localeData'
+import weekOfYear from 'dayjs/plugin/weekOfYear'
+import weekYear from 'dayjs/plugin/weekYear'
+import weekday from 'dayjs/plugin/weekday'
 import {
   AimOutlined,
   CheckCircleFilled,
@@ -31,6 +37,16 @@ import {
   type HistoryAnalysisPoint,
   type HistoryAnalysisRequest,
 } from '../services/api'
+
+// Ant Design's date panel calls weekday/localeData on the Dayjs instance it receives.
+// The app and rc-picker can resolve separate Dayjs copies under pnpm, so extend this
+// instance explicitly before passing values to DatePicker.
+dayjs.extend(customParseFormat)
+dayjs.extend(advancedFormat)
+dayjs.extend(weekday)
+dayjs.extend(localeData)
+dayjs.extend(weekOfYear)
+dayjs.extend(weekYear)
 
 const POLL_INTERVAL = 2500
 const POLL_LIMIT = 72
@@ -216,12 +232,23 @@ function openHistorySource(value: string) {
   else message.warning('浏览器阻止了新窗口，请允许本站打开新标签页后重试')
 }
 
+function parseHistoryDate(value: string) {
+  const normalized = value.trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return null
+  const parsed = dayjs(normalized)
+  return parsed.isValid() && parsed.format('YYYY-MM-DD') === normalized ? parsed : null
+}
+
+function normalizeHistoryDate(value: string) {
+  return parseHistoryDate(value) ? value.trim() : ''
+}
+
 function normalizeHistoryAnalysisConfig(config: HistoryAnalysisConfig): HistoryAnalysisConfig {
   return {
     metric: config.metric.trim(),
     scenarios: config.scenarios.trim(),
-    start: config.start.trim(),
-    end: config.end.trim(),
+    start: normalizeHistoryDate(config.start),
+    end: normalizeHistoryDate(config.end),
     frequency: config.frequency,
   }
 }
@@ -512,18 +539,22 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
           <div className="history-date-range">
             <DatePicker
               aria-label="开始日期"
-              value={historyAnalysisConfig.start ? dayjs(historyAnalysisConfig.start) : null}
+              value={parseHistoryDate(normalizedConfig.start)}
               disabled={running}
               format="YYYY年MM月DD日"
+              inputReadOnly
+              getPopupContainer={(trigger) => trigger.parentElement ?? document.body}
               placeholder="选择开始日期"
               onChange={(value) => updateConfig('start', value?.format('YYYY-MM-DD') ?? '')}
             />
             <i>至</i>
             <DatePicker
               aria-label="结束日期"
-              value={historyAnalysisConfig.end ? dayjs(historyAnalysisConfig.end) : null}
+              value={parseHistoryDate(normalizedConfig.end)}
               disabled={running}
               format="YYYY年MM月DD日"
+              inputReadOnly
+              getPopupContainer={(trigger) => trigger.parentElement ?? document.body}
               placeholder="选择结束日期"
               onChange={(value) => updateConfig('end', value?.format('YYYY-MM-DD') ?? '')}
             />
