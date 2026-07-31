@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .routers.auth import router as auth_router
 from .routers.capabilities import router as capabilities_router
 from .routers.chat import router as chat_router
+from .routers.datasources import router as datasources_router
 from .routers.documents import router as documents_router
 from .routers.knowledge import router as knowledge_router
 from .routers.sessions import router as sessions_router
@@ -30,6 +31,7 @@ for router in (
     documents_router,
     tasks_router,
     settings_router,
+    datasources_router,
     auth_router,
 ):
     app.include_router(router)

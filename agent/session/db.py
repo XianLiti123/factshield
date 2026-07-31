@@ -55,6 +55,18 @@ CREATE TABLE IF NOT EXISTS user_model_configs (
     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     PRIMARY KEY (user_id, slot)
 );
+CREATE TABLE IF NOT EXISTS user_data_sources (
+    user_id INTEGER NOT NULL,
+    source_id TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT '',
+    mode TEXT NOT NULL DEFAULT 'http',
+    specification_enc TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY (user_id, source_id)
+);
 -- 以下为事实核查流水线（agent/research）的结构化存储
 CREATE TABLE IF NOT EXISTS research_tasks (
     task_id TEXT PRIMARY KEY,

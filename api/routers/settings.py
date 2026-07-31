@@ -21,14 +21,26 @@ class SettingsResponse(BaseModel):
     global_capabilities: dict[str, bool]
 
 
+def _efinance_available() -> bool:
+    #efinance 为爬虫库无需 key，装上即可用
+    try:
+        import efinance  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 @router.get("")
 def get_settings(user_id: int = Depends(get_current_user)) -> SettingsResponse:
     return SettingsResponse(
         configs=get_masked_configs(user_id),
         global_capabilities={
-            #embedding/reranker 为全局共享能力，只报告就绪状态，不含 key
+            #以下均为全局共享能力（.env 由运维配置），只报告就绪状态，不含 key
             "embedding": bool(env_config.EMBEDDING_API_KEY and env_config.EMBEDDING_BASE_URL and env_config.EMBEDDING_MODEL),
             "reranker": bool(env_config.RERANKER_API_KEY and env_config.RERANKER_BASE_URL and env_config.RERANKER_MODEL),
+            "tavily": bool(env_config.TAVILY_API_KEY),
+            "tickflow": bool(env_config.TICKFLOW_API_KEY),
+            "efinance": _efinance_available(),
         },
     )
 
