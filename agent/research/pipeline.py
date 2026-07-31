@@ -568,7 +568,8 @@ REVIEW_PROMPT = """你是金融事实核查任务的独立幻觉审查员，与�
 
 
 def _processing_trace(state: ResearchState) -> str:
-    #前序子智能体处理轨迹摘要：拆解/采集/提取/检索各环节的产出（审查员交叉核对用）
+    #前序子智能体处理轨迹：拆解/采集清单/提取/检索匹配/主控一级核验意见，
+    #全部显式列出，供幻觉审查员逐项交叉核对
     task_id = state["task_id"]
     lines = [
         f"1. 主控拆解：核查点 {len(state.get('checkpoints') or [])} 个；"
@@ -579,8 +580,18 @@ def _processing_trace(state: ResearchState) -> str:
     for i, m in enumerate(materials, 1):
         lines.append(f"   材料{i} [{m.get('source_type') or '网页'}] "
                      f"{m.get('title') or m.get('url')}（{m.get('publisher') or '未知来源'}）")
-    lines.append(f"3. 解析员：提取 {len(store.list_claims(task_id))} 条主张")
-    lines.append("4. 检索员：各主张证据匹配结果见【待复核主张与证据链】")
+    claims = store.list_claims(task_id)
+    lines.append(f"3. 解析员：提取 {len(claims)} 条主张")
+    ce_map = store.claim_evidence_ids(task_id)
+    evidence = {e["id"]: e for e in store.list_evidence(task_id)}
+    for c in claims:
+        eids = ce_map.get(c["id"], [])
+        lines.append(
+            f"4. 检索匹配：主张 {c['id']} 匹配到 {len(eids)} 条证据"
+            f"（来源：{', '.join(evidence[e]['publisher'] for e in eids if e in evidence) or '无'}）")
+        lines.append(
+            f"5. 主控一级核验：主张 {c['id']} 裁决「{c['supervisor_verdict'] or '无意见'}」"
+            f"（置信度 {c['confidence']:.2f}，问题类型 {c.get('issue_type') or '无'}）")
     return "\n".join(lines)[:4000]
 
 
