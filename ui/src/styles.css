@@ -474,7 +474,7 @@ button { color: inherit; }
 .relation-tag.support { color: #177b5a; background: #e8f6f0; }
 .relation-tag.challenge { color: #ba3c42; background: #ffeded; }
 .evidence-card > small { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; background: #eef3ff; color: #3065d7; font-size: 7px; font-weight: 700; }
-.document-viewer { flex: 1; min-height: 0; display: flex; flex-direction: column; background: #eef1f5; }
+.document-viewer { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: #eef1f5; }
 .document-toolbar { height: 47px; flex: 0 0 47px; display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: center; gap: 12px; padding: 0 13px; background: #fff; border-bottom: 1px solid #e0e4eb; }
 .document-file { min-width: 0; display: flex; align-items: center; gap: 8px; overflow: hidden; }
 .document-file > div { min-width: 0; }
@@ -483,7 +483,7 @@ button { color: inherit; }
 .document-file strong { overflow: hidden; color: #38445b; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .document-file span { overflow: hidden; color: #a0a8b7; font-size: 7px; margin-top: 2px; text-overflow: ellipsis; white-space: nowrap; }
 .document-toolbar a { color: #4774d5; font-size: 8px; text-decoration: none; }
-.document-page { width: calc(100% - 48px); max-width: 610px; margin: 14px auto 20px; padding: 25px 31px 20px; background: white; box-shadow: 0 2px 12px rgba(30,42,66,.13); color: #374258; overflow-y: auto; min-height: 420px; }
+.document-page { width: calc(100% - 48px); max-width: 610px; min-height: 0; margin: 14px auto 20px; padding: 25px 31px 20px; flex: 1 1 auto; overflow-y: auto; box-sizing: border-box; background: white; box-shadow: 0 2px 12px rgba(30,42,66,.13); color: #374258; }
 .document-brand { font-size: 8px; color: #2161d3; border-bottom: 2px solid #245fca; padding-bottom: 8px; font-weight: 600; letter-spacing: .5px; }
 .document-page h3 { text-align: center; font-size: 14px; margin: 21px 0 9px; color: #273247; }
 .document-meta { display: flex; justify-content: center; gap: 13px; color: #9ca4b2; font-size: 7px; margin-bottom: 24px; }

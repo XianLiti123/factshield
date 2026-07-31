@@ -653,7 +653,7 @@
 .document-file strong { font-size: 11px; }
 .document-file span, .document-toolbar a { color: #5f746e; font-size: 9px; }
 .document-toolbar a { color: var(--fs-teal-700); }
-.document-page { width: calc(100% - 56px); max-width: 520px; min-height: 360px; margin: 16px auto 22px; padding: 22px 28px 18px; box-shadow: 0 7px 24px rgba(39, 65, 59, .1); }
+.document-page { width: calc(100% - 56px); max-width: 520px; min-height: 0; margin: 16px auto 22px; padding: 22px 28px 18px; box-shadow: 0 7px 24px rgba(39, 65, 59, .1); }
 .document-brand { color: var(--fs-teal-700); border-bottom-color: var(--fs-teal-700); }
 .document-page h3 { font-size: 16px; }
 .document-meta { color: #657973; font-size: 9px; }
