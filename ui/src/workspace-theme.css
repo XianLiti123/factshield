@@ -653,7 +653,7 @@
 .document-file strong { font-size: 11px; }
 .document-file span, .document-toolbar a { color: #5f746e; font-size: 9px; }
 .document-toolbar a { color: var(--fs-teal-700); }
-.document-page { width: calc(100% - 56px); max-width: 520px; min-height: 360px; margin: 16px auto 22px; padding: 22px 28px 18px; box-shadow: 0 7px 24px rgba(39, 65, 59, .1); }
+.document-page { width: calc(100% - 56px); max-width: 520px; min-height: 0; margin: 16px auto 22px; padding: 22px 28px 18px; box-shadow: 0 7px 24px rgba(39, 65, 59, .1); }
 .document-brand { color: var(--fs-teal-700); border-bottom-color: var(--fs-teal-700); }
 .document-page h3 { font-size: 16px; }
 .document-meta { color: #657973; font-size: 9px; }
@@ -985,12 +985,16 @@ svg text {
 }
 .history-analysis-config-card .history-config-field .ant-input,
 .history-analysis-config-card .history-config-field textarea.ant-input,
+.history-analysis-config-card .history-config-field .ant-picker,
 .history-analysis-config-card .history-config-field .ant-select,
 .history-analysis-config-card .history-config-field .ant-select-selector {
   height: 38px !important;
   min-height: 38px !important;
   max-height: 38px !important;
 }
+.history-analysis-config-card .history-config-field .ant-picker { padding-block: 0; display: flex; align-items: center; border-color: #cfddd8; border-radius: 7px; }
+.history-analysis-config-card .history-config-field .ant-picker-input > input { color: #344a46; font-size: 11px; }
+.history-analysis-config-card .history-config-field .ant-picker-suffix { color: #71857f; }
 .history-analysis-config-card .history-config-field > .ant-input {
   padding-block: 0;
   line-height: 36px;
@@ -1904,6 +1908,7 @@ svg text {
 .settings-save-row > span { color: #7c8d88; font-size: 9px; }
 .settings-save-row > span .anticon { margin-right: 5px; color: #379372; }
 .settings-save-row .ant-btn { min-width: 104px; height: 34px; font-size: 11px; }
+.settings-save-row .ant-btn-primary:disabled, .settings-save-row .ant-btn-primary.ant-btn-disabled { color: #748680 !important; border-color: #d4dfdb !important; background: #e7eeeb !important; box-shadow: none !important; opacity: 1; }
 .settings-search-card { min-height: 142px; padding: 15px 18px; display: grid; grid-template-columns: 220px minmax(0, 1fr); align-items: center; gap: 20px; }
 .settings-search-heading { min-width: 0; display: flex; align-items: center; gap: 11px; }
 .settings-search-heading > span { width: 38px; height: 38px; display: grid; place-items: center; flex: none; color: var(--fs-teal-700); border-radius: 8px; background: #e3f1ed; font-size: 15px; }

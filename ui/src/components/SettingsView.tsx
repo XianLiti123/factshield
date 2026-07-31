@@ -15,7 +15,17 @@ import {
   ThunderboltFilled,
 } from '@ant-design/icons'
 import { Button, Input, Modal, Segmented, Select, Slider, Switch, Tag, message } from 'antd'
-import { getCapabilities, getSettings, saveModelConfig, type CapabilityStatus } from '../services/api'
+import {
+  getCapabilities,
+  getDataSources,
+  getSettings,
+  saveDataSources,
+  saveModelConfig,
+  type CapabilityStatus,
+  type DataSourceConfig,
+  type DataSourceMode,
+  type SettingsResponse,
+} from '../services/api'
 
 type ModelConfig = {
   id: string
@@ -44,9 +54,6 @@ type SearchEngine = {
   apiKey: string
   requiresApiKey: boolean
 }
-
-type DataSourceMode = 'http' | 'python'
-type DataSourceConfig = { id: string; name: string; description: string; category: string; mode: DataSourceMode; specification: string; enabled: boolean }
 
 const initialSlots: ModelSlot[] = [
   {
@@ -100,23 +107,29 @@ const initialSearchEngines: SearchEngine[] = [
   { id: 'python', name: 'Python', description: '通过本地 Python 检索流程执行，无需 API Key', apiKey: '', requiresApiKey: false },
 ]
 
-const DATA_SOURCES_KEY = 'factshield.settings.data-sources.v2'
-const presetDataSources: DataSourceConfig[] = [
-  { id: 'efinance', name: 'efinance', description: '已接入的 A 股行情与基础金融数据 SDK', category: '已接入数据源', mode: 'python', specification: "import efinance as ef\n\n# 获取股票历史行情\ndf = ef.stock.get_quote_history('000001')", enabled: true },
-  { id: 'tickflow', name: 'TickFlow', description: '已接入的行情与逐笔数据服务', category: '已接入数据源', mode: 'python', specification: "# TickFlow 已由服务端连接器接入\n# 调用入口、鉴权与返回结构由服务端统一管理\n# 前端仅维护启用状态，不在浏览器中执行代码", enabled: true },
-  { id: 'wind', name: '万得金融数据服务', description: '专业金融市场、公司与宏观数据', category: '金融数据库', mode: 'python', specification: "from WindPy import w\nw.start()\nresult = w.wsd('000001.SZ', 'close', '2026-01-01', '2026-01-31')", enabled: false },
-  { id: 'tushare', name: 'Tushare Pro', description: '证券、基金、期货与宏观数据接口', category: '金融数据库', mode: 'python', specification: "import tushare as ts\npro = ts.pro_api('YOUR_TOKEN')\ndf = pro.daily(ts_code='000001.SZ')", enabled: false },
-  { id: 'akshare', name: 'AKShare', description: '开源财经数据接口库', category: '金融数据库', mode: 'python', specification: "import akshare as ak\ndf = ak.stock_zh_a_hist(symbol='000001')", enabled: false },
-  { id: 'custom-http', name: '自定义 HTTP 数据源', description: '连接内部或第三方数据服务', category: '自定义', mode: 'http', specification: "GET https://api.example.com/v1/market/data\nAuthorization: Bearer ${API_KEY}\nQuery: symbol, start_date, end_date\nResponse data path: $.data", enabled: false },
-]
-function loadDataSources() {
-  try {
-    const raw = window.localStorage.getItem(DATA_SOURCES_KEY)
-    if (raw === null) return presetDataSources
-    const stored = JSON.parse(raw)
-    return Array.isArray(stored) ? stored as DataSourceConfig[] : presetDataSources
-  }
-  catch { return presetDataSources }
+const builtInDataSourceIds = new Set(['efinance', 'tickflow'])
+
+function createBuiltInDataSources(capabilities: SettingsResponse['global_capabilities'] | null): DataSourceConfig[] {
+  return [
+    {
+      id: 'efinance',
+      name: 'efinance',
+      description: 'A 股行情与基础金融数据 SDK',
+      category: '服务端内置能力',
+      mode: 'python',
+      specification: "import efinance as ef\n\n# 服务端内置调用示例\ndf = ef.stock.get_quote_history('000001')",
+      enabled: Boolean(capabilities?.efinance),
+    },
+    {
+      id: 'tickflow',
+      name: 'TickFlow',
+      description: '行情、K 线与逐笔数据服务',
+      category: '服务端内置能力',
+      mode: 'python',
+      specification: '# TickFlow 由服务端连接器调用\n# 鉴权与返回结构由服务端统一管理',
+      enabled: Boolean(capabilities?.tickflow),
+    },
+  ]
 }
 
 const DEFAULT_CONTEXT_TRIGGER = 80
@@ -152,15 +165,20 @@ export function SettingsView() {
   const [showSearchApiKey, setShowSearchApiKey] = useState(false)
   const [saving, setSaving] = useState(false)
   const [capabilities, setCapabilities] = useState<CapabilityStatus | null>(null)
+  const [settingsCapabilities, setSettingsCapabilities] = useState<SettingsResponse['global_capabilities'] | null>(null)
   const [customContextTrigger, setCustomContextTrigger] = useState(initialContextPreference.custom)
   const [contextTrigger, setContextTrigger] = useState(initialContextPreference.trigger)
-  const [dataSources, setDataSources] = useState<DataSourceConfig[]>(loadDataSources)
+  const [dataSources, setDataSources] = useState<DataSourceConfig[]>([])
+  const [dataSourcesLoading, setDataSourcesLoading] = useState(true)
+  const [dataSourcesSaving, setDataSourcesSaving] = useState(false)
+  const [dataSourceDeleting, setDataSourceDeleting] = useState(false)
   const [dataSourceModalOpen, setDataSourceModalOpen] = useState(false)
-  const [activeDataSourceId, setActiveDataSourceId] = useState(presetDataSources[0].id)
+  const [activeDataSourceId, setActiveDataSourceId] = useState('efinance')
   const [deleteDataSourceTarget, setDeleteDataSourceTarget] = useState<DataSourceConfig | null>(null)
 
   useEffect(() => {
     getSettings().then((settings) => {
+      setSettingsCapabilities(settings.global_capabilities)
       setSlots((current) => current.map((slot) => {
         const serverSlot = slot.id === 'primary' ? 'llm' : slot.id === 'vision' ? 'vision' : null
         const config = serverSlot ? settings.configs[serverSlot] : undefined
@@ -179,6 +197,10 @@ export function SettingsView() {
       }))
     }).catch((error) => message.error(error instanceof Error ? error.message : '设置加载失败'))
     getCapabilities().then(setCapabilities).catch(() => setCapabilities(null))
+    getDataSources()
+      .then(({ data_sources }) => setDataSources(data_sources))
+      .catch((error) => message.error(error instanceof Error ? error.message : '数据源加载失败'))
+      .finally(() => setDataSourcesLoading(false))
   }, [])
 
   useEffect(() => {
@@ -187,10 +209,6 @@ export function SettingsView() {
       trigger: contextTrigger,
     }))
   }, [contextTrigger, customContextTrigger])
-
-  useEffect(() => {
-    window.localStorage.setItem(DATA_SOURCES_KEY, JSON.stringify(dataSources))
-  }, [dataSources])
 
   const activeSlot = useMemo(
     () => slots.find((slot) => slot.id === activeSlotId) ?? slots[0],
@@ -205,9 +223,24 @@ export function SettingsView() {
     [activeSearchEngineId, searchEngines],
   )
   const isPersonalSlot = activeSlot.id === 'primary' || activeSlot.id === 'vision'
-  const activeDataSource = dataSources.find((source) => source.id === activeDataSourceId) ?? dataSources[0]
-  const updateActiveDataSource = (patch: Partial<DataSourceConfig>) => setDataSources((current) => current.map((source) => source.id === activeDataSourceId ? { ...source, ...patch } : source))
+  const builtInDataSources = useMemo(() => createBuiltInDataSources(settingsCapabilities), [settingsCapabilities])
+  const visibleDataSources = useMemo(() => [
+    ...builtInDataSources.map((builtIn) => dataSources.find((source) => source.id === builtIn.id) ?? builtIn),
+    ...dataSources.filter((source) => !builtInDataSourceIds.has(source.id)),
+  ], [builtInDataSources, dataSources])
+  const activeDataSource = visibleDataSources.find((source) => source.id === activeDataSourceId) ?? visibleDataSources[0]
+  const activeDataSourceIsBuiltIn = Boolean(activeDataSource
+    && builtInDataSourceIds.has(activeDataSource.id)
+    && !dataSources.some((source) => source.id === activeDataSource.id))
+  const updateActiveDataSource = (patch: Partial<DataSourceConfig>) => {
+    if (activeDataSourceIsBuiltIn) return
+    setDataSources((current) => current.map((source) => source.id === activeDataSourceId ? { ...source, ...patch } : source))
+  }
   const addCustomDataSource = () => {
+    if (dataSources.length >= 50) {
+      message.warning('最多可配置 50 个自定义数据源')
+      return
+    }
     const id = `source-${Date.now()}`
     setDataSources((current) => [...current, { id, name: '未命名数据源', description: '填写接口规范后交由服务端连接', category: '自定义', mode: 'http', specification: '', enabled: false }])
     setActiveDataSourceId(id)
@@ -216,15 +249,52 @@ export function SettingsView() {
     if (!activeDataSource) return
     setDeleteDataSourceTarget(activeDataSource)
   }
-  const confirmRemoveDataSource = () => {
-    if (!deleteDataSourceTarget) return
+  const confirmRemoveDataSource = async () => {
+    if (!deleteDataSourceTarget || dataSourceDeleting) return
     const removedIndex = dataSources.findIndex((source) => source.id === deleteDataSourceTarget.id)
     const remaining = dataSources.filter((source) => source.id !== deleteDataSourceTarget.id)
-    window.localStorage.setItem(DATA_SOURCES_KEY, JSON.stringify(remaining))
-    setDataSources(remaining)
-    setActiveDataSourceId(remaining[Math.min(removedIndex, remaining.length - 1)]?.id ?? '')
-    message.success(`已删除“${deleteDataSourceTarget.name}”`)
-    setDeleteDataSourceTarget(null)
+    setDataSourceDeleting(true)
+    try {
+      const result = await saveDataSources(remaining)
+      setDataSources(result.data_sources)
+      setActiveDataSourceId(remaining[Math.min(removedIndex, remaining.length - 1)]?.id ?? 'efinance')
+      message.success(`已从服务端删除“${deleteDataSourceTarget.name}”`)
+      setDeleteDataSourceTarget(null)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '删除数据源失败')
+    } finally {
+      setDataSourceDeleting(false)
+    }
+  }
+
+  const saveDataSourceSettings = async () => {
+    const missingName = dataSources.find((source) => !source.name.trim())
+    if (missingName) {
+      setActiveDataSourceId(missingName.id)
+      message.warning('请填写数据源名称')
+      return
+    }
+    const missingSpecification = dataSources.find((source) => source.enabled && !source.specification.trim())
+    if (missingSpecification) {
+      setActiveDataSourceId(missingSpecification.id)
+      message.warning(`请先填写“${missingSpecification.name}”的连接规范再启用`)
+      return
+    }
+    setDataSourcesSaving(true)
+    try {
+      const result = await saveDataSources(dataSources.map((source) => ({
+        ...source,
+        name: source.name.trim(),
+        description: source.description.trim(),
+        category: source.category.trim(),
+      })))
+      setDataSources(result.data_sources)
+      message.success('数据源配置已保存，启用的数据源会参与后续研究')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '数据源保存失败')
+    } finally {
+      setDataSourcesSaving(false)
+    }
   }
 
   const updateSelectedModel = (key: keyof ModelConfig, value: string) => {
@@ -331,7 +401,7 @@ export function SettingsView() {
         </div>
       </section>
       <button type="button" className="settings-data-source-entry page-card" onClick={() => setDataSourceModalOpen(true)}>
-        <span><AppstoreOutlined /></span><div><strong>数据源管理</strong><small>{dataSources.filter((source) => source.enabled).length} 个已启用 · HTTP / Python SDK</small></div><i>管理</i>
+        <span><AppstoreOutlined /></span><div><strong>数据源管理</strong><small>{dataSourcesLoading ? '正在读取服务端配置' : `${visibleDataSources.filter((source) => source.enabled).length} 个已启用 · HTTP / Python SDK`}</small></div><i>管理</i>
       </button>
       </aside>
 
@@ -495,21 +565,26 @@ export function SettingsView() {
       <Modal className="data-source-modal" title="数据源管理" open={dataSourceModalOpen} width={900} footer={null} onCancel={() => setDataSourceModalOpen(false)} closeIcon={<CloseOutlined />}>
         <div className="data-source-manager">
           <aside className="data-source-list">
-            <header><div><strong>金融与研究数据源</strong><small>选择预设或创建自己的连接</small></div><Button className="data-source-create-button" type="primary" icon={<PlusOutlined />} onClick={addCustomDataSource}>新建数据源</Button></header>
-            <div>{dataSources.length > 0
-              ? dataSources.map((source) => <button type="button" className={source.id === activeDataSource?.id ? 'active' : ''} key={source.id} onClick={() => setActiveDataSourceId(source.id)}><span>{source.mode === 'http' ? <ApiOutlined /> : <CodeOutlined />}</span><div><strong>{source.name}</strong><small>{source.description}</small></div><i className={source.enabled ? 'enabled' : ''} /></button>)
+            <header><div><strong>金融与研究数据源</strong><small>内置能力与账号自定义连接</small></div><Button className="data-source-create-button" type="primary" icon={<PlusOutlined />} disabled={dataSourcesLoading} onClick={addCustomDataSource}>新建数据源</Button></header>
+            <div>{dataSourcesLoading
+              ? <div className="data-source-list-empty"><AppstoreOutlined /><strong>正在读取数据源</strong><span>从服务端同步当前账号配置</span></div>
+              : visibleDataSources.length > 0
+              ? visibleDataSources.map((source) => <button type="button" className={source.id === activeDataSource?.id ? 'active' : ''} key={source.id} onClick={() => setActiveDataSourceId(source.id)}><span>{source.mode === 'http' ? <ApiOutlined /> : <CodeOutlined />}</span><div><strong>{source.name}</strong><small>{source.description}</small></div><i className={source.enabled ? 'enabled' : ''} /></button>)
               : <div className="data-source-list-empty"><AppstoreOutlined /><strong>还没有数据源</strong><span>点击上方按钮新建连接</span></div>}
             </div>
           </aside>
           {activeDataSource && <section className="data-source-editor">
-            <header><div><span>{activeDataSource.mode === 'http' ? <ApiOutlined /> : <CodeOutlined />}</span><div><strong>{activeDataSource.name}</strong><small>{activeDataSource.category}</small></div></div><div className="data-source-editor-actions"><Button className="data-source-delete-button" danger icon={<DeleteOutlined />} onClick={removeActiveDataSource}>删除数据源</Button><label><span>{activeDataSource.enabled ? '已启用' : '未启用'}</span><Switch checked={activeDataSource.enabled} onChange={(enabled) => updateActiveDataSource({ enabled })} /></label></div></header>
+            <header><div><span>{activeDataSource.mode === 'http' ? <ApiOutlined /> : <CodeOutlined />}</span><div><strong>{activeDataSource.name}</strong><small>{activeDataSource.category}</small></div></div><div className="data-source-editor-actions">{!activeDataSourceIsBuiltIn && <Button className="data-source-delete-button" danger icon={<DeleteOutlined />} onClick={removeActiveDataSource}>删除数据源</Button>}<label><span>{activeDataSource.enabled ? (activeDataSourceIsBuiltIn ? '服务已就绪' : '已启用') : (activeDataSourceIsBuiltIn ? '服务未就绪' : '未启用')}</span><Switch disabled={activeDataSourceIsBuiltIn} checked={activeDataSource.enabled} onChange={(enabled) => updateActiveDataSource({ enabled })} /></label></div></header>
             <div className="data-source-fields">
-              <label><span>数据源名称</span><Input value={activeDataSource.name} onChange={(event) => updateActiveDataSource({ name: event.target.value })} /></label>
-              <label><span>用途说明</span><Input value={activeDataSource.description} onChange={(event) => updateActiveDataSource({ description: event.target.value })} /></label>
-              <div className="data-source-mode-field"><span>连接方式</span><Segmented block value={activeDataSource.mode} options={[{ label: 'HTTP 接口规范', value: 'http', icon: <ApiOutlined /> }, { label: 'Python SDK', value: 'python', icon: <CodeOutlined /> }]} onChange={(mode) => updateActiveDataSource({ mode: mode as DataSourceMode })} /></div>
-              <label className="data-source-spec-field"><span>{activeDataSource.mode === 'http' ? 'HTTP 接口规范' : 'Python SDK 调用代码'}</span><Input.TextArea value={activeDataSource.specification} onChange={(event) => updateActiveDataSource({ specification: event.target.value })} placeholder={activeDataSource.mode === 'http' ? '填写请求方法、URL、鉴权头、参数与响应数据路径…' : '填写 import、客户端初始化及查询调用示例…'} autoSize={{ minRows: 10, maxRows: 16 }} spellCheck={false} /></label>
+              <label><span>数据源名称</span><Input disabled={activeDataSourceIsBuiltIn} value={activeDataSource.name} onChange={(event) => updateActiveDataSource({ name: event.target.value })} /></label>
+              <label><span>用途说明</span><Input disabled={activeDataSourceIsBuiltIn} value={activeDataSource.description} onChange={(event) => updateActiveDataSource({ description: event.target.value })} /></label>
+              <div className="data-source-mode-field"><span>连接方式</span><Segmented disabled={activeDataSourceIsBuiltIn} block value={activeDataSource.mode} options={[{ label: 'HTTP 接口规范', value: 'http', icon: <ApiOutlined /> }, { label: 'Python SDK', value: 'python', icon: <CodeOutlined /> }]} onChange={(mode) => updateActiveDataSource({ mode: mode as DataSourceMode })} /></div>
+              <label className="data-source-spec-field"><span>{activeDataSource.mode === 'http' ? 'HTTP 接口规范' : 'Python SDK 调用代码'}</span><Input.TextArea disabled={activeDataSourceIsBuiltIn} value={activeDataSource.specification} onChange={(event) => updateActiveDataSource({ specification: event.target.value })} placeholder={activeDataSource.mode === 'http' ? '填写请求方法、URL、鉴权头、参数与响应数据路径…' : '填写 import、客户端初始化及查询调用示例…'} autoSize={{ minRows: 10, maxRows: 16 }} spellCheck={false} /></label>
             </div>
-            <footer><span><SafetyCertificateOutlined /> 配置保存在本机，不会在浏览器中执行代码；需由服务端连接器审核后接入研究流程。</span><Button type="primary" onClick={() => message.success('数据源配置已保存到当前浏览器')}>保存配置</Button></footer>
+            <footer>{activeDataSourceIsBuiltIn
+              ? <><span><SafetyCertificateOutlined /> 这是服务端内置金融能力，状态由依赖与服务端密钥配置决定。</span><Button disabled>{activeDataSource.enabled ? '当前可用' : '等待服务端配置'}</Button></>
+              : <><span><SafetyCertificateOutlined /> 配置会加密保存到当前账号；启用后可供后续研究任务调用。</span><Button type="primary" loading={dataSourcesSaving} disabled={dataSourcesLoading} onClick={saveDataSourceSettings}>保存配置</Button></>}
+            </footer>
           </section>}
           {!activeDataSource && <section className="data-source-editor-empty"><AppstoreOutlined /><strong>新建一个数据源开始配置</strong><span>可以填写 HTTP 接口规范或 Python SDK 调用代码。</span><Button type="primary" icon={<PlusOutlined />} onClick={addCustomDataSource}>新建数据源</Button></section>}
         </div>
@@ -524,11 +599,12 @@ export function SettingsView() {
         okText="确认删除"
         cancelText="保留"
         okButtonProps={{ danger: true }}
+        confirmLoading={dataSourceDeleting}
         onOk={confirmRemoveDataSource}
         onCancel={() => setDeleteDataSourceTarget(null)}
         closeIcon={<CloseOutlined />}
       >
-        <p>“{deleteDataSourceTarget?.name}”的接口规范、启用状态和本地配置都会被删除，刷新页面也不会恢复。</p>
+        <p>“{deleteDataSourceTarget?.name}”的接口规范和启用状态会从当前账号中删除，刷新页面也不会恢复。</p>
       </Modal>
     </div>
   )

@@ -1,18 +1,26 @@
 import { useEffect, useMemo, useState } from 'react'
 import ReactECharts from 'echarts-for-react'
+import dayjs from 'dayjs'
+import advancedFormat from 'dayjs/plugin/advancedFormat'
+import customParseFormat from 'dayjs/plugin/customParseFormat'
+import localeData from 'dayjs/plugin/localeData'
+import weekOfYear from 'dayjs/plugin/weekOfYear'
+import weekYear from 'dayjs/plugin/weekYear'
+import weekday from 'dayjs/plugin/weekday'
 import {
   AimOutlined,
   CheckCircleFilled,
   ClockCircleOutlined,
   DatabaseOutlined,
   HistoryOutlined,
+  LinkOutlined,
   LineChartOutlined,
   PaperClipOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
   SettingOutlined,
 } from '@ant-design/icons'
-import { Button, Empty, Input, Segmented, Select, Table, message } from 'antd'
+import { Button, DatePicker, Empty, Input, Segmented, Select, Table, message } from 'antd'
 import type { ResearchRun } from '../types'
 import {
   EMPTY_HISTORY_ANALYSIS_CONFIG,
@@ -29,6 +37,16 @@ import {
   type HistoryAnalysisPoint,
   type HistoryAnalysisRequest,
 } from '../services/api'
+
+// Ant Design's date panel calls weekday/localeData on the Dayjs instance it receives.
+// The app and rc-picker can resolve separate Dayjs copies under pnpm, so extend this
+// instance explicitly before passing values to DatePicker.
+dayjs.extend(customParseFormat)
+dayjs.extend(advancedFormat)
+dayjs.extend(weekday)
+dayjs.extend(localeData)
+dayjs.extend(weekOfYear)
+dayjs.extend(weekYear)
 
 const POLL_INTERVAL = 2500
 const POLL_LIMIT = 72
@@ -191,12 +209,46 @@ function rangeText(path: EventPath) {
   return first === last ? first : `${first} 至 ${last}`
 }
 
+function getHistorySourceUrl(value: string) {
+  const rawUrl = value.trim()
+  if (!rawUrl) return null
+  try {
+    const normalizedUrl = /^https?:\/\//i.test(rawUrl) ? rawUrl : rawUrl.startsWith('//') ? `https:${rawUrl}` : `https://${rawUrl}`
+    const parsedUrl = new URL(normalizedUrl)
+    return parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:' ? parsedUrl.href : null
+  } catch {
+    return null
+  }
+}
+
+function openHistorySource(value: string) {
+  const sourceUrl = getHistorySourceUrl(value)
+  if (!sourceUrl) {
+    message.warning('该来源地址无效，无法打开')
+    return
+  }
+  const sourceWindow = window.open(sourceUrl, '_blank', 'noopener,noreferrer')
+  if (sourceWindow) sourceWindow.opener = null
+  else message.warning('浏览器阻止了新窗口，请允许本站打开新标签页后重试')
+}
+
+function parseHistoryDate(value: string) {
+  const normalized = value.trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return null
+  const parsed = dayjs(normalized)
+  return parsed.isValid() && parsed.format('YYYY-MM-DD') === normalized ? parsed : null
+}
+
+function normalizeHistoryDate(value: string) {
+  return parseHistoryDate(value) ? value.trim() : ''
+}
+
 function normalizeHistoryAnalysisConfig(config: HistoryAnalysisConfig): HistoryAnalysisConfig {
   return {
     metric: config.metric.trim(),
     scenarios: config.scenarios.trim(),
-    start: config.start.trim(),
-    end: config.end.trim(),
+    start: normalizeHistoryDate(config.start),
+    end: normalizeHistoryDate(config.end),
     frequency: config.frequency,
   }
 }
@@ -485,9 +537,27 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
         <div className="history-config-field history-date-field">
           <span>观察时间范围</span>
           <div className="history-date-range">
-            <Input type="month" aria-label="开始月份" value={historyAnalysisConfig.start} disabled={running} onChange={(event) => updateConfig('start', event.target.value)} />
+            <DatePicker
+              aria-label="开始日期"
+              value={parseHistoryDate(normalizedConfig.start)}
+              disabled={running}
+              format="YYYY年MM月DD日"
+              inputReadOnly
+              getPopupContainer={(trigger) => trigger.parentElement ?? document.body}
+              placeholder="选择开始日期"
+              onChange={(value) => updateConfig('start', value?.format('YYYY-MM-DD') ?? '')}
+            />
             <i>至</i>
-            <Input type="month" aria-label="结束月份" value={historyAnalysisConfig.end} disabled={running} onChange={(event) => updateConfig('end', event.target.value)} />
+            <DatePicker
+              aria-label="结束日期"
+              value={parseHistoryDate(normalizedConfig.end)}
+              disabled={running}
+              format="YYYY年MM月DD日"
+              inputReadOnly
+              getPopupContainer={(trigger) => trigger.parentElement ?? document.body}
+              placeholder="选择结束日期"
+              onChange={(value) => updateConfig('end', value?.format('YYYY-MM-DD') ?? '')}
+            />
           </div>
         </div>
         <label className="history-config-field history-frequency-field">
@@ -587,7 +657,16 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
                 {
                   title: '历史事件',
                   width: '25%',
-                  render: (_, path) => <div className="history-event-cell"><strong>{path.event.name}</strong><span>{path.event.description || '后端未返回事件说明'}</span></div>,
+                  render: (_, path) => {
+                    const sources = (path.event.sources ?? []).filter((source) => getHistorySourceUrl(source.url))
+                    return <div className="history-event-cell">
+                      <strong>{path.event.name}</strong>
+                      <span>{path.event.description || '后端未返回事件说明'}</span>
+                      {sources.length > 0
+                        ? <div className="history-source-links">{sources.map((source, index) => <button type="button" key={`${source.url}-${index}`} title={source.title || source.url} onClick={() => openHistorySource(source.url)}><LinkOutlined /><em>{source.title || `信息来源 ${index + 1}`}</em></button>)}</div>
+                        : <small className="history-source-empty">暂无来源链接</small>}
+                    </div>
+                  },
                 },
                 {
                   title: 'T0 与采用基准',
@@ -625,7 +704,7 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
                 },
               ]}
             />
-            <div className="history-data-note">本页仅使用接口返回的历史事件和公开数据点。所有可识别日期均按时间升序展示；同一事件中不同统计周期的数据不会混合计算。后端当前没有返回逐条来源链接，因此不展示虚构的来源数量；需要审阅出处时，应以研究底稿中的原始检索记录为准。</div>
+            <div className="history-data-note">本页仅使用接口返回的历史事件、公开数据点和信息来源。所有可识别日期均按时间升序展示；同一事件中不同统计周期的数据不会混合计算。点击事件下方的来源按钮，可在新标签页回查后端返回的对应公开页面。</div>
           </section>
         </>
       )}
