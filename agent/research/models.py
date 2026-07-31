@@ -55,6 +55,7 @@ def evidence_to_dto(row: dict) -> dict:
         "relation": row["relation"],
         "credibility": row["credibility"],
         "credibilityLevel": row["credibility_level"],  #来源可信度三档：高/中/低
+        "relevance": row["relevance"],  #检索相关性分数（reranker/RRF），证据排序依据
         "url": row["url"],
     }
 

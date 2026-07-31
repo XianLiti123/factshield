@@ -140,6 +140,7 @@ CREATE TABLE IF NOT EXISTS evidence (
     relation TEXT NOT NULL DEFAULT 'support',
     credibility REAL NOT NULL DEFAULT 0,
     credibility_level TEXT NOT NULL DEFAULT '',
+    relevance REAL NOT NULL DEFAULT 0,  -- 检索相关性分数（reranker 或 RRF 融合分），证据排序依据
     url TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     PRIMARY KEY (task_id, id)
@@ -225,5 +226,54 @@ def init_db() -> None:
         _add_column_if_missing(conn, "task_materials", "content", "content TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "evidence", "credibility_level", "credibility_level TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "user_search_settings", "api_key_enc", "api_key_enc TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "evidence", "relevance", "relevance REAL NOT NULL DEFAULT 0")
         #存量用户显示名为空时回填邮箱前缀
         conn.execute("UPDATE users SET display_name=substr(email,1,instr(email,'@')-1) WHERE display_name=''")
+        _init_fts(conn)
+
+
+def _init_fts(conn: sqlite3.Connection) -> None:
+    #素材全文索引（FTS5 trigram tokenizer，支持中文子串匹配），混合检索的关键词召回路之一；
+    #SQLite 编译缺 FTS5 时静默跳过，关键词召回自动退化为 Chroma where_document
+    try:
+        #先删后建：老库已存在旧定义触发器时强制替换（FTS5 触发器定义不可 ALTER）
+        conn.executescript("""
+        DROP TRIGGER IF EXISTS task_materials_fts_ai;
+        DROP TRIGGER IF EXISTS task_materials_fts_ad;
+        DROP TRIGGER IF EXISTS task_materials_fts_au;
+        CREATE VIRTUAL TABLE IF NOT EXISTS task_materials_fts USING fts5(
+            task_id UNINDEXED, group_id UNINDEXED, title, publisher, content,
+            tokenize='trigram'
+        );
+        CREATE TRIGGER task_materials_fts_ai AFTER INSERT ON task_materials BEGIN
+            INSERT INTO task_materials_fts (rowid, task_id, group_id, title, publisher, content)
+            VALUES (new.id, new.task_id, new.group_id, new.title, new.publisher, new.content);
+        END;
+        CREATE TRIGGER task_materials_fts_ad AFTER DELETE ON task_materials BEGIN
+            DELETE FROM task_materials_fts WHERE rowid = old.id;
+        END;
+        CREATE TRIGGER task_materials_fts_au AFTER UPDATE ON task_materials BEGIN
+            DELETE FROM task_materials_fts WHERE rowid = old.id;
+            INSERT INTO task_materials_fts (rowid, task_id, group_id, title, publisher, content)
+            VALUES (new.id, new.task_id, new.group_id, new.title, new.publisher, new.content);
+        END;
+        CREATE TABLE IF NOT EXISTS fts_sync (
+            table_name TEXT PRIMARY KEY,
+            last_id INTEGER NOT NULL DEFAULT 0
+        );
+        """)
+        #存量素材增量回填（上次同步的最大 id 之后的行；触发器只接管新写入）
+        row = conn.execute("SELECT last_id FROM fts_sync WHERE table_name='task_materials'").fetchone()
+        last = row["last_id"] if row else 0
+        cur = conn.execute("SELECT COALESCE(MAX(id),0) AS m FROM task_materials").fetchone()["m"]
+        if cur > last:
+            #OR REPLACE：幂等回填（覆盖已存在行，兼容崩溃中断/手工重置同步位）
+            conn.execute(
+                "INSERT OR REPLACE INTO task_materials_fts (rowid, task_id, group_id, title, publisher, content)"
+                " SELECT id, task_id, group_id, title, publisher, content FROM task_materials WHERE id > ?",
+                (last,))
+            conn.execute(
+                "INSERT INTO fts_sync (table_name, last_id) VALUES ('task_materials', ?)"
+                " ON CONFLICT(table_name) DO UPDATE SET last_id=excluded.last_id", (cur,))
+    except sqlite3.OperationalError:
+        pass  #FTS5 不可用：跳过，由调用方降级

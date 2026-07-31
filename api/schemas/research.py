@@ -20,6 +20,7 @@ class Evidence(BaseModel):
     relation: Literal["support", "challenge"]
     credibility: float
     credibilityLevel: str = ""  #来源可信度三档：高/中/低（前端以此为准展示，credibility 仅兼容保留）
+    relevance: float = 0  #检索相关性分数（reranker/RRF），证据排序依据
     url: str = ""  #原始来源地址，前端"打开来源"按钮用
 
 

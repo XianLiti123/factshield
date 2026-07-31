@@ -216,11 +216,13 @@ def save_evidence(task_id: str, claim_id: str, items: list[dict]) -> None:
             eid = f"e{n}"
             conn.execute(
                 "INSERT INTO evidence (id, task_id, title, publisher, published_at, locator, quote,"
-                " source_type, relation, credibility, credibility_level, url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                " source_type, relation, credibility, credibility_level, relevance, url)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (eid, task_id, item.get("title", ""), item.get("publisher", ""),
                  item.get("published_at", ""), item.get("locator", ""), item.get("quote", ""),
                  item.get("source_type", ""), item.get("relation", "support"),
-                 item.get("credibility", 0.0), item.get("credibility_level", ""), item.get("url", ""))
+                 item.get("credibility", 0.0), item.get("credibility_level", ""),
+                 item.get("relevance", 0.0), item.get("url", ""))
             )
             conn.execute(
                 "INSERT OR IGNORE INTO claim_evidence (task_id, claim_id, evidence_id) VALUES (?,?,?)",

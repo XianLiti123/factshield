@@ -8,8 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, StateGraph
 
 from ..llm.client import ChatClient
-from ..memory.reranker.rerank import rerank
-from ..memory.vector_store.store import _get_store, add_document
+from ..memory.vector_store.store import add_document
 from ..memory.SQLite.db import get_connection as memory_conn
 from ..searchengine import extract, search
 from ..session.search_config import get_engine
@@ -361,19 +360,10 @@ def parse_node(state: ResearchState, config: RunnableConfig) -> dict:
 
 
 def _search_with_meta(query: str, num: int = 2) -> list[dict]:
-    #带元数据的全库精确检索：向量粗筛（知识库/会话/任务素材同库召回）+ reranker 精排，
-    #返回 [{content, group_id, chunk_index}]；命中的素材元数据由调用方按 group_id 解析
-    docs = _get_store().similarity_search(query, k=2 * num)
-    if not docs:
-        return []
-    if len(docs) <= num:
-        picked = docs
-    else:
-        by_content = {d.page_content: d for d in docs}
-        ranked = rerank(query, [d.page_content for d in docs], top_n=num)
-        picked = [by_content[text] for text, _ in ranked]
-    return [{"content": d.page_content, "group_id": d.metadata.get("group_id", ""),
-             "chunk_index": d.metadata.get("chunk_index", 0)} for d in picked]
+    #混合检索：向量召回（全库）+ 关键词召回（SQLite FTS5 + Chroma 子串）+ RRF 融合
+    #+ reranker 精排（可降级），返回 [{content, group_id, chunk_index, score}]
+    from ..memory.hybrid import hybrid_search  #延迟导入，避免加载顺序问题
+    return hybrid_search(query, num=num)
 
 
 def _match_evidence(task_id: str, claim: dict, llm: ChatClient, num: int = 2) -> int:
@@ -405,6 +395,7 @@ def _match_evidence(task_id: str, claim: dict, llm: ChatClient, num: int = 2) ->
             "quote": quote, "source_type": src.get("source_type", ""),
             "credibility": src.get("credibility", 0.0),
             "credibility_level": src.get("credibility_level", ""),
+            "relevance": float(cand.get("score") or 0.0),  #检索相关性分（reranker/RRF）
             "relation": "challenge" if e.get("relation") == "challenge" else "support",
         })
     if items:
@@ -975,6 +966,7 @@ def retry_single_claim(task_id: str, claim_id: str, emit: Callable, llm: ChatCli
                           "quote": quote, "source_type": src.get("source_type", ""),
                           "credibility": src.get("credibility", 0.0),
                           "credibility_level": src.get("credibility_level", ""),
+                          "relevance": float(cand.get("score") or 0.0),
                           "relation": "challenge" if e.get("relation") == "challenge" else "support"})
         if items:
             store.save_evidence(task_id, claim_id, items)

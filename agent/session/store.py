@@ -2,7 +2,7 @@ import json
 import uuid
 from contextvars import ContextVar
 
-from ..memory.reranker.rerank import rerank
+from ..memory.reranker.rerank import safe_rerank
 from . import turns_store
 from .checkpoint_db import delete_threads
 from .db import get_connection, init_db
@@ -107,13 +107,13 @@ def max_seq(session_id: str) -> int:
 
 
 def precise_search_turns(query: str, k: int = 3) -> list[str]:
-    #精确召回历史对话：先向量粗筛 top 2k，再 reranker 精排取 top k（镜像知识库 precise_search）
+    #精确召回历史对话：先向量粗筛 top 2k，再 reranker 精排取 top k（未配置/失败时按原序兜底）
     chunks = turns_store.vector_search_turns(query, k=2 * k)
     if not chunks:
         return []
     if len(chunks) <= k:
         return chunks
-    return [text for text, _ in rerank(query, chunks, top_n=k)]
+    return [text for text, _ in safe_rerank(query, chunks, top_n=k)]
 
 
 def list_sessions(user_id: int) -> list[dict]:
