@@ -428,8 +428,24 @@ def retrieve_node(state: ResearchState, config: RunnableConfig) -> dict:
     return {"guidance": guidance}
 
 
+#定向深挖员提示词：复用采集员工具集，聚焦单条主张补证据（财务类查财报/行情类查K线/新闻类搜网页）
+DEEPEN_PROMPT = """你是金融事实核查任务的定向深挖员。主控发现以下主张证据不足，需要你定向补充可靠材料：
+【待核查主张】{claim}
+【任务背景】主题：{topic}；公司：{company}
+【素材库】现有 {material_count} 份材料（总量上限 {max_total} 份，本轮新增上限 {max_new} 份）
+
+工作方式：
+1. 先判断主张类型：财务数据类（营收/净利/ROE/毛利率等）用 query_financials 查东方财富一手财报；
+   股价/涨跌幅/走势类用 query_kline 查行情；其他事实/新闻类用 web_search/web_extract 检索公开网页；
+2. 用户启用了自定义数据源时可用 list_data_sources 按其规范取数；未启用则忽略；
+3. 找到的可靠材料立即用 archive_material 入库（title/publisher/url/content 完整，同链接不重复入库）；
+4. 完成标准：找到支持或反驳该主张的可靠材料、或已尽力无法获取更多 → 停止调用工具，
+   直接输出一句简短说明（不要调用任何工具）。"""
+
+
 def deepen_node(state: ResearchState, config: RunnableConfig) -> dict:
-    #逐条定向深挖：对证据不足 2 条的薄弱主张，逐条定向联网检索补采信源后重新匹配证据
+    #逐条定向深挖：对证据不足 2 条的薄弱主张，由定向深挖员带受限工具集逐条补采
+    #（财务主张查财报、行情主张查K线、事实主张搜网页），新素材入库后重新匹配证据
     _check_stop(config)
     task_id = state["task_id"]
     guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 62)
@@ -443,34 +459,27 @@ def deepen_node(state: ResearchState, config: RunnableConfig) -> dict:
                     else f"素材已达 {MAX_MATERIALS_TOTAL} 篇上限，不再补采。",
               details=[], metrics=[], progress=62)
         return {"guidance": guidance}
-    new_sources, new_evidence = 0, 0
+    new_count = {"n": 0}
     for claim in weak:
         _check_stop(config)
-        if materials_count >= MAX_MATERIALS_TOTAL:
+        if len(store.list_materials(task_id)) >= MAX_MATERIALS_TOTAL:
             break
-        try:
-            items = _web_search(claim["statement"][:200], state["user_id"])
-        except Exception:
-            continue
-        for item in items[:1]:  #每条主张只取最相关的一篇全文
-            url, title = item.get("url", ""), item.get("title", "")
-            try:
-                content = _web_extract(url, state["user_id"])[:6000]
-            except Exception:
-                content = str(item.get("content", ""))[:6000]
-            if not content.strip():
-                continue
-            publisher = url.split("/")[2] if "://" in url else url
-            materials_count += 1
-            _ingest_material(task_id, materials_count, title, publisher, url, content)
-            new_sources += 1
-        new_evidence += _match_evidence(task_id, claim, llm, num=3)
+        prompt = DEEPEN_PROMPT.format(
+            claim=claim["statement"][:300], topic=state["topic"],
+            company=state["company"] or "未指定",
+            material_count=len(store.list_materials(task_id)),
+            max_total=MAX_MATERIALS_TOTAL,
+            max_new=max(1, MAX_MATERIALS - new_count["n"]),
+        )
+        _run_collector_agent(state, config,
+                             _make_collector_tools(task_id, state["user_id"], new_count), prompt)
+        _match_evidence(task_id, claim, llm, num=3)  #新素材入库后立即重新匹配证据
+    new_sources = new_count["n"]
     store.bump_progress(task_id, 62)
     _emit(config, "retriever", "progress", title="定向深挖完成",
-          speech=f"对 {len(weak)} 条证据薄弱的主张做了定向检索，补采 {new_sources} 篇信源，新增 {new_evidence} 条证据。",
+          speech=f"对 {len(weak)} 条证据薄弱的主张做了定向深挖，补采 {new_sources} 篇信源，新增证据已重新匹配。",
           details=[{"label": c["id"], "text": c["statement"][:60]} for c in weak],
-          metrics=[{"label": "新信源", "value": str(new_sources)},
-                   {"label": "新证据", "value": str(new_evidence)}], progress=62)
+          metrics=[{"label": "新信源", "value": str(new_sources)}], progress=62)
     return {"guidance": guidance}
 
 
