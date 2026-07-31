@@ -361,7 +361,8 @@ def parse_node(state: ResearchState, config: RunnableConfig) -> dict:
 
 
 def _search_with_meta(query: str, num: int = 2) -> list[dict]:
-    #带元数据的精确检索：向量粗筛 + reranker 精排，返回 [{content, group_id, chunk_index}]
+    #带元数据的全库精确检索：向量粗筛（知识库/会话/任务素材同库召回）+ reranker 精排，
+    #返回 [{content, group_id, chunk_index}]；命中的素材元数据由调用方按 group_id 解析
     docs = _get_store().similarity_search(query, k=2 * num)
     if not docs:
         return []
@@ -532,6 +533,117 @@ def _claims_snapshot(task_id: str) -> list[dict]:
     return snapshot
 
 
+# ---------------- 幻觉审查员子智能体（只读工具交叉核验） ----------------
+#独立幻觉审查：除主张/证据/主控意见外，还给审查员前序子智能体的处理轨迹（拆解/采集/提取/检索），
+#并配两个只读工具用于核对"引文是否真实存在于原文"——这是防整条流水线自说自话的关键：
+#read_material 按编号读素材原文，search_materials 在任务素材库内按语义定位引文段落；
+#只读、无入库/无执行能力，审查结论仍以结构化 JSON 交回主控
+
+REVIEW_MAX_ROUNDS = 6  #审查员工具查阅轮次上限（引文核对完即可输出结论）
+
+REVIEW_PROMPT = """你是金融事实核查任务的独立幻觉审查员，与采集/检索链路完全隔离，只做二级复核与可信度分级。
+职责：对主控一级核验后的每条主张，独立复核证据是否真实、引用是否准确，防止流水线"自说自话"式幻觉。
+
+【任务】主题：{topic}；公司：{company}
+【处理轨迹】（前序子智能体的处理记录，供你交叉核对）
+{trace}
+【待复核主张与证据链】
+{claims_with_verdicts}
+
+【素材库】共 {material_count} 份任务材料。可用工具核对原文：
+- read_material：读取任务素材库中某编号材料的原文，核对证据引文是否真实存在、与原文一致；
+- search_materials：在知识库（含本任务素材）内按语义检索，定位引文所在段落（返回归属组与原文）。
+
+【复核要点】
+1. 引文核验：每条证据的 quote 必须能在对应材料原文中找到（允许个别字词差异），
+   找不到、拼接断章取义、或与原文明显不符 → 判 red；
+2. 关系核验：evidence 的 relation（support/challenge）是否与原文语义一致；
+3. 主控意见复核：supervisor_verdict 与证据是否自洽，confidence 是否虚高；
+4. 处理轨迹交叉检查：前序环节声称的采集/检索结果与证据链是否吻合，"查无此据"即 red；
+5. 证据不足但无矛盾 → yellow；证据充分且无幻觉迹象 → green。
+
+【输出】完成复核后，输出 JSON（不要再调用任何工具）：
+{{"reviews": [{{"claim_id": "c1", "level": "green|yellow|red",
+"verdict": "复核结论（一句话）", "conflict_reason": "判 red/yellow 的具体依据（引用材料编号与原文片段），判 green 填空串"}}]}}"""
+
+
+def _processing_trace(state: ResearchState) -> str:
+    #前序子智能体处理轨迹摘要：拆解/采集/提取/检索各环节的产出（审查员交叉核对用）
+    task_id = state["task_id"]
+    lines = [
+        f"1. 主控拆解：核查点 {len(state.get('checkpoints') or [])} 个；"
+        f"检索关键词：{'、'.join(state.get('keywords') or [])}",
+    ]
+    materials = store.list_materials(task_id)
+    lines.append(f"2. 采集员：共入库 {len(materials)} 份材料")
+    for i, m in enumerate(materials, 1):
+        lines.append(f"   材料{i} [{m.get('source_type') or '网页'}] "
+                     f"{m.get('title') or m.get('url')}（{m.get('publisher') or '未知来源'}）")
+    lines.append(f"3. 解析员：提取 {len(store.list_claims(task_id))} 条主张")
+    lines.append("4. 检索员：各主张证据匹配结果见【待复核主张与证据链】")
+    return "\n".join(lines)[:4000]
+
+
+def _make_review_tools(task_id: str, user_id: int) -> list:
+    #审查员只读工具：读素材原文 / 素材库内语义检索（均不落库、不执行外部动作）
+    from langchain_core.tools import tool as _mk_tool
+
+    @_mk_tool
+    def read_material(material_no: int) -> str:
+        """读取任务素材库中第 material_no 份材料的原文（用于核对证据引文是否真实存在）。"""
+        mats = store.list_materials(task_id)
+        if not (1 <= material_no <= len(mats)):
+            return f"材料编号越界（现有 {len(mats)} 份，编号从 1 开始）"
+        m = mats[material_no - 1]
+        return f"【材料{material_no}】{m.get('title') or ''}（{m.get('publisher') or ''}）\n{m.get('content') or ''}"[:4000]
+
+    @_mk_tool
+    def search_materials(query: str, num: int = 3) -> str:
+        """在知识库（含本任务素材）内按语义检索与 query 相关的段落，
+        返回段落归属（task 组为材料编号）与原文，用于定位证据引文是否存在。"""
+        num = max(1, min(int(num), 5))
+        hits = _search_with_meta(query, num=num)
+        if not hits:
+            return "知识库内未检索到相关段落"
+        blocks = []
+        for h in hits:
+            gid = str(h["group_id"])
+            blocks.append(f"【{gid} 第{h['chunk_index'] + 1}段】{h['content'][:600]}")
+        return "\n\n".join(blocks)
+
+    return [read_material, search_materials]
+
+
+def _run_review_agent(state: ResearchState, config: RunnableConfig, tools: list, prompt: str) -> dict:
+    #审查员 agent 循环：先用只读工具核对引文，输出结论后解析 JSON 审查结果；
+    #工具轮次达上限时以最后一次输出兜底解析
+    llm = _llm(config)
+    by_name = {t.name: t for t in tools}
+    messages: list = [SystemMessage(content=prompt)]
+    last_text = ""
+    for _round in range(REVIEW_MAX_ROUNDS):
+        _check_stop(config)
+        response = llm.invoke(messages, tools=tools)
+        calls = getattr(response, "tool_calls", None) or []
+        last_text = str(response.content or "") if response.content else last_text
+        if not calls:
+            break
+        messages.append(response)
+        for tc in calls:
+            _check_stop(config)
+            name, args = tc["name"], tc.get("args") or {}
+            tool = by_name.get(name)
+            try:
+                result = str(tool.invoke(args)) if tool else f"未知工具: {name}"
+            except Exception as e:  # noqa: BLE001
+                result = f"工具执行失败: {e}"
+            messages.append(ToolMessage(content=result, tool_call_id=tc["id"], name=name))
+    start, end = last_text.find("{"), last_text.rfind("}")
+    if start == -1 or end <= start:
+        raise RuntimeError(f"幻觉审查未输出 JSON 结论: {last_text[:200]}")
+    return json.loads(last_text[start:end + 1])
+
+
 def verify_node(state: ResearchState, config: RunnableConfig) -> dict:
     #Supervisor 一级核验：判冲突/证据缺失，必要时决策二次取证；研究员介入指令在此统一生效
     _check_stop(config)
@@ -575,12 +687,21 @@ def route_after_verify(state: ResearchState) -> str:
 
 
 def review_node(state: ResearchState, config: RunnableConfig) -> dict:
-    #独立幻觉审查：二级复核闸门，输出绿/黄/红可信度分级
+    #独立幻觉审查：审查员带只读工具（读原文核对引文/库内定位）复核二级闸门，
+    #并拿到前序子智能体的处理轨迹做交叉核对，输出绿/黄/红可信度分级
     _check_stop(config)
     task_id = state["task_id"]
     guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 95)
-    data = _llm_json(_llm(config), prompts.REVIEW_PROMPT.format(
-        claims_with_verdicts=json.dumps(_claims_snapshot(task_id), ensure_ascii=False)[:8000]))
+    data = _run_review_agent(
+        state, config,
+        _make_review_tools(task_id, state["user_id"]),
+        REVIEW_PROMPT.format(
+            topic=state["topic"], company=state["company"] or "未指定",
+            trace=_processing_trace(state),
+            claims_with_verdicts=json.dumps(_claims_snapshot(task_id), ensure_ascii=False)[:8000],
+            material_count=len(store.list_materials(task_id)),
+        ),
+    )
     level_map = {"green": "verified", "yellow": "review", "red": "conflict"}
     red = 0
     for r in data.get("reviews", []):
@@ -816,7 +937,7 @@ def retry_single_claim(task_id: str, claim_id: str, emit: Callable, llm: ChatCli
             store.update_material_score(task_id, m["group_id"], source_type,
                                         _LEVEL_SCORE[level], level)
 
-    #2. 精确匹配证据：向量粗筛 + reranker 精排（候选池含刚入库的新素材）
+    #2. 精确匹配证据：向量粗筛 + reranker 精排（候选池含刚入库的新素材，全库召回）
     candidates = _search_with_meta(claim["statement"], num=3)
     materials_by_group = {m["group_id"]: m for m in store.list_materials(task_id)}
     saved = 0
