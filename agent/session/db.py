@@ -67,6 +67,11 @@ CREATE TABLE IF NOT EXISTS user_data_sources (
     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     PRIMARY KEY (user_id, source_id)
 );
+CREATE TABLE IF NOT EXISTS user_search_settings (
+    user_id INTEGER PRIMARY KEY,
+    engine TEXT NOT NULL DEFAULT 'tavily',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
 -- 以下为事实核查流水线（agent/research）的结构化存储
 CREATE TABLE IF NOT EXISTS research_tasks (
     task_id TEXT PRIMARY KEY,

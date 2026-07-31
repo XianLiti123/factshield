@@ -5,12 +5,13 @@ from typing import Any, Callable, TypedDict
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, StateGraph
-from langchain_tavily import TavilyExtract, TavilySearch
 
 from ..llm.client import ChatClient
 from ..memory.reranker.rerank import rerank
 from ..memory.vector_store.store import _get_store, add_document
 from ..memory.SQLite.db import get_connection as memory_conn
+from ..searchengine import extract, search
+from ..session.search_config import get_engine
 from . import prompts, store
 
 #事实核查流水线（固定骨架 + LLM 判定）：
@@ -39,8 +40,15 @@ def _parse_level(value: object) -> str:
 MAX_RETRY = 2           #冲突二次取证上限（重试纪律由 VERIFY_PROMPT 约束，仅数据矛盾/证据缺失时触发）
 MAX_DEEPEN_CLAIMS = 4   #单次定向深挖的主张上限（按证据薄弱程度取前 N，每条补采 1 篇信源）
 
-_search = TavilySearch(max_results=3)
-_extract = TavilyExtract()
+
+def _web_search(query: str, user_id: int, max_results: int = 3) -> list[dict]:
+    #按用户选择的搜索引擎联网检索，返回 [{"title","url","content"}]；失败抛异常由调用方降级
+    return search(query, get_engine(user_id), max_results=max_results)
+
+
+def _web_extract(url: str, user_id: int) -> str:
+    #按用户选择的搜索引擎提取网页正文；失败抛异常由调用方退化为搜索摘要
+    return extract(url, get_engine(user_id))
 
 
 class TaskStopped(Exception):
@@ -159,8 +167,7 @@ def collect_node(state: ResearchState, config: RunnableConfig) -> dict:
         if collected >= MAX_MATERIALS or len(materials) >= MAX_MATERIALS_TOTAL:
             break
         try:
-            result = _search.invoke({"query": kw})
-            items = result.get("results", []) if isinstance(result, dict) else []
+            items = _web_search(kw, state["user_id"])
         except Exception as e:
             _emit(config, "collector", "warning", title="检索失败", speech=f"关键词「{kw}」检索失败：{e}",
                   details=[], metrics=[], progress=state.get("progress", 25))
@@ -171,9 +178,7 @@ def collect_node(state: ResearchState, config: RunnableConfig) -> dict:
                 break
             url, title = item.get("url", ""), item.get("title", "")
             try:
-                ext = _extract.invoke({"urls": [url]})
-                pages = ext.get("results", []) if isinstance(ext, dict) else []
-                content = str(pages[0].get("raw_content", ""))[:6000] if pages else ""
+                content = _web_extract(url, state["user_id"])[:6000]
             except Exception:
                 content = str(item.get("content", ""))[:6000]  #正文抓取失败时退化为搜索摘要
             if not content.strip():
@@ -308,16 +313,13 @@ def deepen_node(state: ResearchState, config: RunnableConfig) -> dict:
         if materials_count >= MAX_MATERIALS_TOTAL:
             break
         try:
-            result = _search.invoke({"query": claim["statement"][:200]})
-            items = result.get("results", []) if isinstance(result, dict) else []
+            items = _web_search(claim["statement"][:200], state["user_id"])
         except Exception:
             continue
         for item in items[:1]:  #每条主张只取最相关的一篇全文
             url, title = item.get("url", ""), item.get("title", "")
             try:
-                ext = _extract.invoke({"urls": [url]})
-                pages = ext.get("results", []) if isinstance(ext, dict) else []
-                content = str(pages[0].get("raw_content", ""))[:6000] if pages else ""
+                content = _web_extract(url, state["user_id"])[:6000]
             except Exception:
                 content = str(item.get("content", ""))[:6000]
             if not content.strip():
@@ -613,7 +615,7 @@ def _attachment_section(task_id: str) -> str:
 
 # ---------------- 单条主张重新取证 ----------------
 
-def retry_single_claim(task_id: str, claim_id: str, emit: Callable, llm: ChatClient) -> None:
+def retry_single_claim(task_id: str, claim_id: str, emit: Callable, llm: ChatClient, user_id: int) -> None:
     #对单条主张重跑 联网补采->检索->复核 子流程（后台线程执行，事件照常产出）
     claim = store.get_claim(task_id, claim_id)
     if claim is None:
@@ -632,8 +634,7 @@ def retry_single_claim(task_id: str, claim_id: str, emit: Callable, llm: ChatCli
              details=[], metrics=[], progress=None)
     else:
         try:
-            result = _search.invoke({"query": claim["statement"][:200]})
-            search_items = result.get("results", []) if isinstance(result, dict) else []
+            search_items = _web_search(claim["statement"][:200], user_id)
         except Exception as e:
             search_items = []
             emit("collector", "warning", title="联网检索失败", speech=f"二次取证联网检索失败：{e}",
@@ -643,9 +644,7 @@ def retry_single_claim(task_id: str, claim_id: str, emit: Callable, llm: ChatCli
                 break
             url, title = item.get("url", ""), item.get("title", "")
             try:
-                ext = _extract.invoke({"urls": [url]})
-                pages = ext.get("results", []) if isinstance(ext, dict) else []
-                content = str(pages[0].get("raw_content", ""))[:6000] if pages else ""
+                content = _web_extract(url, user_id)[:6000]
             except Exception:
                 content = str(item.get("content", ""))[:6000]  #正文抓取失败时退化为搜索摘要
             if not content.strip():

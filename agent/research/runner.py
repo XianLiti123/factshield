@@ -103,7 +103,7 @@ def start_retry(task_id: str, claim_id: str, user_id: int) -> None:
 
     def run() -> None:
         try:
-            retry_single_claim(task_id, claim_id, emit, get_llm_client(user_id))
+            retry_single_claim(task_id, claim_id, emit, get_llm_client(user_id), user_id)
         except Exception as e:
             logger.exception("主张 %s/%s 重新取证失败", task_id, claim_id)
             emit("system", "error", {"title": "重新取证失败", "speech": str(e)})

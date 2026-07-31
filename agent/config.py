@@ -31,8 +31,8 @@ TICKFLOW_API_KEY = os.getenv("TICKFLOW_API_KEY")
 if not DEEPSEEK_API_KEY:
     raise ValueError("API key为空，请配置API key")
 
-if not TAVILY_API_KEY:
-    raise ValueError("Tavily API key为空，请在.env中配置TAVILY_API_KEY")
-
-# TavilySearch 从环境变量 TAVILY_API_KEY 读取key，这里显式连接
-os.environ["TAVILY_API_KEY"] = TAVILY_API_KEY
+# Tavily 变为可选：用户可在设置中选择 Python 搜索引擎（必应中国爬虫，无需 key）；
+# 选择了 tavily 但未配置 key 时，由 agent/searchengine 在使用处明确报错
+if TAVILY_API_KEY:
+    # TavilySearch 从环境变量 TAVILY_API_KEY 读取key，这里显式连接
+    os.environ["TAVILY_API_KEY"] = TAVILY_API_KEY

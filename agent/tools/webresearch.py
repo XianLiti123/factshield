@@ -1,47 +1,37 @@
-from langchain_core.tools import tool
-from langchain_tavily import TavilySearch,TavilyExtract
-from ..config import TAVILY_API_KEY#导入即完成.env加载和key校验
+from typing import Annotated
 
-#底层搜索服务，key由config.py写入环境变量后自动读取
-_search = TavilySearch(max_results=5)
-_extract = TavilyExtract()
+from langchain_core.tools import tool
+from langgraph.prebuilt import InjectedState
+
+from ..searchengine import extract, search
+from ..session.search_config import get_engine
+
+#联网检索工具：按当前用户在设置中选择的搜索引擎路由（tavily / python 必应中国爬虫）
+#选 tavily 但未配置 TAVILY_API_KEY 时返回明确错误，不静默降级
+
 
 @tool
-def web_search(query: str) -> str:
+def web_search(query: str, user_id: Annotated[int, InjectedState("user_id")] = None) -> str:
     """当需要查询最新资讯、实时信息或不确定的事实时，联网搜索并返回相关结果"""
+    engine = get_engine(user_id)
     try:
-        result = _search.invoke({"query":query})
+        items = search(query, engine, max_results=5)
     except Exception as e:
-        return f"搜索失败: {e}"
-
-    #result可能是dict或JSON字符串，统一格式化为纯文本，并截断防止内容过长
-    if isinstance(result,dict) and "results" in result:
-        items = result["results"]
-    else:
-        return str(result)[:2000]
+        return f"搜索失败（引擎：{engine}）: {e}"
 
     lines = []
-    for i,item in enumerate(items,1):
-        title = item.get("title","")
-        url = item.get("url","")
-        content = str(item.get("content",""))[:300]#每条摘要限300字，防止上下文过长
-        lines.append(f"[{i}] {title}\n链接: {url}\n摘要: {content}")
+    for i, item in enumerate(items, 1):
+        content = str(item.get("content", ""))[:300]  #每条摘要限300字，防止上下文过长
+        lines.append(f"[{i}] {item.get('title', '')}\n链接: {item.get('url', '')}\n摘要: {content}")
     return "\n\n".join(lines) or "没有找到相关结果"
 
+
 @tool
-def web_extract(url: str) -> str:
+def web_extract(url: str, user_id: Annotated[int, InjectedState("user_id")] = None) -> str:
     """打开指定网址，提取网页正文内容。当搜索结果摘要不够详细、需要阅读网页全文时使用"""
+    engine = get_engine(user_id)
     try:
-        result = _extract.invoke({"urls":[url]})#TavilyExtract要求urls为列表
+        content = extract(url, engine)
     except Exception as e:
-        return f"网页读取失败: {e}"
-
-    if isinstance(result,dict) and "results" in result:
-        items = result["results"]
-    else:
-        return str(result)[:3000]
-
-    if not items:
-        return "网页内容提取失败"
-    content = str(items[0].get("raw_content",""))[:3000]#正文限3000字，防止上下文过长
-    return content or "网页内容为空"
+        return f"网页读取失败（引擎：{engine}）: {e}"
+    return content[:3000] or "网页内容为空"  #正文限3000字，防止上下文过长
