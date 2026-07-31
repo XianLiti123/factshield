@@ -3,7 +3,7 @@ import threading
 import time
 from typing import Any, Callable, TypedDict
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, StateGraph
 
@@ -188,44 +188,146 @@ def _ingest_material(task_id: str, seq: int, title: str, publisher: str, url: st
             "url": url, "content": content}
 
 
+# ---------------- 采集员子智能体（受限工具集自主采集） ----------------
+#采集节点不再由代码硬编码调搜索引擎，而是让"采集员"像对话 Agent 一样带工具自主取数：
+#只给数据获取能力（联网检索/读网页/efinance 财报/TickFlow 行情/自定义数据源/入库），
+#不给 terminal、subagent 等系统执行能力，保障后台无人监督下的安全与成本边界；
+#轮次/素材数量均有硬上限，控制流仍由固定骨架保证（stop/进度/审计不受影响）
+
+COLLECTOR_MAX_ROUNDS = 10  #采集员单任务最大工具调用轮次（成本上限）
+
+COLLECTOR_PROMPT = """你是金融事实核查任务的数据采集员，负责把可靠的一手资料存入任务素材库。
+
+【任务】主题：{topic}；公司：{company}
+【核查点】{checkpoints}
+【检索关键词】{keywords}
+【素材库】现有 {material_count} 份材料（总量上限 {max_materials_total} 份，本轮新增上限 {max_materials} 份）
+
+工作流程：
+1. 对每个核查点/关键词先联网检索（web_search），重要页面用 web_extract 读取正文；
+2. 涉及 A 股公司财务数据（营业收入/净利润/ROE/毛利率等）时用 query_financials 直接查询东方财富一手财报数据；
+3. 涉及股价、涨跌幅、历史走势类内容时用 query_kline 查询行情序列；
+4. 用户启用了自定义数据源时可用 list_data_sources 查看其接入规范并按其取数；未启用则忽略；
+5. 凡是有价值的材料（网页正文摘录、财报数据、行情序列等）立即调用 archive_material 入库，title/publisher/url/content 必须完整；
+6. 入库纪律：同一链接或同一公司同一报告期不要重复入库；content 控制在 300~5000 字（过长截断，过短无信息量不入库）；
+7. 完成标准：所有核查点均有材料覆盖、或素材已达上限、或已尽力无法获取更多 → 停止调用工具，直接输出一段简短的采集总结（不要调用任何工具）。"""
+
+
+def _make_collector_tools(task_id: str, user_id: int, new_count: dict) -> list:
+    #采集员工具集：全部以闭包绑定 task_id/user_id，避免 InjectedState 依赖
+    from langchain_core.tools import tool as _mk_tool
+
+    @_mk_tool
+    def archive_material(title: str, publisher: str, url: str, content: str) -> str:
+        """把一份采集到的材料（网页文章/财报数据/行情序列等）存入任务素材库，
+        供后续主张提取与证据检索引用。采集到有价值内容时必须调用本工具入库。"""
+        if len(store.list_materials(task_id)) >= MAX_MATERIALS_TOTAL:
+            return f"素材已达总量上限 {MAX_MATERIALS_TOTAL} 份，无法继续入库"
+        if new_count["n"] >= MAX_MATERIALS:
+            return f"本轮新增已达上限 {MAX_MATERIALS} 份，停止入库（可下一轮任务再补）"
+        if any(m["url"] and m["url"] == url for m in store.list_materials(task_id)):
+            return f"该链接已入库（{url}），跳过重复"
+        seq = len(store.list_materials(task_id)) + 1
+        _ingest_material(task_id, seq, (title or url or "未命名材料")[:200],
+                         publisher or "", url or "", (content or "")[:5000])
+        new_count["n"] += 1
+        return f"已入库，材料编号 {seq}（素材库现有 {len(store.list_materials(task_id))} 份）"
+
+    @_mk_tool
+    def web_search(query: str, max_results: int = 3) -> str:
+        """联网搜索，返回结果列表（标题/链接/摘要）。query 为搜索词。"""
+        max_results = max(1, min(int(max_results), 5))
+        items = _web_search(query, user_id, max_results=max_results)
+        return "\n\n".join(
+            f"[{i}] {it.get('title', '')}\n链接: {it.get('url', '')}\n摘要: {str(it.get('content', ''))[:300]}"
+            for i, it in enumerate(items, 1)
+        ) or "没有找到相关结果"
+
+    @_mk_tool
+    def web_extract(url: str) -> str:
+        """读取指定网页的正文内容（前 5000 字）。当搜索结果摘要不够详细时使用。"""
+        try:
+            return _web_extract(url, user_id)[:5000]
+        except Exception as e:  # noqa: BLE001
+            return f"网页读取失败: {e}"
+
+    @_mk_tool
+    def query_financials(stock_code: str, report_date: str = "") -> str:
+        """查询 A 股上市公司财务数据（来源：东方财富 efinance），
+        用于核验营业收入/净利润/ROE/毛利率等财务主张。stock_code 为 6 位 A 股代码。"""
+        from ..tools.finance import query_stock_financials  #延迟导入，保持加载顺序
+        return query_stock_financials.func(stock_code, report_date)
+
+    @_mk_tool
+    def query_kline(symbol: str, period: str = "1d", count: int = 30) -> str:
+        """查询股票/指数/ETF 的历史 K 线行情（来源：TickFlow），
+        用于核验股价/涨跌幅/历史走势类内容。symbol 如 600519.SH、AAPL.US。"""
+        from ..tools.finance import query_stock_kline  #延迟导入，保持加载顺序
+        return query_stock_kline.func(symbol, period, count)
+
+    @_mk_tool
+    def list_data_sources() -> str:
+        """查看当前用户已启用并配置的自定义数据源（HTTP/Python SDK 接入规范），
+        之后按规范取数；没有启用则返回空提示。"""
+        from ..tools.datasource import list_data_sources as _lds  #延迟导入，保持加载顺序
+        return _lds.func(user_id=user_id)
+
+    return [archive_material, web_search, web_extract, query_financials, query_kline, list_data_sources]
+
+
+def _run_collector_agent(state: ResearchState, config: RunnableConfig, tools: list, prompt: str) -> str:
+    #受限工具集 agent 循环：LLM 自主选工具取数并入库；无工具调用视为完成；
+    #每轮检查 stop_event，轮次硬上限 COLLECTOR_MAX_ROUNDS 防失控
+    llm = _llm(config)
+    by_name = {t.name: t for t in tools}
+    messages: list = [SystemMessage(content=prompt)]
+    summary = ""
+    for _round in range(COLLECTOR_MAX_ROUNDS):
+        _check_stop(config)
+        response = llm.invoke(messages, tools=tools)
+        calls = getattr(response, "tool_calls", None) or []
+        if not calls:
+            summary = str(response.content or "") if response.content else summary
+            break
+        messages.append(response)
+        for tc in calls:
+            _check_stop(config)
+            name, args = tc["name"], tc.get("args") or {}
+            tool = by_name.get(name)
+            try:
+                result = str(tool.invoke(args)) if tool else f"未知工具: {name}"
+            except Exception as e:  # noqa: BLE001
+                result = f"工具执行失败: {e}"
+            messages.append(ToolMessage(content=result, tool_call_id=tc["id"], name=name))
+    else:
+        summary = summary or str(messages[-1].content or "")
+    return summary
+
+
 def collect_node(state: ResearchState, config: RunnableConfig) -> dict:
-    #信源采集：按关键词抓取公开网页正文，原文切块入知识库（group_id 标任务归属）
+    #信源采集：采集员子智能体带受限工具集自主取数（联网/财报/行情/自定义数据源），
+    #有价值材料经 archive_material 入库为素材（证据链底座），产出仍交回主控
     _check_stop(config)
     task_id = state["task_id"]
     guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 25)
     #首轮取图状态；建任务时绑定的用户附件已在库中，从库里带出来（含正文，供主张提取）
     materials: list[dict] = list(state.get("materials") or store.list_materials(task_id))
-    collected = 0  #本轮新增素材数（二次取证轮次不受首轮上限影响，总量以 MAX_MATERIALS_TOTAL 封顶）
-    for kw in state["keywords"]:
-        _check_stop(config)
-        if collected >= MAX_MATERIALS or len(materials) >= MAX_MATERIALS_TOTAL:
-            break
-        try:
-            items = _web_search(kw, state["user_id"])
-        except Exception as e:
-            _emit(config, "collector", "warning", title="检索失败", speech=f"关键词「{kw}」检索失败：{e}",
-                  details=[], metrics=[], progress=state.get("progress", 25))
-            continue
-        for item in items[:2]:
-            _check_stop(config)
-            if collected >= MAX_MATERIALS or len(materials) >= MAX_MATERIALS_TOTAL:
-                break
-            url, title = item.get("url", ""), item.get("title", "")
-            try:
-                content = _web_extract(url, state["user_id"])[:6000]
-            except Exception:
-                content = str(item.get("content", ""))[:6000]  #正文抓取失败时退化为搜索摘要
-            if not content.strip():
-                continue
-            publisher = url.split("/")[2] if "://" in url else url
-            material = _ingest_material(task_id, len(materials) + 1, title, publisher, url, content)
-            materials.append(material)
-            collected += 1
+    new_count = {"n": 0}
+    prompt = COLLECTOR_PROMPT.format(
+        topic=state["topic"], company=state["company"] or "未指定",
+        checkpoints="、".join(state.get("checkpoints") or []) or "（未拆解）",
+        keywords="、".join(state["keywords"]),
+        material_count=len(materials),
+        max_materials_total=MAX_MATERIALS_TOTAL, max_materials=MAX_MATERIALS,
+    )
+    _run_collector_agent(state, config, _make_collector_tools(task_id, state["user_id"], new_count), prompt)
+    materials = store.list_materials(task_id)  #重拉全量（采集员入库后，含首轮附件）
     store.bump_progress(task_id, 25)
     _emit(config, "collector", "progress",
-          title="公开信源采集完成", speech=f"已采集 {collected} 份原始材料并存档至知识库。",
+          title="公开信源与金融数据采集完成",
+          speech=f"已采集 {new_count['n']} 份新材料（累计 {len(materials)} 份）并存档至知识库。",
           details=[{"label": m["title"] or m["url"], "text": m["url"]}
-                   for m in (materials[len(materials) - collected:] if collected else [])],
+                   for m in materials[len(materials) - min(new_count["n"], 5):]],
           metrics=[{"label": "累计素材", "value": str(len(materials))}], progress=25)
     return {"materials": materials, "guidance": guidance}
 
