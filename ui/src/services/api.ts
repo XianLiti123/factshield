@@ -23,7 +23,24 @@ export type ModelSlotConfig = {
 }
 export type SettingsResponse = {
   configs: Partial<Record<'llm' | 'vision', ModelSlotConfig>>
-  global_capabilities: { embedding: boolean; reranker: boolean }
+  global_capabilities: {
+    embedding: boolean
+    reranker: boolean
+    tavily?: boolean
+    tickflow?: boolean
+    efinance?: boolean
+  }
+}
+export type DataSourceMode = 'http' | 'python'
+export type DataSourceConfig = {
+  id: string
+  name: string
+  description: string
+  category: string
+  mode: DataSourceMode
+  specification: string
+  enabled: boolean
+  updated_at?: string
 }
 export type DocumentConversion = { filename: string; mode: string; content: string }
 export type StreamEvent = { type: 'token' | 'think' | 'tool' | 'context' | 'done' | 'error'; content: string }
@@ -50,11 +67,17 @@ export type HistoryAnalysisPoint = {
   value: number
 }
 
+export type HistoryAnalysisSource = {
+  title: string
+  url: string
+}
+
 export type HistoryAnalysisEvent = {
   name: string
   period: string
   description: string
   points: HistoryAnalysisPoint[]
+  sources?: HistoryAnalysisSource[]
 }
 
 export type HistoryAnalysis = {
@@ -265,6 +288,15 @@ export const getSettings = () => request<SettingsResponse>('/api/settings')
 export const saveModelConfig = (slot: 'llm' | 'vision', config: { base_url: string; api_key: string; model_name: string }) => (
   request<{ status: string; slot: string; config: ModelSlotConfig }>(`/api/settings/${slot}`, {
     method: 'PUT', body: JSON.stringify(config),
+  })
+)
+export const getDataSources = () => request<{ data_sources: DataSourceConfig[] }>('/api/data-sources')
+export const saveDataSources = (dataSources: DataSourceConfig[]) => (
+  request<{ status: string; data_sources: DataSourceConfig[] }>('/api/data-sources', {
+    method: 'PUT',
+    body: JSON.stringify({
+      data_sources: dataSources.map(({ updated_at: _updatedAt, ...source }) => source),
+    }),
   })
 )
 

@@ -325,6 +325,10 @@ function openEvidenceSource(sourceUrl: string) {
 function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: Evidence[]; preferredEvidenceId?: string }) {
   const [selectedEvidenceId, setSelectedEvidenceId] = useState(evidenceList[0]?.id ?? '')
   const [view, setView] = useState<EvidenceView>('text')
+  const [evidenceDragging, setEvidenceDragging] = useState(false)
+  const evidenceListRef = useRef<HTMLDivElement>(null)
+  const evidenceDragRef = useRef({ pointerId: -1, startX: 0, startScrollLeft: 0, moved: false })
+  const suppressEvidenceClickRef = useRef(false)
   const selectedEvidence = evidenceList.find((item) => item.id === selectedEvidenceId) ?? evidenceList[0]
   const selectedSourceUrl = selectedEvidence ? getEvidenceSourceUrl(selectedEvidence) : null
   const selectedCredibilityLevel = selectedEvidence && ['高', '中', '低'].includes(selectedEvidence.credibilityLevel)
@@ -344,6 +348,36 @@ function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: E
 
   if (!selectedEvidence) return <Empty description="该主张暂无证据" />
 
+  const beginEvidenceDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    evidenceDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startScrollLeft: event.currentTarget.scrollLeft,
+      moved: false,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  const moveEvidenceDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = evidenceDragRef.current
+    if (drag.pointerId !== event.pointerId) return
+    const distance = event.clientX - drag.startX
+    if (!drag.moved && Math.abs(distance) < 4) return
+    drag.moved = true
+    suppressEvidenceClickRef.current = true
+    setEvidenceDragging(true)
+    event.currentTarget.scrollLeft = drag.startScrollLeft - distance
+  }
+
+  const endEvidenceDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (evidenceDragRef.current.pointerId !== event.pointerId) return
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+    evidenceDragRef.current.pointerId = -1
+    setEvidenceDragging(false)
+    window.setTimeout(() => { suppressEvidenceClickRef.current = false }, 0)
+  }
+
   return (
     <section className="evidence-panel">
       <div className="panel-header evidence-heading">
@@ -355,13 +389,20 @@ function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: E
           options={[{ label: '原文', value: 'text' }, { label: '来源信息', value: 'source' }]}
         />
       </div>
-      <div className="evidence-list">
+      <div
+        ref={evidenceListRef}
+        className={`evidence-list${evidenceDragging ? ' is-dragging' : ''}`}
+        onPointerDown={beginEvidenceDrag}
+        onPointerMove={moveEvidenceDrag}
+        onPointerUp={endEvidenceDrag}
+        onPointerCancel={endEvidenceDrag}
+      >
         {evidenceList.map((evidence) => (
           <EvidenceCard
             key={evidence.id}
             evidence={evidence}
             active={evidence.id === selectedEvidence.id}
-            onClick={() => setSelectedEvidenceId(evidence.id)}
+            onClick={() => { if (!suppressEvidenceClickRef.current) setSelectedEvidenceId(evidence.id) }}
           />
         ))}
       </div>
