@@ -153,5 +153,8 @@ notes
 *.db
 *.db-shm
 *.db-wal
+*.sqlite
 *.sqlite3
+*.sqlite-shm
+*.sqlite-wal
 chroma_db/

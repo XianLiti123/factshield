@@ -274,13 +274,16 @@ def _make_collector_tools(task_id: str, user_id: int, new_count: dict) -> list:
     return [archive_material, web_search, web_extract, query_financials, query_kline, list_data_sources]
 
 
-def _run_collector_agent(state: ResearchState, config: RunnableConfig, tools: list, prompt: str) -> str:
+def _run_collector_agent(state: ResearchState, config: RunnableConfig, tools: list, prompt: str,
+                         *, actor: str = "collector", node: str = "collect") -> str:
     #受限工具集 agent 循环：LLM 自主选工具取数并入库；无工具调用视为完成；
-    #每轮检查 stop_event，轮次硬上限 COLLECTOR_MAX_ROUNDS 防失控
+    #每轮检查 stop_event，轮次硬上限 COLLECTOR_MAX_ROUNDS 防失控；
+    #每次工具调用写入 agent_tool_traces，供 /tasks/{id}/agents/{agent} 还原完整执行过程
     llm = _llm(config)
     by_name = {t.name: t for t in tools}
     messages: list = [SystemMessage(content=prompt)]
     summary = ""
+    task_id = state["task_id"]
     for _round in range(COLLECTOR_MAX_ROUNDS):
         _check_stop(config)
         response = llm.invoke(messages, tools=tools)
@@ -297,6 +300,7 @@ def _run_collector_agent(state: ResearchState, config: RunnableConfig, tools: li
                 result = str(tool.invoke(args)) if tool else f"未知工具: {name}"
             except Exception as e:  # noqa: BLE001
                 result = f"工具执行失败: {e}"
+            store.append_tool_trace(task_id, actor, node, name, args, result)
             messages.append(ToolMessage(content=result, tool_call_id=tc["id"], name=name))
     else:
         summary = summary or str(messages[-1].content or "")
@@ -319,7 +323,8 @@ def collect_node(state: ResearchState, config: RunnableConfig) -> dict:
         material_count=len(materials),
         max_materials_total=MAX_MATERIALS_TOTAL, max_materials=MAX_MATERIALS,
     )
-    _run_collector_agent(state, config, _make_collector_tools(task_id, state["user_id"], new_count), prompt)
+    _run_collector_agent(state, config, _make_collector_tools(task_id, state["user_id"], new_count),
+                         prompt, actor="collector", node="collect")
     materials = store.list_materials(task_id)  #重拉全量（采集员入库后，含首轮附件）
     store.bump_progress(task_id, 25)
     _emit(config, "collector", "progress",
@@ -464,7 +469,8 @@ def deepen_node(state: ResearchState, config: RunnableConfig) -> dict:
             max_new=max(1, MAX_MATERIALS - new_count["n"]),
         )
         _run_collector_agent(state, config,
-                             _make_collector_tools(task_id, state["user_id"], new_count), prompt)
+                             _make_collector_tools(task_id, state["user_id"], new_count),
+                             prompt, actor="deepener", node="deepen")
         _match_evidence(task_id, claim, llm, num=3)  #新素材入库后立即重新匹配证据
     new_sources = new_count["n"]
     store.bump_progress(task_id, 62)
@@ -616,13 +622,15 @@ def _make_review_tools(task_id: str, user_id: int) -> list:
     return [read_material, search_materials]
 
 
-def _run_review_agent(state: ResearchState, config: RunnableConfig, tools: list, prompt: str) -> dict:
+def _run_review_agent(state: ResearchState, config: RunnableConfig, tools: list, prompt: str,
+                      *, actor: str = "reviewer", node: str = "review") -> dict:
     #审查员 agent 循环：先用只读工具核对引文，输出结论后解析 JSON 审查结果；
-    #工具轮次达上限时以最后一次输出兜底解析
+    #工具轮次达上限时以最后一次输出兜底解析；每次工具调用写入 agent_tool_traces
     llm = _llm(config)
     by_name = {t.name: t for t in tools}
     messages: list = [SystemMessage(content=prompt)]
     last_text = ""
+    task_id = state["task_id"]
     for _round in range(REVIEW_MAX_ROUNDS):
         _check_stop(config)
         response = llm.invoke(messages, tools=tools)
@@ -639,6 +647,7 @@ def _run_review_agent(state: ResearchState, config: RunnableConfig, tools: list,
                 result = str(tool.invoke(args)) if tool else f"未知工具: {name}"
             except Exception as e:  # noqa: BLE001
                 result = f"工具执行失败: {e}"
+            store.append_tool_trace(task_id, actor, node, name, args, result)
             messages.append(ToolMessage(content=result, tool_call_id=tc["id"], name=name))
     start, end = last_text.find("{"), last_text.rfind("}")
     if start == -1 or end <= start:

@@ -114,7 +114,8 @@ def delete_task(task_id: str, user_id: int) -> bool:
         return False
     with get_connection() as conn:
         for table in ("task_materials", "claims", "evidence", "claim_evidence",
-                      "task_events", "task_guidance", "history_analyses"):
+                      "task_events", "task_guidance", "history_analyses",
+                      "agent_tool_traces"):
             conn.execute(f"DELETE FROM {table} WHERE task_id=?", (task_id,))
         conn.execute("DELETE FROM research_tasks WHERE task_id=?", (task_id,))
     return True
@@ -124,7 +125,8 @@ def reset_task_data(task_id: str) -> None:
     #清空任务运行产生的半成品数据（素材/主张/证据），保留任务行/事件/附件；
     #流程重启（自动修复）前调用，附件素材由 runner.reset_task 重新入库
     with get_connection() as conn:
-        for table in ("task_materials", "claims", "evidence", "claim_evidence"):
+        for table in ("task_materials", "claims", "evidence", "claim_evidence",
+                      "agent_tool_traces"):
             conn.execute(f"DELETE FROM {table} WHERE task_id=?", (task_id,))
 
 
@@ -328,6 +330,42 @@ def list_events(task_id: str, after_seq: int = 0) -> list[dict]:
         e["payload"] = json.loads(e["payload"])
         events.append(e)
     return events
+
+
+# ---------------- 子智能体工具调用轨迹（采集员/深挖员/审查员） ----------------
+
+def append_tool_trace(task_id: str, actor: str, node: str, tool: str,
+                      args: dict | None = None, result: str = "") -> None:
+    #记录子智能体的一次工具调用，供 /tasks/{task_id}/agents/{agent} 还原完整执行过程；
+    #seq 按 (task_id, actor) 自动递增，保证跨节点/跨轮次的总顺序
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(seq),0) AS m FROM agent_tool_traces WHERE task_id=? AND actor=?",
+            (task_id, actor)
+        ).fetchone()
+        seq = row["m"] + 1
+        conn.execute(
+            "INSERT INTO agent_tool_traces (task_id, actor, node, seq, tool, args, result)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (task_id, actor, node, seq, tool,
+             json.dumps(args or {}, ensure_ascii=False)[:2000], str(result)[:3000])
+        )
+
+
+def list_tool_traces(task_id: str, actor: str | None = None) -> list[dict]:
+    #按 seq 返回子智能体的工具调用轨迹；args 由调用方按需解析
+    with get_connection() as conn:
+        if actor:
+            rows = conn.execute(
+                "SELECT * FROM agent_tool_traces WHERE task_id=? AND actor=? ORDER BY seq",
+                (task_id, actor)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM agent_tool_traces WHERE task_id=? ORDER BY seq",
+                (task_id,)
+            ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ---------------- 研究员中途介入 ----------------

@@ -176,6 +176,18 @@ CREATE TABLE IF NOT EXISTS history_analyses (
     attached INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
+CREATE TABLE IF NOT EXISTS agent_tool_traces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    actor TEXT NOT NULL,             -- collector | deepener | reviewer（子智能体工具调用）
+    node TEXT NOT NULL DEFAULT '',   -- collect | deepen | review
+    seq INTEGER NOT NULL,            -- 该子智能体本次任务内的调用序号（1 起，跨节点递增）
+    tool TEXT NOT NULL,
+    args TEXT NOT NULL DEFAULT '{}',
+    result TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_agent_tool_traces_task ON agent_tool_traces(task_id, actor);
 -- 流程执行错误登记（重试/自动修复/人工修复共用，供 /errors 接口查询）
 CREATE TABLE IF NOT EXISTS flow_errors (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

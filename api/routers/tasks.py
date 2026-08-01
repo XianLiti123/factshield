@@ -12,6 +12,7 @@ from agent.research import runner, store
 from agent.research.export import report_to_docx, report_to_pdf
 from agent.research.models import run_to_dto
 from agent.research.pipeline import MAX_MATERIALS_TOTAL, _build_report, _ingest_material
+from agent.research.trace import AGENT_REGISTRY, get_agent_execution, list_agent_summaries
 from agent.session.model_config import get_config
 from agent.tools.convert import convert_document
 
@@ -355,6 +356,27 @@ def attach_history_analysis(task_id: str, user_id: int = Depends(get_current_use
     store.set_analysis_attached(analysis["id"], True)
     store.update_task(task_id, report_md=_build_report(store.get_task(task_id, user_id)))
     return {"status": "attached", "task_id": task_id}
+
+
+# ---------------- 子智能体执行过程查询 ----------------
+
+@router.get("/{task_id}/agents")
+def list_task_agents(task_id: str, user_id: int = Depends(get_current_user)) -> dict:
+    #列出研究流水线里的全部子智能体及各自的执行量（事件数/工具调用数）
+    _get_task_or_404(task_id, user_id)
+    return {"task_id": task_id, "agents": list_agent_summaries(task_id)}
+
+
+@router.get("/{task_id}/agents/{agent}")
+def get_task_agent_execution(task_id: str, agent: str,
+                             user_id: int = Depends(get_current_user)) -> dict:
+    #查询某个子智能体的完整执行过程：输入/事件时间线/工具调用轨迹/产出/错误
+    _get_task_or_404(task_id, user_id)
+    result = get_agent_execution(task_id, user_id, agent)
+    if result is None:
+        raise HTTPException(status_code=404,
+                            detail=f"未知的智能体: {agent}，可选: {list(AGENT_REGISTRY)}")
+    return result
 
 
 @router.post("/{task_id}/chat")
