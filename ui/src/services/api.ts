@@ -268,6 +268,19 @@ export async function getChatHistory(taskId: string, userId: number) {
   }
 }
 
+export async function getTaskChatHistory(taskId: string, userId: number) {
+  const sessionId = `task-${taskId}`
+  try {
+    const history = await request<{ session_id: string; messages: ChatHistoryMessage[] }>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/history`,
+    )
+    return history.messages
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return []
+    throw error
+  }
+}
+
 export async function logout() {
   try { await request<{ status: string }>('/api/auth/logout', { method: 'POST' }) } finally { setToken(null) }
 }
@@ -581,6 +594,37 @@ export async function streamChat(
   if (!response.ok) throw new ApiError(await parseError(response), response.status)
   const responseSessionId = response.headers.get('X-Session-Id')
   if (responseSessionId) window.localStorage.setItem(sessionKey, responseSessionId)
+  if (!response.body) throw new ApiError('浏览器未返回流式响应', 500)
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done })
+    const blocks = buffer.split(/\r?\n\r?\n/)
+    buffer = blocks.pop() ?? ''
+    for (const block of blocks) {
+      const data = block.split(/\r?\n/).find((line) => line.startsWith('data:'))?.slice(5).trim()
+      if (data) onEvent(JSON.parse(data) as StreamEvent)
+    }
+    if (done) break
+  }
+}
+
+export async function streamTaskChat(
+  message: string,
+  taskId: string,
+  userId: number,
+  claimId: string | undefined,
+  onEvent: (event: StreamEvent) => void,
+) {
+  const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken() ?? ''}` },
+    body: JSON.stringify({ message, claim_id: claimId ?? null }),
+  })
+  if (!response.ok) throw new ApiError(await parseError(response), response.status)
   if (!response.body) throw new ApiError('浏览器未返回流式响应', 500)
 
   const reader = response.body.getReader()

@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import type { ResearchRun } from './types'
 import { readReopenedReviewIds } from './utils/reviewDrafts'
 
-export type ViewName = 'tasks' | 'workbench' | 'topology' | 'analytics' | 'reports' | 'settings'
+export type ViewName = 'tasks' | 'workbench' | 'topology' | 'analytics' | 'reports' | 'database' | 'settings'
 export type TaskPhase = 'draft' | 'running' | 'review' | 'ready' | 'stopped' | 'failed'
 
 export function getResearchRunPhase(run: ResearchRun): TaskPhase {

@@ -17,7 +17,7 @@ import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ResearchRun } from '../types'
 import { getActiveTask, useWorkspaceStore } from '../store'
-import { getChatHistory, streamChat, uploadDocument } from '../services/api'
+import { getTaskChatHistory, streamTaskChat, uploadDocument } from '../services/api'
 import { ATTACHMENT_ACCEPT, mergeAttachmentFiles } from '../utils/attachments'
 
 type AssistantMessage = {
@@ -196,7 +196,7 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
   useEffect(() => {
     if (loadAssistantMessages(userId, run.id).length > 1) return
     let cancelled = false
-    getChatHistory(run.id, userId).then((history) => {
+    getTaskChatHistory(run.id, userId).then((history) => {
       if (cancelled || history.length === 0) return
       setMessages((current) => current.length > 1 ? current : [
         ...current,
@@ -219,11 +219,6 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
     const timestamp = Date.now()
     const attachmentInfos = attachments.map((file) => ({ name: file.name, size: file.size, type: file.type }))
     const userContent = content || '请结合我补充的附件继续核验。'
-    const context = [
-      `当前任务：${run.title}（${run.id}）`,
-      hasClaimContext ? `当前查看的事实主张：${selectedClaim.statement}` : '',
-      replyTarget ? `追问上一条回复：${replyTarget.content}` : '',
-    ].filter(Boolean).join('\n')
     setMessages((current) => [
       ...current,
       { id: timestamp, role: 'user', content: userContent, attachments: attachmentInfos, replyTo: replyTarget ?? undefined },
@@ -238,7 +233,11 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
       const attachmentContext = converted.length > 0
         ? `\n用户补充材料摘要：\n${converted.map((item) => `【${item.filename}】\n${item.content}`).join('\n\n')}`
         : ''
-      await streamChat(`${context}\n\n用户要求：${userContent}${attachmentContext}`, run.id, userId, (event) => {
+      const taskMessage = [
+        replyTarget ? `追问上一条回复：${replyTarget.content}` : '',
+        `用户要求：${userContent}${attachmentContext}`,
+      ].filter(Boolean).join('\n\n')
+      await streamTaskChat(taskMessage, run.id, userId, hasClaimContext ? selectedClaimId : undefined, (event) => {
         if (event.type === 'error') throw new Error(event.content || '对话失败')
         setMessages((current) => current.map((item) => {
           if (item.id !== timestamp + 1) return item
@@ -288,7 +287,7 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
     if (attachmentInputRef.current) attachmentInputRef.current.value = ''
   }
 
-  if (activeView === 'tasks' || activeView === 'settings') return null
+  if (activeView === 'tasks' || activeView === 'settings' || activeView === 'database') return null
 
   return (
     <>

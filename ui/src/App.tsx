@@ -12,6 +12,7 @@ import { TaskCenter } from './components/TaskCenter'
 import { LoginView } from './components/LoginView'
 import { SupervisorAssistant } from './components/SupervisorAssistant'
 import { SettingsView } from './components/SettingsView'
+import { DatabaseView } from './components/DatabaseView'
 import { getResearchRuns } from './services/mockApi'
 import { getActiveTask, getTaskProgress, useWorkspaceStore } from './store'
 import { ApiError, getMe, getTask, listTasks, logout, setToken, type UserInfo } from './services/api'
@@ -95,7 +96,7 @@ function App() {
     ? persistedRun
     : undefined
   const persistedRunIdentityMismatch = Boolean(isPersistedTask && persistedRun && !currentPersistedRun)
-  const isResearchPreview = !['tasks', 'settings'].includes(activeView) && (!activeTask.id || activeTask.phase === 'draft')
+  const isResearchPreview = !['tasks', 'settings', 'database'].includes(activeView) && (!activeTask.id || activeTask.phase === 'draft')
   const run = isResearchPreview
     ? baseRun
     : isPersistedTask
@@ -142,12 +143,12 @@ function App() {
 
   return (
     <AppShell user={user} onLogout={handleLogout}>
-      {isLoading && !['tasks', 'settings'].includes(activeView) && (
+      {isLoading && !['tasks', 'settings', 'database'].includes(activeView) && (
         <div className="loading-state">
           <Skeleton active paragraph={{ rows: 8 }} />
         </div>
       )}
-      {isError && !['tasks', 'settings'].includes(activeView) && (
+      {isError && !['tasks', 'settings', 'database'].includes(activeView) && (
         <Result
           status="error"
           title="研究任务加载失败"
@@ -157,10 +158,11 @@ function App() {
       )}
       {activeView === 'tasks' && <TaskCenter />}
       {activeView === 'settings' && <SettingsView />}
-      {isPersistedTask && (runLoading || (runFetching && !currentPersistedRun)) && !['tasks', 'settings'].includes(activeView) && (
+      {activeView === 'database' && <DatabaseView userId={user.id} />}
+      {isPersistedTask && (runLoading || (runFetching && !currentPersistedRun)) && !['tasks', 'settings', 'database'].includes(activeView) && (
         <div className="loading-state"><Skeleton active paragraph={{ rows: 8 }} /></div>
       )}
-      {isPersistedTask && runError && !['tasks', 'settings'].includes(activeView) && (
+      {isPersistedTask && runError && !['tasks', 'settings', 'database'].includes(activeView) && (
         <Result
           status="error"
           title="研究详情加载失败"
@@ -168,7 +170,7 @@ function App() {
           extra={<Button icon={<ReloadOutlined />} onClick={() => refetchRun()}>重新加载</Button>}
         />
       )}
-      {persistedRunIdentityMismatch && !runFetching && !runError && !['tasks', 'settings'].includes(activeView) && (
+      {persistedRunIdentityMismatch && !runFetching && !runError && !['tasks', 'settings', 'database'].includes(activeView) && (
         <Result
           status="warning"
           title="研究详情与当前任务不一致"
@@ -176,7 +178,7 @@ function App() {
           extra={<Button icon={<ReloadOutlined />} onClick={() => refetchRun()}>重新读取当前任务</Button>}
         />
       )}
-      {run && !['tasks', 'settings'].includes(activeView) && (
+      {run && !['tasks', 'settings', 'database'].includes(activeView) && (
         <>
           <ResearchHeader run={run} preview={isResearchPreview} />
           {isResearchPreview && (
@@ -185,7 +187,7 @@ function App() {
               <span>当前使用示例研究展示完整页面；所有操作仅保留在本次预览中，不会写入你的任务或后端。</span>
             </div>
           )}
-          {!isResearchPreview && activeTask.isDemo && !['tasks', 'settings'].includes(activeView) && (
+          {!isResearchPreview && activeTask.isDemo && !['tasks', 'settings', 'database'].includes(activeView) && (
             <div className="ui-preview-banner">
               <strong>流程演示任务</strong>
               <span>时间线、证据和结论均为内置示例；本次流程不会访问外部数据，也不会写入后端。</span>
