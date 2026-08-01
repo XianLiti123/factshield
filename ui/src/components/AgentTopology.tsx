@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import {
   Background,
   Controls,
@@ -10,16 +10,32 @@ import {
   type Node,
   type NodeProps,
 } from '@xyflow/react'
-import { CheckCircleFilled, ClockCircleFilled, LoadingOutlined, LockFilled, WarningFilled } from '@ant-design/icons'
-import { Button } from 'antd'
+import { CheckCircleFilled, ClockCircleFilled, CloseOutlined, LoadingOutlined, LockFilled, WarningFilled } from '@ant-design/icons'
+import { Button, Drawer, Empty, Spin, Tag, message } from 'antd'
 import { useWorkspaceStore } from '../store'
+import { getAgentExecution, type AgentExecution, type AuditEvent } from '../services/api'
 import type { AgentInfo, ResearchRun } from '../types'
 
 type AgentNodeData = AgentInfo & {
   kind?: 'supervisor' | 'reviewer'
   detailLabel: string
   displayDetail: string
+  onOpen?: (agentId: string) => void
   [key: string]: unknown
+}
+
+const agentNames: Record<string, string> = {
+  supervisor: '小盾', collector: '采集员', parser: '解析员', retriever: '检索员',
+  scorer: '评分员', assembler: '组装员', reviewer: '审查员', system: '系统',
+}
+
+type AgentDetailProps = {
+  agent: AgentInfo
+  events: AuditEvent[]
+  execution?: AgentExecution | null
+  loading: boolean
+  error: string
+  onRetry: () => void
 }
 
 const agentDetailLabels: Record<string, string> = {
@@ -98,7 +114,7 @@ function AgentNode({ data }: NodeProps<Node<AgentNodeData>>) {
         : <LoadingOutlined spin />
 
   return (
-    <div className={`agent-node ${data.kind ?? ''} ${data.status}`}>
+    <div className={`agent-node ${data.kind ?? ''} ${data.status}`} role="button" tabIndex={0} onClick={() => data.onOpen?.(data.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') data.onOpen?.(data.id) }}>
       <Handle type="target" position={Position.Top} />
       <div className="agent-node-top">
         <span className="agent-node-icon">{data.kind === 'reviewer' ? '复' : data.kind === 'supervisor' ? '盾' : '核'}</span>
@@ -108,6 +124,46 @@ function AgentNode({ data }: NodeProps<Node<AgentNodeData>>) {
       <div className="agent-node-detail"><span>{data.detailLabel}</span><strong>{data.displayDetail}</strong></div>
       <div className="agent-node-footer"><span className={`agent-status-label ${data.status}`}>{statusLabel}</span><span>{data.duration ? `耗时 ${data.duration}` : '尚未启动'}</span></div>
       <Handle type="source" position={Position.Bottom} />
+    </div>
+  )
+}
+
+function AgentDetail({ agent, events, loading, error, onRetry }: AgentDetailProps) {
+  const agentEvents = events.filter((event) => event.actor === agent.id)
+  return (
+    <div className="agent-detail-drawer-body">
+      <div className="agent-detail-summary">
+        <span className={`agent-detail-mark ${agent.id === 'reviewer' ? 'reviewer' : agent.id === 'supervisor' ? 'supervisor' : ''}`}>{agent.id === 'reviewer' ? '复' : agent.id === 'supervisor' ? '盾' : '核'}</span>
+        <div><strong>{agentNames[agent.id] ?? agent.name.replace(/\s*SubAgent$/, '')}</strong><small>{agent.role}</small></div>
+        <Tag color={agent.status === 'warning' ? 'error' : agent.status === 'running' ? 'processing' : agent.status === 'done' ? 'success' : 'default'}>{agent.status === 'done' ? '已完成' : agent.status === 'running' ? '运行中' : agent.status === 'warning' ? '需处理' : '等待中'}</Tag>
+      </div>
+      <div className="agent-detail-intro"><strong>完整执行过程</strong><span>以下内容来自任务审计日志，只展示该 Agent 实际产生的事件。</span></div>
+      {loading ? <div className="agent-detail-loading"><Spin /><span>正在读取执行记录…</span></div> : error ? <div className="agent-detail-error"><span>{error}</span><Button size="small" onClick={onRetry}>重试</Button></div> : agentEvents.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无该 Agent 的可回放事件" /> : <div className="agent-detail-timeline">{agentEvents.map((event) => <div className={`agent-detail-event ${event.payload.tone ?? ''}`} key={`${event.seq}-${event.id}`}><div className="agent-detail-event-marker"><i /></div><div className="agent-detail-event-copy"><div className="agent-detail-event-head"><strong>{event.payload.title || (event.kind === 'done' ? '执行完成' : '执行进展')}</strong><time>{new Date(event.ts).toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time></div>{event.payload.speech && <p>{event.payload.speech}</p>}{event.payload.details && event.payload.details.length > 0 && <div className="agent-detail-items">{event.payload.details.map((item, index) => <div key={`${item.label}-${index}`}><span>{item.label}</span><strong>{item.text}</strong></div>)}</div>}{event.payload.metrics && event.payload.metrics.length > 0 && <div className="agent-detail-metrics">{event.payload.metrics.map((item) => <span key={`${item.label}-${item.value}`}><small>{item.label}</small><strong>{item.value}</strong></span>)}</div>}</div></div>)}</div>}
+    </div>
+  )
+}
+
+function stringifyExecutionValue(value: unknown) {
+  if (typeof value === 'string') return value
+  if (value === undefined || value === null) return ''
+  try { return JSON.stringify(value, null, 2) } catch { return String(value) }
+}
+
+function AgentExecutionDetail({ execution, loading, error, onRetry }: { execution: AgentExecution | null; loading: boolean; error: string; onRetry: () => void }) {
+  if (loading) return <div className="agent-detail-loading"><Spin /><span>正在读取执行记录...</span></div>
+  if (error) return <div className="agent-detail-error"><span>{error}</span><Button size="small" onClick={onRetry}>重试</Button></div>
+  if (!execution) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无执行详情" />
+  return (
+    <div className="agent-detail-sections">
+      <section className="agent-detail-section"><h3>输入</h3><pre>{stringifyExecutionValue(execution.inputs)}</pre></section>
+      <section className="agent-detail-section"><h3>执行时间线 <em>{execution.timeline.length}</em></h3>
+        {execution.timeline.length === 0 ? <p className="agent-detail-empty-copy">暂无时间线事件</p> : <div className="agent-detail-timeline">{execution.timeline.map((event) => <div className={`agent-detail-event ${event.payload.tone ?? ''}`} key={`${event.seq}-${event.id}`}><div className="agent-detail-event-marker"><i /></div><div className="agent-detail-event-copy"><div className="agent-detail-event-head"><strong>{event.payload.title || (event.kind === 'done' ? '执行完成' : '执行进展')}</strong><time>{new Date(event.ts).toLocaleTimeString('zh-CN')}</time></div>{event.payload.speech && <p>{event.payload.speech}</p>}{event.payload.details && <div className="agent-detail-items">{event.payload.details.map((item, index) => <div key={`${item.label}-${index}`}><span>{item.label}</span><strong>{item.text}</strong></div>)}</div>}{event.payload.metrics && <div className="agent-detail-metrics">{event.payload.metrics.map((item) => <span key={`${item.label}-${item.value}`}><small>{item.label}</small><strong>{item.value}</strong></span>)}</div>}</div></div>)}</div>}
+      </section>
+      <section className="agent-detail-section"><h3>工具调用 <em>{execution.tool_calls.length}</em></h3>
+        {execution.tool_calls.length === 0 ? <p className="agent-detail-empty-copy">该 Agent 没有工具调用记录</p> : <div className="agent-detail-tool-list">{execution.tool_calls.map((call, index) => <div className="agent-detail-tool" key={`${call.seq ?? index}-${call.tool ?? 'tool'}`}><div><strong>{call.tool || '未命名工具'}</strong><small>{call.node || '执行节点'}{call.seq ? ` · 第 ${call.seq} 次` : ''}</small></div>{call.args && <pre>{stringifyExecutionValue(call.args)}</pre>}{call.result && <p>{call.result}</p>}</div>)}</div>}
+      </section>
+      <section className="agent-detail-section"><h3>产出</h3>{Object.keys(execution.artifacts).length === 0 ? <p className="agent-detail-empty-copy">暂无结构化产出</p> : <pre>{stringifyExecutionValue(execution.artifacts)}</pre>}</section>
+      <section className={`agent-detail-section${execution.errors.length > 0 ? ' has-errors' : ''}`}><h3>异常 <em>{execution.errors.length}</em></h3>{execution.errors.length === 0 ? <p className="agent-detail-empty-copy">未记录异常</p> : <div className="agent-detail-error-list">{execution.errors.map((item, index) => <pre key={index}>{stringifyExecutionValue(item)}</pre>)}</div>}</section>
     </div>
   )
 }
@@ -123,6 +179,29 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
   const conflictClaims = pendingReviewClaims.filter((claim) => claim.status === 'conflict')
   const conflictCount = conflictClaims.length
   const conflictClaim = conflictClaims[0]
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([])
+  const [agentExecution, setAgentExecution] = useState<AgentExecution | null>(null)
+  const [auditLoading, setAuditLoading] = useState(false)
+  const [auditError, setAuditError] = useState('')
+  const selectedAgent = selectedAgentId ? run.agents.find((agent) => agent.id === selectedAgentId) : undefined
+
+  const openAgentDetail = async (agentId: string) => {
+    setSelectedAgentId(agentId)
+    setAuditLoading(true)
+    setAuditError('')
+    try {
+      const result = await getAgentExecution(run.id, agentId)
+      setAgentExecution(result)
+    } catch (error) {
+      setAuditEvents([])
+      setAgentExecution(null)
+      setAuditError(error instanceof Error ? error.message : '执行记录读取失败')
+      message.error('执行记录读取失败')
+    } finally {
+      setAuditLoading(false)
+    }
+  }
 
   const { nodes, edges } = useMemo(() => {
     const find = (id: string) => run.agents.find((agent) => agent.id === id)!
@@ -136,6 +215,7 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
 
       return {
         ...normalizedAgent,
+        onOpen: openAgentDetail,
         kind,
         detailLabel: agentDetailLabels[agent.id] ?? '当前进展',
         displayDetail: agent.detail.trim()
@@ -176,7 +256,7 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
       }] : []),
     ]
     return { nodes: topologyNodes, edges: topologyEdges }
-  }, [conflictCount, pendingReviewClaims.length, run.agents, run.claims.length, run.evidence.length])
+  }, [conflictCount, openAgentDetail, pendingReviewClaims.length, run.agents, run.claims.length, run.evidence.length])
 
   return (
     <div className="page-card topology-page">
@@ -216,6 +296,9 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
           <Controls />
         </ReactFlow>
       </div>
+      <Drawer className="agent-detail-drawer" title={<div><strong>{selectedAgent ? `${agentNames[selectedAgent.id] ?? selectedAgent.name} · 执行记录` : 'Agent 执行记录'}</strong><small>{run.id}</small></div>} closeIcon={<CloseOutlined />} width={520} open={Boolean(selectedAgent)} onClose={() => setSelectedAgentId(null)}>
+        {selectedAgent && <div className="agent-detail-drawer-body"><div className="agent-detail-summary"><span className={`agent-detail-mark ${selectedAgent.id === 'reviewer' ? 'reviewer' : selectedAgent.id === 'supervisor' ? 'supervisor' : ''}`}>{selectedAgent.id === 'reviewer' ? '审' : selectedAgent.id === 'supervisor' ? '盾' : '执'}</span><div><strong>{agentNames[selectedAgent.id] ?? selectedAgent.name.replace(/\s*SubAgent$/, '')}</strong><small>{selectedAgent.role}</small></div><Tag color={selectedAgent.status === 'warning' ? 'error' : selectedAgent.status === 'running' ? 'processing' : selectedAgent.status === 'done' ? 'success' : 'default'}>{selectedAgent.status === 'done' ? '已完成' : selectedAgent.status === 'running' ? '运行中' : selectedAgent.status === 'warning' ? '需处理' : '等待中'}</Tag></div><div className="agent-detail-intro"><strong>完整执行过程</strong><span>来自后端 Agent 执行详情</span></div><AgentExecutionDetail execution={agentExecution} loading={auditLoading} error={auditError} onRetry={() => void openAgentDetail(selectedAgent.id)} /></div>}
+      </Drawer>
     </div>
   )
 }

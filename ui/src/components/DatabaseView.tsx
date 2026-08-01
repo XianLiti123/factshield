@@ -143,6 +143,7 @@ export function DatabaseView({ userId }: { userId: number }) {
   const [history, setHistory] = useState<DatabaseQueryRecord[]>(() => loadHistory(userId))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [expandedTools, setExpandedTools] = useState<ChannelKey | null>(null)
 
   const sections = useMemo(() => splitAnswer(answer), [answer])
   const channelTools = useMemo(() => CHANNEL_KEYS.reduce<Record<ChannelKey, string[]>>((result, key) => {
@@ -166,6 +167,7 @@ export function DatabaseView({ userId }: { userId: number }) {
     setAnswer('')
     setThinking('')
     setTools([])
+    setExpandedTools(null)
     setError('')
     setLoading(true)
     let streamedAnswer = ''
@@ -269,7 +271,15 @@ export function DatabaseView({ userId }: { userId: number }) {
                     <div><strong>{meta.title}</strong><small>{meta.description}</small></div>
                     <span className={`database-channel-status${loading ? ' loading' : ''}`}>{loading ? <Spin size="small" /> : <CheckCircleFilled />} {loading ? '检索中' : '已返回'}</span>
                   </header>
-                  {channelTools[key].length > 0 && <div className="database-tool-list">{channelTools[key].map((tool) => <span key={tool}><ToolOutlined /> {tool}</span>)}</div>}
+                  {channelTools[key].length > 0 && (
+                    <div className={`database-tool-card${expandedTools === key ? ' expanded' : ''}`}>
+                      <button type="button" className="database-tool-toggle" onClick={() => setExpandedTools((current) => current === key ? null : key)} aria-expanded={expandedTools === key}>
+                        <span><ToolOutlined /><strong>调用工具</strong><small>{channelTools[key].length} 项</small></span>
+                        <i />
+                      </button>
+                      {expandedTools === key && <div className="database-tool-list">{channelTools[key].map((tool) => <span key={tool}><ToolOutlined /> {tool}</span>)}</div>}
+                    </div>
+                  )}
                   <div className="database-channel-content">
                     {liveContent ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{liveContent}</ReactMarkdown> : loading ? <div className="database-channel-placeholder"><Spin /><span>等待模型返回这一类资料…</span></div> : <p>模型没有返回明确的分段内容，请查看其他结果或重新提问。</p>}
                   </div>

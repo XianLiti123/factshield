@@ -129,7 +129,8 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
   const displayName = localProfile.displayName?.trim() || user.display_name?.trim() || user.email.split('@')[0] || '研究员'
   const avatarInitial = Array.from(displayName)[0] || '研'
   const avatarText = /^[a-z]$/i.test(avatarInitial) ? avatarInitial.toUpperCase() : avatarInitial
-  const avatarSrc = localProfile.avatar
+  // 后端将来提供 avatar/avatar_url 时优先使用远端头像；旧账号继续读取本地头像。
+  const avatarSrc = user.avatar_url || user.avatar || localProfile.avatar
   const searchRequestRef = useRef(0)
 
   useEffect(() => {

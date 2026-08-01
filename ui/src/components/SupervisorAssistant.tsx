@@ -4,6 +4,7 @@ import {
   BulbOutlined,
   CheckCircleFilled,
   CloseOutlined,
+  DownOutlined,
   FileOutlined,
   FileSearchOutlined,
   MessageOutlined,
@@ -174,6 +175,7 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
   const [attachmentDragging, setAttachmentDragging] = useState(false)
   const [replyTarget, setReplyTarget] = useState<{ id: number; content: string } | null>(null)
   const [sending, setSending] = useState(false)
+  const [collapsedSections, setCollapsedSections] = useState<Record<number, { thinking: boolean; tools: boolean }>>({})
   const attachmentInputRef = useRef<HTMLInputElement>(null)
   const [messages, setMessagesState] = useState<AssistantMessage[]>(() => loadAssistantMessages(userId, run.id))
   const messagesRef = useRef(messages)
@@ -192,6 +194,12 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
     [run.claims, selectedClaimId],
   )
   const hasClaimContext = activeView === 'workbench' && selectedClaim
+  const toggleSection = (messageId: number, section: 'thinking' | 'tools') => {
+    setCollapsedSections((current) => {
+      const previous = current[messageId] ?? { thinking: false, tools: false }
+      return { ...current, [messageId]: { ...previous, [section]: !previous[section] } }
+    })
+  }
 
   useEffect(() => {
     if (loadAssistantMessages(userId, run.id).length > 1) return
@@ -350,18 +358,19 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
                     )}
                     {message.thinking && (
                       <section className="assistant-response-section assistant-thinking-section">
-                        <div className="assistant-response-heading">
+                        <button type="button" className="assistant-response-heading assistant-section-toggle" onClick={() => toggleSection(message.id, 'thinking')} aria-expanded={!collapsedSections[message.id]?.thinking}>
                           <BulbOutlined />
                           <span>思考过程</span>
                           {message.streaming && !message.content && <i>思考中</i>}
-                        </div>
-                        <MarkdownContent content={message.thinking} className="assistant-process-markdown" />
+                          <DownOutlined className={collapsedSections[message.id]?.thinking ? 'is-collapsed' : ''} />
+                        </button>
+                        {!collapsedSections[message.id]?.thinking && <MarkdownContent content={message.thinking} className="assistant-process-markdown" />}
                       </section>
                     )}
                     {message.tools && message.tools.length > 0 && (
                       <section className="assistant-response-section assistant-tools-section">
-                        <div className="assistant-response-heading"><ToolOutlined /><span>调用工具</span></div>
-                        <ul>{message.tools.map((tool, index) => <ToolCall content={tool} key={`${tool}-${index}`} />)}</ul>
+                        <button type="button" className="assistant-response-heading assistant-section-toggle" onClick={() => toggleSection(message.id, 'tools')} aria-expanded={!collapsedSections[message.id]?.tools}><ToolOutlined /><span>调用工具 · {message.tools.length} 项</span><DownOutlined className={collapsedSections[message.id]?.tools ? 'is-collapsed' : ''} /></button>
+                        {!collapsedSections[message.id]?.tools && <ul>{message.tools.map((tool, index) => <ToolCall content={tool} key={`${tool}-${index}`} />)}</ul>}
                       </section>
                     )}
                     {message.content && (

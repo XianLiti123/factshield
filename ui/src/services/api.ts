@@ -6,7 +6,7 @@ const TOKEN_KEY = 'factshield.auth.token'
 const SESSION_KEY_PREFIX = 'factshield.chat.session.'
 const RESEARCH_PROGRESS_KEY_PREFIX = 'factshield.research.progress.'
 
-export type UserInfo = { id: number; email: string; display_name: string }
+export type UserInfo = { id: number; email: string; display_name: string; avatar_url?: string | null; avatar?: string | null }
 export type AuthResponse = { token: string; user: UserInfo }
 export type CapabilityStatus = {
   llm: boolean
@@ -517,7 +517,54 @@ export async function exportReport(taskId: string, format: ReportExportFormat) {
   }
 }
 
-export const getAuditLog = (taskId: string) => request<{ task_id: string; events: unknown[]; resolutions: unknown[] }>(`/api/tasks/${taskId}/audit-log`)
+export type AuditEvent = {
+  id: number
+  task_id: string
+  seq: number
+  actor: string
+  kind: string
+  payload: {
+    title?: string
+    speech?: string
+    details?: Array<{ label: string; text: string }>
+    metrics?: Array<{ label: string; value: string }>
+    tone?: string | null
+    progress?: number | null
+  }
+  ts: string
+}
+
+export type AgentExecution = {
+  task_id: string
+  agent: string
+  agent_label: string
+  task_status: string
+  progress: number
+  inputs: Record<string, unknown>
+  timeline: AuditEvent[]
+  tool_calls: Array<{
+    task_id?: string
+    actor?: string
+    node?: string
+    seq?: number
+    tool?: string
+    args?: Record<string, unknown>
+    result?: string
+    created_at?: string
+    ts?: string
+    [key: string]: unknown
+  }>
+  artifacts: Record<string, unknown>
+  errors: Array<Record<string, unknown>>
+}
+
+export const getAuditLog = (taskId: string) => request<{ task_id: string; events: AuditEvent[]; resolutions: unknown[] }>(`/api/tasks/${taskId}/audit-log`)
+
+export const getTaskAgents = (taskId: string) => request<{ task_id: string; agents: Array<Record<string, unknown>> }>(`/api/tasks/${taskId}/agents`)
+
+export const getAgentExecution = (taskId: string, agent: string) => request<AgentExecution>(
+  `/api/tasks/${taskId}/agents/${encodeURIComponent(agent)}`,
+)
 
 export const startHistoryAnalysis = (taskId: string, options?: HistoryAnalysisRequest) => request<{ status: string; task_id: string }>(
   `/api/tasks/${taskId}/history-analysis`, {

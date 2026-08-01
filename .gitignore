@@ -155,3 +155,10 @@ notes
 *.db-wal
 *.sqlite3
 chroma_db/
+
+# FactShield local runtime state (never commit generated sessions or indexes)
+agent/session/*.db
+agent/session/*.db-*
+agent/session/chroma_db/
+agent/memory/SQLite/*.db
+agent/memory/vector_store/chroma_db/
