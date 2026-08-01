@@ -215,6 +215,20 @@ export const login = (email: string, password: string) => request<AuthResponse>(
 
 export const getMe = () => request<UserInfo>('/api/auth/me')
 
+type AvatarUpdateResponse = Partial<UserInfo> & {
+  user?: Partial<UserInfo>
+  avatar?: string | null
+  avatar_url?: string | null
+}
+
+export async function updateAvatar(avatar: string) {
+  const payload = await request<AvatarUpdateResponse>('/api/auth/avatar', {
+    method: 'PUT',
+    body: JSON.stringify({ avatar }),
+  })
+  return payload.user ? { ...payload, ...payload.user } : payload
+}
+
 export async function checkApiHealth(timeout = 2500) {
   const controller = new AbortController()
   const timeoutId = window.setTimeout(() => controller.abort(), timeout)

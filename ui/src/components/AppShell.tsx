@@ -22,7 +22,7 @@ import {
 import { Avatar, Button, Dropdown, Empty, Input, Modal, Popover, Slider, Spin, Tag, message } from 'antd'
 import type { MenuProps } from 'antd'
 import { useWorkspaceStore } from '../store'
-import { checkApiHealth, searchWorkspace, type UserInfo, type WorkspaceSearchResult } from '../services/api'
+import { checkApiHealth, searchWorkspace, updateAvatar, type UserInfo, type WorkspaceSearchResult } from '../services/api'
 
 const PROFILE_STORAGE_PREFIX = 'factshield.profile.'
 const AVATAR_CROP_SIZE = 280
@@ -83,7 +83,7 @@ const pageMeta = {
   settings: { title: '系统设置', subtitle: '管理模型连接与研究偏好' },
 }
 
-export function AppShell({ children, user, onLogout }: { children: ReactNode; user: UserInfo; onLogout: () => void | Promise<void> }) {
+export function AppShell({ children, user, onLogout, onUserUpdated }: { children: ReactNode; user: UserInfo; onLogout: () => void | Promise<void>; onUserUpdated?: (user: UserInfo) => void }) {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false)
@@ -427,9 +427,27 @@ export function AppShell({ children, user, onLogout }: { children: ReactNode; us
       context.arc(AVATAR_OUTPUT_SIZE / 2, AVATAR_OUTPUT_SIZE / 2, AVATAR_OUTPUT_SIZE / 2, 0, Math.PI * 2)
       context.clip()
       context.drawImage(source, drawX, drawY, drawWidth, drawHeight)
-      saveLocalProfile({ avatar: canvas.toDataURL('image/png') })
+      const avatar = canvas.toDataURL('image/png')
+      try {
+        const updated = await updateAvatar(avatar)
+        const nextAvatar = updated.avatar_url || updated.avatar || avatar
+        saveLocalProfile({ avatar: nextAvatar })
+        if (onUserUpdated && updated.id && updated.email && updated.display_name !== undefined) {
+          onUserUpdated({
+            ...user,
+            ...updated,
+            avatar_url: updated.avatar_url ?? user.avatar_url,
+            avatar: updated.avatar ?? user.avatar,
+          })
+        }
+      } catch (error) {
+        // Keep the existing local fallback for older API deployments without the avatar route.
+        saveLocalProfile({ avatar })
+        const detail = error instanceof Error ? error.message : '头像接口暂不可用'
+        message.warning(`头像已保存在当前浏览器（${detail}）`)
+      }
       setAvatarEditOpen(false)
-      message.success('头像已更新')
+      if (!onUserUpdated) message.success('头像已更新')
     } catch (error) {
       message.error(error instanceof Error ? error.message : '头像保存失败')
     } finally {

@@ -142,7 +142,7 @@ function App() {
   }
 
   return (
-    <AppShell user={user} onLogout={handleLogout}>
+    <AppShell user={user} onLogout={handleLogout} onUserUpdated={setUser}>
       {isLoading && !['tasks', 'settings', 'database'].includes(activeView) && (
         <div className="loading-state">
           <Skeleton active paragraph={{ rows: 8 }} />
