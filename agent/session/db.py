@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS users (
     email TEXT UNIQUE NOT NULL,
     display_name TEXT NOT NULL DEFAULT '',
     password_hash TEXT NOT NULL,
+    avatar BLOB,
+    avatar_mime TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 CREATE TABLE IF NOT EXISTS tokens (
@@ -232,6 +234,8 @@ def init_db() -> None:
         _add_column_if_missing(conn, "sessions", "paused_input", "paused_input TEXT")
         _add_column_if_missing(conn, "profile_facts", "user_id", "user_id INTEGER")
         _add_column_if_missing(conn, "users", "display_name", "display_name TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "users", "avatar", "avatar BLOB")
+        _add_column_if_missing(conn, "users", "avatar_mime", "avatar_mime TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "evidence", "url", "url TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "research_tasks", "summary_md", "summary_md TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "task_materials", "credibility_level", "credibility_level TEXT NOT NULL DEFAULT ''")

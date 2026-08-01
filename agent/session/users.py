@@ -1,4 +1,5 @@
 import hashlib
+import base64
 import logging
 import os
 import secrets
@@ -46,10 +47,48 @@ def verify_login(email: str, password: str) -> int | None:
 
 
 def get_user(user_id: int) -> dict | None:
-    #按 id 取用户信息（不含密码哈希）
+    #按 id 取用户信息（不含密码哈希），附带头像 data URL 供前端直接渲染
     with get_connection() as conn:
         row = conn.execute("SELECT id, email, display_name, created_at FROM users WHERE id=?", (user_id,)).fetchone()
-    return dict(row) if row else None
+    if row is None:
+        return None
+    user = dict(row)
+    user["avatar_data_url"] = avatar_data_url(user_id)
+    return user
+
+
+#头像存储：图片字节直接以 BLOB 形式入库（随 sessions.db 一起持久化/备份，
+#Docker 部署时该库已挂卷，容器重建不丢；头像为 320x320 PNG，体积很小）
+_AVATAR_MAX_BYTES = 2 * 1024 * 1024
+
+
+def update_avatar(user_id: int, data: bytes | None, mime: str = "image/png") -> None:
+    #保存/替换头像（data 为 None 时清空头像）
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE users SET avatar=?, avatar_mime=? WHERE id=?",
+            (data, mime if data else "", user_id)
+        )
+
+
+def get_avatar(user_id: int) -> tuple[bytes, str] | None:
+    #返回 (图片字节, mime)，未设置头像返回 None
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT avatar, avatar_mime FROM users WHERE id=?", (user_id,)
+        ).fetchone()
+    if row is None or row["avatar"] is None:
+        return None
+    return row["avatar"], row["avatar_mime"] or "image/png"
+
+
+def avatar_data_url(user_id: int) -> str | None:
+    #头像的 base64 data URL（供 /auth/me 与上传响应直接返回）
+    avatar = get_avatar(user_id)
+    if avatar is None:
+        return None
+    data, mime = avatar
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
 
 def issue_token(user_id: int) -> str:
