@@ -23,6 +23,20 @@ export type ModelSlotConfig = {
 }
 export type SettingsResponse = {
   configs: Partial<Record<'llm' | 'vision', ModelSlotConfig>>
+  search_engine: 'tavily' | 'python'
+  search: {
+    engine: 'tavily' | 'python'
+    tavily_configured: boolean
+    needs_key: boolean
+    default_engine: 'tavily' | 'python'
+    default_reason: string
+    engines: Array<{
+      id: 'tavily' | 'python'
+      label: string
+      needs_key: boolean
+      configured: boolean
+    }>
+  }
   global_capabilities: {
     embedding: boolean
     reranker: boolean
@@ -43,7 +57,7 @@ export type DataSourceConfig = {
   updated_at?: string
 }
 export type DocumentConversion = { filename: string; mode: string; content: string }
-export type StreamEvent = { type: 'token' | 'think' | 'tool' | 'context' | 'done' | 'error'; content: string }
+export type StreamEvent = { type: 'token' | 'think' | 'tool' | 'context' | 'paused' | 'done' | 'error'; content: string }
 export type ChatHistoryMessage = { role: 'assistant' | 'user'; content: string }
 export type ResearchEvent = {
   id: number
@@ -303,15 +317,68 @@ export const getCapabilities = () => request<CapabilityStatus>('/api/capabilitie
 export async function assertResearchReady() {
   const capabilities = await getCapabilities()
   const missing = [
-    !capabilities.web_search && 'Tavily 搜索',
+    !capabilities.llm && '主 LLM',
+    !capabilities.web_search && '联网搜索',
     !capabilities.embedding && 'Embedding',
-    !capabilities.reranker && 'Reranker',
   ].filter(Boolean)
   if (missing.length > 0) {
-    throw new ApiError(`真实研究还缺少服务端配置：${missing.join('、')}。请先在 .env 配好并重启 FastAPI。`, 503)
+    throw new ApiError(`真实研究还缺少可用能力：${missing.join('、')}。请先检查系统设置与服务端配置。`, 503)
+  }
+}
+
+export type SessionStatus = {
+  session_id: string
+  running: boolean
+  paused: boolean
+  thread_id: string | null
+}
+
+export const getSessionStatus = (sessionId: string) => request<SessionStatus>(
+  `/api/sessions/${encodeURIComponent(sessionId)}/status`,
+)
+
+export const pauseSession = (sessionId: string) => request<{ status: string; session_id: string }>(
+  `/api/sessions/${encodeURIComponent(sessionId)}/pause`, { method: 'POST' },
+)
+
+export const abortSession = (sessionId: string) => request<{ status: string; session_id: string }>(
+  `/api/sessions/${encodeURIComponent(sessionId)}/abort`, { method: 'POST' },
+)
+
+export async function streamResumeSession(sessionId: string, onEvent: (event: StreamEvent) => void) {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/resume`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${getToken() ?? ''}` },
+  })
+  if (!response.ok) throw new ApiError(await parseError(response), response.status)
+  if (!response.body) throw new ApiError('浏览器未返回恢复流', 500)
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done })
+    const blocks = buffer.split(/\r?\n\r?\n/)
+    buffer = blocks.pop() ?? ''
+    for (const block of blocks) {
+      const data = block.split(/\r?\n/).find((line) => line.startsWith('data:'))?.slice(5).trim()
+      if (data) onEvent(JSON.parse(data) as StreamEvent)
+    }
+    if (done) return
   }
 }
 export const getSettings = () => request<SettingsResponse>('/api/settings')
+export const saveSearchEngine = (engine: 'tavily' | 'python', apiKey?: string) => (
+  request<{
+    status: string
+    search_engine: 'tavily' | 'python'
+    tavily_configured: boolean
+    needs_key: boolean
+  }>('/api/settings/search-engine', {
+    method: 'PUT',
+    body: JSON.stringify({ engine, api_key: apiKey?.trim() || null }),
+  })
+)
 export const saveModelConfig = (slot: 'llm' | 'vision', config: { base_url: string; api_key: string; model_name: string }) => (
   request<{ status: string; slot: string; config: ModelSlotConfig }>(`/api/settings/${slot}`, {
     method: 'PUT', body: JSON.stringify(config),
@@ -572,9 +639,62 @@ export type AgentExecution = {
   errors: Array<Record<string, unknown>>
 }
 
+export type FlowError = {
+  id: number
+  flowType: string
+  flowId: string
+  node: string
+  error: string
+  attempts: number
+  autoRepair: boolean
+  repairCount: number
+  status: 'failed' | 'repairing' | 'repaired' | 'repair_failed' | string
+  createdAt: string
+  updatedAt: string
+  repairedAt?: string | null
+}
+
+export type FlowErrorDetail = FlowError & {
+  prompt: string
+  traceback: string
+}
+
+export const listFlowErrors = (options: { flowType?: string; flowId?: string; status?: string } = {}) => {
+  const query = new URLSearchParams()
+  if (options.flowType) query.set('flow_type', options.flowType)
+  if (options.flowId) query.set('flow_id', options.flowId)
+  if (options.status) query.set('status', options.status)
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return request<{ total: number; errors: FlowError[] }>(`/api/errors${suffix}`)
+}
+
+export const getFlowError = (errorId: number) => request<FlowErrorDetail>(`/api/errors/${errorId}`)
+
+export const repairFlowError = (errorId: number) => request<{
+  status: string
+  error_id: number
+  flow_type: string
+  flow_id: string
+}>(`/api/errors/${errorId}/repair`, { method: 'POST' })
+
+export const markFlowErrorRepaired = (errorId: number, note = '') => request<{
+  status: string
+  error_id: number
+}>(`/api/errors/${errorId}/mark-repaired`, {
+  method: 'POST',
+  body: JSON.stringify({ note }),
+})
+
+export type TaskAgentSummary = {
+  id: string
+  label: string
+  event_count: number
+  tool_call_count: number
+}
+
 export const getAuditLog = (taskId: string) => request<{ task_id: string; events: AuditEvent[]; resolutions: unknown[] }>(`/api/tasks/${taskId}/audit-log`)
 
-export const getTaskAgents = (taskId: string) => request<{ task_id: string; agents: Array<Record<string, unknown>> }>(`/api/tasks/${taskId}/agents`)
+export const getTaskAgents = (taskId: string) => request<{ task_id: string; agents: TaskAgentSummary[] }>(`/api/tasks/${taskId}/agents`)
 
 export const getAgentExecution = (taskId: string, agent: string) => request<AgentExecution>(
   `/api/tasks/${taskId}/agents/${encodeURIComponent(agent)}`,

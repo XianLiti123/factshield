@@ -1985,6 +1985,32 @@ svg text {
 .search-local-status > strong { height: 38px; padding: 0 11px; display: flex; align-items: center; gap: 7px; color: #2c715b; border: 1px solid #cfe1db; border-radius: 7px; background: #eef7f3; font-size: 10px; font-weight: 500; }
 .search-local-status > strong .anticon { color: #319071; }
 .settings-search-fields > small { grid-column: 2; color: #84938f; font-size: 9px; }
+.settings-search-actions { grid-column: 1 / -1; min-height: 34px; display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
+.settings-search-actions > span { margin-right: auto; color: #768984; font-size: 10px; }
+.settings-search-actions .ant-btn { min-width: 112px; height: 32px; font-size: 11px; }
+.settings-context-server-note { display: block; margin-top: 8px; color: #8a7770; font-size: 10px; line-height: 1.45; }
+.settings-errors-card { padding: 16px 18px; }
+.settings-errors-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.settings-errors-heading strong { color: #28443e; font-size: 13px; }
+.settings-errors-heading p { margin: 5px 0 0; color: #72837e; font-size: 9px; }
+.settings-errors-heading .ant-btn { height: 28px; font-size: 10px; }
+.settings-errors-empty { min-height: 68px; display: flex; align-items: center; justify-content: center; gap: 6px; color: #84938f; font-size: 10px; }
+.settings-errors-empty .anticon { color: var(--fs-teal-700); }
+.settings-error-list { margin-top: 13px; display: grid; gap: 7px; }
+.settings-error-item { min-width: 0; padding: 10px 11px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border: 1px solid #edd9d5; border-radius: 8px; background: #fffaf9; }
+.settings-error-copy { min-width: 0; }
+.settings-error-copy strong, .settings-error-copy span, .settings-error-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-error-copy strong { color: #824a43; font-size: 10px; }
+.settings-error-copy span { margin-top: 3px; color: #5f716c; font-size: 10px; }
+.settings-error-copy small { margin-top: 4px; color: #9a8985; font-size: 8px; }
+.settings-error-actions { display: flex; flex: none; gap: 6px; }
+.settings-error-actions .ant-btn { height: 27px; padding: 0 9px; font-size: 9px; }
+.settings-error-detail { display: grid; gap: 12px; }
+.settings-error-detail > div > span { display: block; margin-bottom: 4px; color: #84938f; font-size: 9px; }
+.settings-error-detail > div > strong, .settings-error-detail > div > p { margin: 0; color: #344e48; font-size: 11px; line-height: 1.55; }
+.settings-error-detail pre { max-height: 150px; margin: 0; padding: 9px; overflow: auto; color: #425b54; border: 1px solid #dfe9e5; border-radius: 7px; background: #f7faf9; font-family: Consolas, monospace; font-size: 9px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.settings-error-detail .ant-btn { justify-self: end; }
+.history-date-capability-note { display: block; margin-top: 7px; color: #8a7770; font-size: 10px; line-height: 1.45; }
 .settings-preference-card { min-height: 84px; padding: 15px 18px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .settings-preference-copy { min-width: 0; display: flex; align-items: center; gap: 11px; }
 .settings-preference-copy > span { width: 38px; height: 38px; display: grid; place-items: center; flex: none; color: #9b6c25; border-radius: 8px; background: #fff1d9; font-size: 16px; }
@@ -2063,7 +2089,9 @@ svg text {
 .database-channel-card header small { margin-top: 3px; color: #82918d; font-size: 8px; }
 .database-channel-status { display: inline-flex; align-items: center; gap: 4px; color: #398166; font-size: 8px; white-space: nowrap; }
 .database-channel-status.loading { color: #7c8d88; }
+.database-channel-status.not-used { color: #8a7770; }
 .database-channel-status .ant-spin { line-height: 1; }
+.database-channel-notice { margin: 0 0 10px; padding: 8px 10px; color: #765f55; border: 1px solid #eadbd4; border-radius: 6px; background: #fcf7f4; font-size: 10px; line-height: 1.55; }
 .database-tool-card { border-bottom: 1px solid #e6eeeb; background: #f5f8f7; }
 .database-tool-toggle { width: 100%; min-height: 35px; padding: 0 11px; display: flex; align-items: center; justify-content: space-between; color: #687b75; border: 0; background: transparent; text-align: left; cursor: pointer; }
 .database-tool-toggle > span { min-width: 0; display: inline-flex; align-items: center; gap: 6px; }

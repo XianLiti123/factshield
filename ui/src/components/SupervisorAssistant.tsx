@@ -18,7 +18,7 @@ import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ResearchRun } from '../types'
 import { getActiveTask, useWorkspaceStore } from '../store'
-import { getTaskChatHistory, streamTaskChat, uploadDocument } from '../services/api'
+import { abortSession, getSessionStatus, getTaskChatHistory, pauseSession, streamResumeSession, streamTaskChat, uploadDocument } from '../services/api'
 import { ATTACHMENT_ACCEPT, mergeAttachmentFiles } from '../utils/attachments'
 
 type AssistantMessage = {
@@ -122,10 +122,14 @@ function saveAssistantMessages(userId: number, taskId: string, messages: Assista
 
 function getRecoveredMessageContent(role: AssistantMessage['role'], content: string) {
   if (role !== 'user') return content
-  const requestMarker = '\n\n用户要求：'
-  const requestIndex = content.indexOf(requestMarker)
-  if (requestIndex < 0) return content
-  const request = content.slice(requestIndex + requestMarker.length)
+  const taskQuestionMarker = '\n\n研究员的问题：'
+  const taskQuestionIndex = content.indexOf(taskQuestionMarker)
+  let request = taskQuestionIndex >= 0
+    ? content.slice(taskQuestionIndex + taskQuestionMarker.length)
+    : content
+  const userRequestMarker = '用户要求：'
+  const userRequestIndex = request.lastIndexOf(userRequestMarker)
+  if (userRequestIndex >= 0) request = request.slice(userRequestIndex + userRequestMarker.length)
   return request.split('\n用户补充材料摘要：')[0].trim() || content
 }
 
@@ -175,6 +179,7 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
   const [attachmentDragging, setAttachmentDragging] = useState(false)
   const [replyTarget, setReplyTarget] = useState<{ id: number; content: string } | null>(null)
   const [sending, setSending] = useState(false)
+  const [sessionPaused, setSessionPaused] = useState(false)
   const [collapsedSections, setCollapsedSections] = useState<Record<number, { thinking: boolean; tools: boolean }>>({})
   const attachmentInputRef = useRef<HTMLInputElement>(null)
   const [messages, setMessagesState] = useState<AssistantMessage[]>(() => loadAssistantMessages(userId, run.id))
@@ -194,6 +199,7 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
     [run.claims, selectedClaimId],
   )
   const hasClaimContext = activeView === 'workbench' && selectedClaim
+  const sessionId = `task-${run.id}`
   const toggleSection = (messageId: number, section: 'thinking' | 'tools') => {
     setCollapsedSections((current) => {
       const previous = current[messageId] ?? { thinking: false, tools: false }
@@ -221,6 +227,17 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
     return () => { cancelled = true }
   }, [run.id, userId])
 
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    getSessionStatus(sessionId)
+      .then((status) => { if (!cancelled) setSessionPaused(status.paused) })
+      .catch(() => {
+        // 尚未发起过任务专属对话时，会话接口返回 404；此时保持普通可发送状态。
+      })
+    return () => { cancelled = true }
+  }, [open, sessionId])
+
   const sendRequest = async (request: string) => {
     const content = request.trim()
     if ((!content && attachments.length === 0) || sending) return
@@ -235,7 +252,9 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
     setInput('')
     setReplyTarget(null)
     setSending(true)
+    setSessionPaused(false)
     try {
+      let wasPaused = false
       const converted = []
       for (const file of attachments) converted.push(await uploadDocument(file, { save: false }))
       const attachmentContext = converted.length > 0
@@ -261,11 +280,18 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
           if (event.type === 'context') {
             return { ...item, contexts: [...(item.contexts ?? []), event.content], status: undefined }
           }
-          if (event.type === 'done') return { ...item, streaming: false, status: undefined }
+          if (event.type === 'paused') {
+            wasPaused = true
+            setSessionPaused(true)
+            return { ...item, streaming: false, status: '已暂停，可继续或丢弃这次处理' }
+          }
+          if (event.type === 'done') return wasPaused
+            ? { ...item, streaming: false, status: '已暂停，可继续或丢弃这次处理' }
+            : { ...item, streaming: false, status: undefined }
           return item
         }))
       })
-      setMessages((current) => current.map((item) => item.id === timestamp + 1
+      setMessages((current) => current.map((item) => item.id === timestamp + 1 && !wasPaused
         ? {
             ...item,
             content: item.content || '这次没有返回正文，请检查模型配置后重试。',
@@ -282,6 +308,61 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
       message.error(errorText)
     } finally {
       setSending(false)
+    }
+  }
+
+  const interruptConversation = async () => {
+    try {
+      await pauseSession(sessionId)
+      setSessionPaused(true)
+      message.info('已发出打断请求，小盾会在当前节点结束后停下')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '打断请求失败')
+    }
+  }
+
+  const resumeConversation = async () => {
+    if (sending) return
+    setSending(true)
+    let pausedAgain = false
+    try {
+      await streamResumeSession(sessionId, (event) => {
+        if (event.type === 'error') throw new Error(event.content || '恢复失败')
+        setMessages((current) => current.map((item) => {
+          if (!item.streaming && !item.status?.includes('已暂停')) return item
+          if (event.type === 'token') return { ...item, content: item.content + event.content, status: undefined, streaming: true }
+          if (event.type === 'think') return { ...item, thinking: `${item.thinking ?? ''}${event.content}`, status: undefined, streaming: true }
+          if (event.type === 'tool') return { ...item, tools: [...(item.tools ?? []), event.content], status: undefined, streaming: true }
+          if (event.type === 'context') return { ...item, contexts: [...(item.contexts ?? []), event.content], status: undefined, streaming: true }
+          if (event.type === 'paused') {
+            pausedAgain = true
+            setSessionPaused(true)
+            return { ...item, streaming: false, status: '已暂停，可继续或丢弃这次处理' }
+          }
+          if (event.type === 'done') return pausedAgain
+            ? { ...item, streaming: false, status: '已暂停，可继续或丢弃这次处理' }
+            : { ...item, streaming: false, status: undefined }
+          return item
+        }))
+      })
+      setSessionPaused(pausedAgain)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '恢复失败')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const abortConversation = async () => {
+    try {
+      await abortSession(sessionId)
+      setSessionPaused(false)
+      setMessages((current) => current.map((item) => item.status?.includes('已暂停')
+        ? { ...item, content: item.content || '这次处理已丢弃。', status: '已丢弃', streaming: false }
+        : item))
+      message.success('已丢弃暂停中的处理')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '丢弃失败')
     }
   }
 
@@ -461,6 +542,9 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
                 onChange={(event) => addAttachments(event.target.files)}
               />
               <Button type="text" icon={<PaperClipOutlined />} aria-label="添加附件" onClick={() => attachmentInputRef.current?.click()}>添加附件</Button>
+              {sending && !sessionPaused && <Button type="text" danger onClick={() => void interruptConversation()}>打断</Button>}
+              {sessionPaused && <Button type="text" onClick={() => void resumeConversation()}>继续思考</Button>}
+              {sessionPaused && <Button type="text" danger onClick={() => void abortConversation()}>丢弃</Button>}
               <Button type="primary" loading={sending} icon={<ArrowUpOutlined />} aria-label="发送给小盾" onClick={() => sendRequest(input)} />
             </div>
           </div>
