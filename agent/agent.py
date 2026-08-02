@@ -217,7 +217,10 @@ class Agent:
         self._paused = False
         config = {"configurable":{"thread_id":thread_id}}
         stream = self.graph.stream(None,config=config,stream_mode=["messages","updates"])#type:ignore
-        yield from self._stream_turn(stream,collected,order)
+        streamed_any = False
+        for kind, text in self._stream_turn(stream,collected,order):
+            streamed_any = True
+            yield kind, text
         if self._paused:
             self._pause_event.clear()
             yield "paused",thread_id#恢复途中再次被叫停，保持暂停状态
@@ -233,6 +236,10 @@ class Agent:
             if isinstance(msg,AIMessage) and isinstance(msg.content,str) and msg.content:
                 answer = msg.content
                 break
+        if not streamed_any and answer:
+            #打断发生在最后一次 LLM 生成期间：图在后台已完成该轮（messages 模式节点在后台线程执行，
+            #关闭流不会中断当前节点），resume 收不到任何分片；这里把已生成的结果补发给前端
+            yield "token", answer
         self._save_turn(user_input,answer)
         session_store.clear_paused(self.session_id)
 
