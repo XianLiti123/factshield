@@ -1929,6 +1929,12 @@ svg text {
 .settings-form-header > .ant-tag { margin: 0; color: #28755a; border-color: #cce3db; background: #eaf5f1; font-size: 9px; }
 .settings-form-header-actions { display: flex; align-items: center; gap: 10px; }
 .settings-form-header-actions > .ant-tag { margin: 0; color: #28755a; border-color: #cce3db; background: #eaf5f1; font-size: 9px; }
+.settings-response-api-toggle { min-height: 38px; padding: 5px 8px 5px 10px; display: grid; grid-template-columns: auto auto; align-items: center; gap: 9px; color: #536a64; border: 1px solid #d5e1dd; border-radius: 8px; background: #f8faf9; cursor: pointer; transition: border-color .18s, background .18s; }
+.settings-response-api-toggle.active { color: #2f6658; border-color: #b9d6cd; background: #eef7f4; }
+.settings-response-api-toggle strong, .settings-response-api-toggle small { display: block; white-space: nowrap; }
+.settings-response-api-toggle strong { font-size: 10px; line-height: 14px; }
+.settings-response-api-toggle small { margin-top: 1px; color: #81918c; font-size: 8px; line-height: 12px; }
+.settings-response-api-toggle .ant-switch.ant-switch-checked { background: var(--fs-teal-700); }
 .settings-inline-thinking { min-height: 38px; padding: 5px 8px; display: grid; grid-template-columns: 26px auto auto; align-items: center; gap: 7px; border: 1px solid #eadfc9; border-radius: 8px; background: #fffaf0; cursor: pointer; }
 .settings-inline-thinking > span { width: 26px; height: 26px; display: grid; place-items: center; color: #9b6c25; border-radius: 6px; background: #f9e9c8; font-size: 12px; }
 .settings-inline-thinking strong, .settings-inline-thinking small { display: block; white-space: nowrap; }
@@ -1983,6 +1989,7 @@ svg text {
 .settings-search-fields .settings-key-visibility { flex: none; }
 .search-local-status > strong { height: 38px; padding: 0 11px; display: flex; align-items: center; gap: 7px; color: #2c715b; border: 1px solid #cfe1db; border-radius: 7px; background: #eef7f3; font-size: 10px; font-weight: 500; }
 .search-local-status > strong .anticon { color: #319071; }
+.search-local-status.response-api > strong { color: #38685d; border-color: #c6ddd6; background: #f1f7f5; }
 .settings-search-fields > small { grid-column: 2; color: #84938f; font-size: 9px; }
 .settings-search-actions { grid-column: 1 / -1; min-height: 34px; display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
 .settings-search-actions > span { margin-right: auto; color: #768984; font-size: 10px; }

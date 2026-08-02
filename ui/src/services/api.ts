@@ -11,6 +11,7 @@ export type AuthResponse = { token: string; user: UserInfo }
 export type CapabilityStatus = {
   llm: boolean
   web_search: boolean
+  responses_api: boolean
   vision: boolean
   embedding: boolean
   reranker: boolean
@@ -23,19 +24,25 @@ export type ModelSlotConfig = {
 }
 export type SettingsResponse = {
   configs: Partial<Record<'llm' | 'vision', ModelSlotConfig>>
-  search_engine: 'tavily' | 'python'
+  search_engine: 'tavily' | 'python' | 'response_api'
   search: {
-    engine: 'tavily' | 'python'
+    engine: 'tavily' | 'python' | 'response_api'
     tavily_configured: boolean
+    response_api_configured: boolean
     needs_key: boolean
-    default_engine: 'tavily' | 'python'
+    default_engine: 'tavily' | 'python' | 'response_api'
     default_reason: string
     engines: Array<{
-      id: 'tavily' | 'python'
+      id: 'tavily' | 'python' | 'response_api'
       label: string
       needs_key: boolean
       configured: boolean
     }>
+  }
+  llm_settings: {
+    use_response_api: boolean
+    mode: 'responses' | 'chat'
+    responses_supported: boolean
   }
   context: {
     trigger_percent: number
@@ -427,10 +434,18 @@ export const saveContextCompactTrigger = (triggerPercent: number) => request<{
   method: 'PUT',
   body: JSON.stringify({ trigger_percent: triggerPercent }),
 })
-export const saveSearchEngine = (engine: 'tavily' | 'python', apiKey?: string) => (
+export const saveLlmMode = (useResponseApi: boolean) => request<{
+  status: string
+  use_response_api: boolean
+  mode: 'responses' | 'chat'
+}>('/api/settings/llm-mode', {
+  method: 'PUT',
+  body: JSON.stringify({ use_response_api: useResponseApi }),
+})
+export const saveSearchEngine = (engine: 'tavily' | 'python' | 'response_api', apiKey?: string) => (
   request<{
     status: string
-    search_engine: 'tavily' | 'python'
+    search_engine: 'tavily' | 'python' | 'response_api'
     tavily_configured: boolean
     needs_key: boolean
   }>('/api/settings/search-engine', {
@@ -438,7 +453,7 @@ export const saveSearchEngine = (engine: 'tavily' | 'python', apiKey?: string) =
     body: JSON.stringify({ engine, api_key: apiKey?.trim() || null }),
   })
 )
-export const saveModelConfig = (slot: 'llm' | 'vision', config: { base_url: string; api_key: string; model_name: string }) => (
+export const saveModelConfig = (slot: 'llm' | 'vision', config: { base_url: string; api_key: string; model_name: string; use_response_api?: boolean }) => (
   request<{ status: string; slot: string; config: ModelSlotConfig }>(`/api/settings/${slot}`, {
     method: 'PUT', body: JSON.stringify(config),
   })

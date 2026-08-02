@@ -27,6 +27,7 @@ import {
   repairFlowError,
   saveContextCompactTrigger,
   saveDataSources,
+  saveLlmMode,
   saveModelConfig,
   saveSearchEngine,
   type CapabilityStatus,
@@ -57,7 +58,7 @@ type ModelSlot = {
   selectedModelId: string
 }
 
-type SearchEngineId = 'tavily' | 'python'
+type SearchEngineId = 'tavily' | 'python' | 'response_api'
 
 type SearchEngine = {
   id: SearchEngineId
@@ -117,6 +118,7 @@ const initialSlots: ModelSlot[] = [
 const initialSearchEngines: SearchEngine[] = [
   { id: 'tavily', name: 'Tavily', description: '面向 AI 研究任务的结构化搜索', apiKey: '', requiresApiKey: true },
   { id: 'python', name: 'Python', description: '通过本地 Python 检索流程执行，无需 API Key', apiKey: '', requiresApiKey: false },
+  { id: 'response_api', name: 'Responses API', description: '通过主 LLM 的服务端 web_search 检索，无需额外搜索 Key', apiKey: '', requiresApiKey: false },
 ]
 
 const builtInDataSourceIds = new Set(['efinance', 'tickflow'])
@@ -156,6 +158,9 @@ export function SettingsView() {
   const [slots, setSlots] = useState<ModelSlot[]>(initialSlots)
   const [activeSlotId, setActiveSlotId] = useState<ModelSlotId>('primary')
   const [deepThinking, setDeepThinking] = useState(true)
+  const [useResponseApi, setUseResponseApi] = useState(false)
+  const [responseApiSupported, setResponseApiSupported] = useState(false)
+  const [responseModeSaving, setResponseModeSaving] = useState(false)
   const [showModelApiKey, setShowModelApiKey] = useState(false)
   const [addModalOpen, setAddModalOpen] = useState(false)
   const [newModelName, setNewModelName] = useState('')
@@ -199,6 +204,8 @@ export function SettingsView() {
       setSettingsCapabilities(settings.global_capabilities)
       setSearchStatus(settings.search)
       setActiveSearchEngineId(settings.search_engine)
+      setUseResponseApi(settings.llm_settings.use_response_api)
+      setResponseApiSupported(settings.llm_settings.responses_supported)
       setContextTriggerPercent(settings.context.trigger_percent)
       setSavedContextTriggerPercent(settings.context.trigger_percent)
       setContextDefaultPercent(settings.context.default_percent)
@@ -396,11 +403,33 @@ export function SettingsView() {
       }
       setCapabilities(await getCapabilities())
       if (result.needs_key) message.warning('已切换到 Tavily，但还需要填写可用的 API Key')
-      else message.success(`搜索引擎已切换为 ${result.search_engine === 'tavily' ? 'Tavily' : 'Python'}`)
+      else message.success(`搜索引擎已切换为 ${result.search_engine === 'tavily' ? 'Tavily' : result.search_engine === 'response_api' ? 'Responses API' : 'Python'}`)
     } catch (error) {
       message.error(error instanceof Error ? error.message : '搜索设置保存失败')
     } finally {
       setSearchSaving(false)
+    }
+  }
+
+  const updateResponseApiMode = async (enabled: boolean) => {
+    if (responseModeSaving) return
+    const previous = useResponseApi
+    setUseResponseApi(enabled)
+    setResponseModeSaving(true)
+    try {
+      const result = await saveLlmMode(enabled)
+      setUseResponseApi(result.use_response_api)
+      setCapabilities(await getCapabilities())
+      if (result.use_response_api && !responseApiSupported) {
+        message.warning('Responses API 已开启，但当前模型可能不支持；建议使用 deepseek-v4-flash')
+      } else {
+        message.success(result.use_response_api ? '主 LLM 已切换到 Responses API' : '主 LLM 已切换到 Chat Completions')
+      }
+    } catch (error) {
+      setUseResponseApi(previous)
+      message.error(error instanceof Error ? error.message : 'LLM 调用模式保存失败')
+    } finally {
+      setResponseModeSaving(false)
     }
   }
 
@@ -448,9 +477,13 @@ export function SettingsView() {
         base_url: selectedModel.baseUrl.trim(),
         model_name: selectedModel.modelName.trim(),
         api_key: selectedModel.apiKey.trim(),
+        ...(activeSlot.id === 'primary' ? { use_response_api: useResponseApi } : {}),
       })
       message.success(`${activeSlot.name}已加密保存`)
       const settings = await getSettings()
+      setSearchStatus(settings.search)
+      setUseResponseApi(settings.llm_settings.use_response_api)
+      setResponseApiSupported(settings.llm_settings.responses_supported)
       const config = settings.configs[activeSlot.id === 'primary' ? 'llm' : 'vision']
       if (config) updateSelectedModel('apiKey', config.api_key)
     } catch (error) {
@@ -558,11 +591,17 @@ export function SettingsView() {
             </div>
             <div className="settings-form-header-actions">
               {activeSlot.id === 'primary' && (
-                <label className="settings-inline-thinking">
-                  <span><ThunderboltFilled /></span>
-                  <div><strong>深度思考</strong><small>支持推理模式时启用</small></div>
-                  <Switch size="small" checked={deepThinking} onChange={setDeepThinking} />
-                </label>
+                <>
+                  <label className={`settings-response-api-toggle${useResponseApi ? ' active' : ''}`}>
+                    <div><strong>使用 Responses API</strong><small>{responseApiSupported ? '当前模型已识别为支持' : '建议 deepseek-v4-flash'}</small></div>
+                    <Switch size="small" checked={useResponseApi} loading={responseModeSaving} onChange={(checked) => void updateResponseApiMode(checked)} />
+                  </label>
+                  <label className="settings-inline-thinking">
+                    <span><ThunderboltFilled /></span>
+                    <div><strong>深度思考</strong><small>支持推理模式时启用</small></div>
+                    <Switch size="small" checked={deepThinking} onChange={setDeepThinking} />
+                  </label>
+                </>
               )}
               <Tag icon={<CheckCircleFilled />}>独立配置</Tag>
             </div>
@@ -695,7 +734,11 @@ export function SettingsView() {
               <span>搜索服务</span>
               <Select
                 value={activeSearchEngineId}
-                options={searchEngines.map((engine) => ({ value: engine.id, label: engine.name }))}
+                options={searchEngines.map((engine) => ({
+                  value: engine.id,
+                  label: engine.name,
+                  disabled: engine.id === 'response_api' && searchStatus !== null && !searchStatus.response_api_configured,
+                }))}
                 onChange={(value) => {
                   setActiveSearchEngineId(value)
                   setShowSearchApiKey(false)
@@ -715,14 +758,14 @@ export function SettingsView() {
                 />
               </label>
             ) : (
-              <div className="search-local-status">
+              <div className={`search-local-status${activeSearchEngine.id === 'response_api' ? ' response-api' : ''}`}>
                 <span>连接方式</span>
-                <strong><CheckCircleFilled /> 本地 Python · 无需 API Key</strong>
+                <strong><CheckCircleFilled /> {activeSearchEngine.id === 'response_api' ? '主 LLM 服务端搜索 · 无需额外 Key' : '本地 Python · 无需 API Key'}</strong>
               </div>
             )}
             <small>{activeSearchEngine.description} · {activeSearchEngine.requiresApiKey
               ? searchStatus?.tavily_configured ? '账号已配置 Key' : '尚未配置 Key'
-              : '免 Key，本机直接检索'}</small>
+              : activeSearchEngine.id === 'response_api' ? '依赖已配置的主 LLM，目前仅 deepseek-v4-flash 支持服务端搜索' : '免 Key，本机直接检索'}</small>
             <div className="settings-search-actions">
               <span>{searchStatus?.engine === activeSearchEngineId ? '当前后端正在使用此引擎' : '选择尚未保存到后端'}</span>
               <Button type="primary" loading={searchSaving} onClick={saveSearchSettings}>保存搜索设置</Button>
