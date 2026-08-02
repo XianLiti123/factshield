@@ -7,6 +7,7 @@ from pydantic import BaseModel, EmailStr
 from agent.session.users import (
     avatar_data_url, get_avatar, get_user, issue_token, register,
     resolve_token, revoke_token, update_avatar, verify_login,
+    update_display_name,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -17,6 +18,10 @@ _bearer = HTTPBearer(auto_error=False)
 class CredentialsRequest(BaseModel):
     email: EmailStr
     password: str
+
+
+class DisplayNameRequest(BaseModel):
+    display_name: str
 
 
 class RegisterRequest(CredentialsRequest):
@@ -176,3 +181,16 @@ def delete_my_avatar(credentials: HTTPAuthorizationCredentials | None = Depends(
     user_id = _require_user(credentials)
     update_avatar(user_id, None)
     return {"status": "deleted"}
+
+
+@router.put("/display-name")
+def put_display_name(request: DisplayNameRequest,
+                     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> dict:
+    #更新当前用户显示名（2-32 字符）；响应携带完整用户信息（前端据此更新全局用户状态）
+    user_id = _require_user(credentials)
+    try:
+        update_display_name(user_id, request.display_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    user = _user_info(user_id).model_dump()
+    return {"status": "saved", "user": user, **user}

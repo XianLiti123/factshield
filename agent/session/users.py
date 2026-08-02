@@ -34,6 +34,15 @@ def register(email: str, password: str, display_name: str = "") -> int:
         return cursor.lastrowid  # type: ignore
 
 
+def update_display_name(user_id: int, display_name: str) -> None:
+    #更新用户显示名（2-32 个字符，与前端校验一致）；非法输入抛 ValueError
+    name = display_name.strip()
+    if len(name) < 2 or len(name) > 32:
+        raise ValueError("用户名需要保持在 2-32 个字符之间")
+    with get_connection() as conn:
+        conn.execute("UPDATE users SET display_name=? WHERE id=?", (name, user_id))
+
+
 def verify_login(email: str, password: str) -> int | None:
     #校验邮箱密码，成功返回 user_id，失败返回 None
     with get_connection() as conn:
