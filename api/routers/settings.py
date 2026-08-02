@@ -8,6 +8,7 @@ from agent.session.context_config import (
     MIN_COMPACT_TRIGGER_PERCENT, get_compact_trigger_percent,
     save_compact_trigger_percent,
 )
+from agent.session.llm_settings import get_use_response_api, set_use_response_api
 from agent.session.model_config import SLOTS, _mask, get_config, get_masked_configs, save_config
 from agent.session.search_config import (DEFAULT_ENGINE, get_search_config,
                                          save_search_config, tavily_configured)
@@ -21,6 +22,7 @@ class ModelConfigRequest(BaseModel):
     base_url: str
     api_key: str
     model_name: str
+    use_response_api: bool | None = None  #可选：随 LLM 配置一并切换 Responses API 模式
 
 
 class SettingsResponse(BaseModel):
@@ -30,6 +32,7 @@ class SettingsResponse(BaseModel):
     search: dict
     global_capabilities: dict[str, bool]
     context: dict  #上下文自动整理：用户自定义触发比例 + 服务端默认/边界/窗口大小
+    llm_settings: dict  #LLM 调用模式：是否使用 Responses API 等
 
 
 class SearchEngineRequest(BaseModel):
@@ -39,6 +42,10 @@ class SearchEngineRequest(BaseModel):
 
 class ContextCompactRequest(BaseModel):
     trigger_percent: int
+
+
+class LlmModeRequest(BaseModel):
+    use_response_api: bool  #True=走 DeepSeek Responses API；False=走 OpenAI chat completions
 
 
 def _efinance_available() -> bool:
@@ -55,6 +62,7 @@ def _search_status(user_id: int) -> dict:
     #供前端展示提示（如"服务端未配置 TAVILY_API_KEY，已默认使用免 key 的 Python 引擎"）
     cfg = get_search_config(user_id)
     configured = tavily_configured(user_id)
+    llm_ok = get_config(user_id, "llm") is not None  #response_api 引擎依赖用户配置的 LLM
     return {
         "engine": cfg["engine"],
         "tavily_configured": configured,
@@ -64,12 +72,25 @@ def _search_status(user_id: int) -> dict:
         "engines": [
             {"id": "tavily", "label": "Tavily", "needs_key": True, "configured": configured},
             {"id": "python", "label": "Python 内置（免 key）", "needs_key": False, "configured": True},
+            {"id": "response_api", "label": "Response API 服务端搜索", "needs_key": False, "configured": llm_ok},
         ],
+        "response_api_configured": llm_ok,
     }
+
+
+def _responses_supported(user_id: int) -> bool:
+    #提示字段（不强制）：DeepSeek Responses API 目前仅 deepseek-v4-flash 支持服务端搜索；
+    #按用户配置的模型名尽力判断，供前端展示提示
+    cfg = get_config(user_id, "llm")
+    if cfg is None:
+        return False
+    name = (cfg["model_name"] or "").lower()
+    return "flash" in name or "v4" in name
 
 
 @router.get("")
 def get_settings(user_id: int = Depends(get_current_user)) -> SettingsResponse:
+    use_response_api = get_use_response_api(user_id)
     return SettingsResponse(
         configs=get_masked_configs(user_id),
         search_engine=get_search_config(user_id)["engine"],
@@ -88,6 +109,11 @@ def get_settings(user_id: int = Depends(get_current_user)) -> SettingsResponse:
             "tavily": bool(env_config.TAVILY_API_KEY),
             "tickflow": bool(env_config.TICKFLOW_API_KEY),
             "efinance": _efinance_available(),
+        },
+        llm_settings={
+            "use_response_api": use_response_api,
+            "mode": "responses" if use_response_api else "chat",
+            "responses_supported": _responses_supported(user_id),
         },
     )
 
@@ -121,6 +147,18 @@ def update_context_compact(request: ContextCompactRequest,
             "default_percent": DEFAULT_COMPACT_TRIGGER_PERCENT}
 
 
+@router.put("/llm-mode")
+def update_llm_mode(request: LlmModeRequest, user_id: int = Depends(get_current_user)) -> dict:
+    #切换 LLM 调用协议：True=DeepSeek Responses API（/responses），False=OpenAI chat completions；
+    #保存后立即失效该用户 client 缓存，下一轮对话/研究流程即生效
+    enabled = set_use_response_api(user_id, request.use_response_api)
+    return {
+        "status": "saved",
+        "use_response_api": enabled,
+        "mode": "responses" if enabled else "chat",
+    }
+
+
 def _resolve_api_key(user_id: int, slot: str, incoming: str) -> str | None:
     #前端编辑配置时可能回传掩码 key（如 "sk-xxx...yyyy"）或留空，此时不得覆盖库中真实 key；
     #返回 None 表示既无真实 key 可保留、新 key 也为空（首次配置必须给完整 key）
@@ -140,4 +178,7 @@ def update_settings(slot: str, request: ModelConfigRequest, user_id: int = Depen
     if api_key is None:
         raise HTTPException(status_code=400, detail="api_key 不能为空（首次配置请填写完整 key）")
     save_config(user_id, slot, request.base_url, api_key, request.model_name)
+    if slot == "llm" and request.use_response_api is not None:
+        #前端"使用 Response API"开关可随模型配置一并提交；独立 /llm-mode 接口亦可用
+        set_use_response_api(user_id, request.use_response_api)
     return {"status": "saved", "slot": slot, "config": get_masked_configs(user_id)[slot]}

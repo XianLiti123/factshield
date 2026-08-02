@@ -2,6 +2,7 @@ from langgraph.graph import StateGraph,END
 from ..state.base import AgentState
 from ..llm.client import ChatClient
 from ..session.checkpoint_db import checkpointer as _checkpointer
+from ..session.llm_settings import get_use_response_api
 from ..session.model_config import get_config
 from ..tools.toolslist import full_tools,toolsets
 from ..tools.activate import activate_toolset
@@ -23,12 +24,16 @@ def invalidate_llm_cache(user_id:int)->None:
 
 
 def get_llm_client(user_id:int)->ChatClient:
-    #按用户取 LLM client（思考模式开启）；未配置时拒绝服务并提示
+    #按用户取 LLM client（思考模式开启；按用户设置走 chat completions 或 Responses API）；
+    #未配置时拒绝服务并提示
     if user_id not in _clients:
         cfg = get_config(user_id,"llm")
         if cfg is None:
             raise RuntimeError("未配置 LLM 模型，请先在设置中配置 base_url、api_key 和模型名")
-        _clients[user_id] = ChatClient(model=cfg["model_name"],base_url=cfg["base_url"],api_key=cfg["api_key"])
+        _clients[user_id] = ChatClient(
+            model=cfg["model_name"], base_url=cfg["base_url"], api_key=cfg["api_key"],
+            use_response_api=get_use_response_api(user_id),
+        )
     return _clients[user_id]
 
 

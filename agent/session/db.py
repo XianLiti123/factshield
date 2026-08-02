@@ -80,6 +80,11 @@ CREATE TABLE IF NOT EXISTS user_context_settings (
     compact_trigger_percent INTEGER NOT NULL DEFAULT 80,  -- 上下文自动整理触发比例（窗口百分比）
     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
+CREATE TABLE IF NOT EXISTS user_llm_settings (
+    user_id INTEGER PRIMARY KEY,
+    use_response_api INTEGER NOT NULL DEFAULT 0,  -- 1=主对话/研究流程走 DeepSeek Responses API，0=OpenAI chat completions
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
 -- 以下为事实核查流水线（agent/research）的结构化存储
 CREATE TABLE IF NOT EXISTS research_tasks (
     task_id TEXT PRIMARY KEY,

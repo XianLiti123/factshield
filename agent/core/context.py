@@ -46,10 +46,12 @@ def _format_history(messages: list[BaseMessage]) -> str:
 def compact_messages(messages: list[BaseMessage], user_id: int) -> str:
     #调用一次 LLM 把整段对话历史压缩成摘要文本（思考模式关闭，省开销），用该用户自己的模型配置
     from ..session.model_config import get_config  #延迟导入，避免循环依赖
+    from ..session.llm_settings import get_use_response_api  #压缩与主对话同协议（chat / responses）
     cfg = get_config(user_id, "llm")
     if cfg is None:
         raise RuntimeError("未配置 LLM 模型，请先在设置中配置 base_url、api_key 和模型名")
     target_chars = int(CONTEXT_WINDOW_TOKENS * COMPACT_TARGET_RATIO)
     prompt = _SUMMARY_PROMPT.format(target_chars=target_chars, history=_format_history(messages))
-    summarizer = ChatClient(model=cfg["model_name"], base_url=cfg["base_url"], api_key=cfg["api_key"], thinking=False)
+    summarizer = ChatClient(model=cfg["model_name"], base_url=cfg["base_url"], api_key=cfg["api_key"],
+                            thinking=False, use_response_api=get_use_response_api(user_id))
     return summarizer.chat([HumanMessage(content=prompt)])
