@@ -50,13 +50,21 @@ def _constraints_text(config: dict) -> str:
     return "用户指定的比较口径（优先级高于你的自主判断，必须遵守）：\n" + "\n".join(lines) + "\n"
 
 
-def _parse_year_month(t: str) -> tuple[int, int] | None:
-    #解析 "2018-01"/"2018" 形式的时间点，无法解析返回 None
+def _parse_date(t: str) -> tuple[int, int, int, bool] | None:
+    #解析 "2020-01-15"/"2020-01"/"2020"（兼容 - / . 及 年月日 分隔），
+    #返回 (年, 月, 日, 是否精确到日)；日缺省按 1 日处理；无法解析返回 None
     import re
-    m = re.match(r"\s*(\d{4})(?:\D(\d{1,2}))?", t)
-    if not m:
+    s = str(t).strip().replace("年", "-").replace("月", "-").replace("日", "")
+    parts = [p for p in re.split(r"[/.\-\s]+", s) if p]
+    if not parts or not parts[0].isdigit():
         return None
-    return (int(m.group(1)), int(m.group(2) or 1))
+    year = int(parts[0])
+    month = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+    day = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+    has_day = len(parts) > 2 and parts[2].isdigit()
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        return None
+    return (year, month, day, has_day)
 
 
 def run_history_analysis(task_id: str, user_id: int, emit: Callable, config: dict | None = None) -> None:
@@ -95,8 +103,14 @@ def run_history_analysis(task_id: str, user_id: int, emit: Callable, config: dic
                   if config and (config["start"] or config["end"]) else "不限")
     frequency = (f"按{_FREQUENCY_LABELS[config['frequency']]}口径取值"
                  if config and config["frequency"] != "auto" else "不限，按检索文本中出现的时点取值")
-    start_ym = _parse_year_month(config["start"]) if config and config["start"] else None
-    end_ym = _parse_year_month(config["end"]) if config and config["end"] else None
+    start_date = _parse_date(config["start"]) if config and config["start"] else None
+    end_date = _parse_date(config["end"]) if config and config["end"] else None
+    #起算边界含首日（日缺省为 1 日）；止算边界含给定日，月精度时按当月最后一日（31 日哨兵）闭区间
+    start_bound = (start_date[0], start_date[1], start_date[2]) if start_date else None
+    end_bound = (end_date[0], end_date[1], end_date[2] if end_date[3] else 31) if end_date else None
+    #月精度数据点按"所在月落在 [起月, 止月]"判定（无精确日期的数据无法定位到日）
+    start_month = (start_date[0], start_date[1]) if start_date else None
+    end_month = (end_date[0], end_date[1]) if end_date else None
 
     events = []
     total_points = 0
@@ -130,12 +144,20 @@ def run_history_analysis(task_id: str, user_id: int, emit: Callable, config: dic
                 point = {"t": str(p["t"]), "value": float(p["value"])}
             except (KeyError, TypeError, ValueError):
                 continue  #丢弃无法解析为数值的数据点
-            ym = _parse_year_month(point["t"])
-            if ym is not None:  #用户限定了时间范围时，丢弃落在范围外且可解析的数据点
-                if start_ym and ym < start_ym:
-                    continue
-                if end_ym and ym > end_ym:
-                    continue
+            parsed = _parse_date(point["t"])
+            if parsed is not None:  #用户限定了时间范围时，丢弃落在范围外且可解析的数据点
+                if parsed[3]:  #精确到日：按完整日期比较
+                    ymd = (parsed[0], parsed[1], parsed[2])
+                    if start_bound and ymd < start_bound:
+                        continue
+                    if end_bound and ymd > end_bound:
+                        continue
+                else:  #只有年月精度：所在月落在 [起月, 止月] 内即保留
+                    ym = (parsed[0], parsed[1])
+                    if start_month and ym < start_month:
+                        continue
+                    if end_month and ym > end_month:
+                        continue
             points.append(point)
         if not points:
             continue
