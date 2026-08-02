@@ -16,8 +16,11 @@ services:
       # 会话库/检查点/master key 与知识库/向量库必须持久化，否则重建容器后账号与密文配置全部丢失
       - factshield-session:/app/agent/session
       - factshield-memory:/app/agent/memory
+      # 运行时附件（上传图片/文档、工具下载的文件）同样持久化
+      - factshield-workspace:/app/agent/workspace
     restart: unless-stopped
 
 volumes:
   factshield-session:
   factshield-memory:
+  factshield-workspace:

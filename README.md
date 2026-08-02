@@ -61,9 +61,14 @@ UI/
 
 #### Docker 部署（Linux 服务器）
 
-后端提供根目录 `Dockerfile`（前端 ui/ 另行构建部署，不在镜像内）：
+根目录 `Dockerfile` 为多阶段构建的单容器镜像：前端（`ui/`）编译进镜像，由 FastAPI 一并托管
+（`/` 为前端页面，`/api/*` 为后端接口），无需额外部署 nginx 或单独跑前端。
 
-1.  构建镜像：`docker build -t factshield-api .`
+1.  构建镜像（默认使用阿里源：npm 走 npmmirror、pip 走阿里云镜像，国内网络开箱可用；
+    也可用 `--build-arg NPM_REGISTRY=... --build-arg PIP_INDEX_URL=...` 覆盖）：
+    ```
+    docker build -t factshield-api .
+    ```
 2.  运行（密钥一律经环境变量注入，不要把 `.env` 打入镜像）：
     ```
     docker run -d --name factshield-api -p 8000:8000 \
@@ -73,15 +78,17 @@ UI/
       -e "FS_MASTER_KEY=< Fernet key >" \
       -v factshield-session:/app/agent/session \
       -v factshield-memory:/app/agent/memory \
+      -v factshield-workspace:/app/agent/workspace \
       factshield-api
     ```
-    也可 `docker compose up -d`（compose 会读取根目录 `.env`，仅存在于服务器上，不进镜像）。
+    也可 `docker compose up -d --build`（compose 会读取根目录 `.env`，仅存在于服务器上，不进镜像）。
 
 3.  **密钥与数据持久化（重点）：**
     - 用户在设置页保存的模型配置（api_key）用 Fernet 加密后存 SQLite，解密依赖 master key。
     - 生产环境建议显式注入 `FS_MASTER_KEY`（可用 `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` 生成）；
       不注入时系统会自动生成一把写入 `agent/session/.master_key`，只要按上面挂了 `factshield-session` 卷，重建容器后仍可解开存量密文。
-    - `agent/session`（账号、会话、加密的模型配置、master key）与 `agent/memory`（知识库、向量库）必须挂卷持久化，否则重建容器后数据丢失。
+    - `agent/session`（账号、会话、加密的模型配置、master key）、`agent/memory`（知识库、向量库）
+      与 `agent/workspace`（上传附件、工具下载文件）都应挂卷持久化，否则重建容器后数据丢失。
     - 上述 `.env` 中的全局 key（TickFlow/Tavily/Embedding/Reranker 等）改完后重启容器即生效；前端设置页只展示这些能力的就绪状态，不提供编辑入口。
 
 #### 使用说明

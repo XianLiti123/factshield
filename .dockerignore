@@ -16,6 +16,7 @@ agent/session/*.db-*
 agent/session/chroma_db
 agent/memory/SQLite/*.db
 agent/memory/vector_store/chroma_db
+agent/workspace
 
 # 前端依赖与构建产物（ui 源码需要进构建上下文，供多阶段构建编译）
 ui/node_modules

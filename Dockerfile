@@ -5,9 +5,12 @@
 # ---- 阶段一：构建前端静态产物（pnpm 11 依赖 node:sqlite，需 Node 22+） ----
 FROM node:22-alpine AS ui-build
 WORKDIR /ui
+# 国内构建：corepack 下载 pnpm 本体与 pnpm 拉依赖都走阿里 npmmirror（corepack 默认硬编码 npmjs.org）
+ENV COREPACK_NPM_REGISTRY=https://registry.npmmirror.com
+ENV npm_config_registry=https://registry.npmmirror.com
 COPY ui/package.json ui/pnpm-lock.yaml ui/pnpm-workspace.yaml ./
-# NPM_REGISTRY 构建参数可指定 npm 镜像（默认官方源）
-ARG NPM_REGISTRY=""
+# NPM_REGISTRY 构建参数可指定 npm 镜像（默认阿里 npmmirror，国内构建开箱可用）
+ARG NPM_REGISTRY="https://registry.npmmirror.com"
 RUN corepack enable && pnpm install --frozen-lockfile ${NPM_REGISTRY:+--registry=$NPM_REGISTRY}
 COPY ui ./
 RUN pnpm build
@@ -17,8 +20,8 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
-# 先装依赖，利用镜像层缓存；PIP_INDEX_URL 构建参数可指定 PyPI 镜像（默认官方源）
-ARG PIP_INDEX_URL=""
+# 先装依赖，利用镜像层缓存；PIP_INDEX_URL 构建参数可指定 PyPI 镜像（默认阿里云）
+ARG PIP_INDEX_URL="https://mirrors.aliyun.com/pypi/simple/"
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL}
 
