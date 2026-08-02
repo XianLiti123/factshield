@@ -5,9 +5,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr
 
 from agent.session.users import (
-    avatar_data_url, get_avatar, get_user, issue_token, register,
+    avatar_data_url, change_password, get_avatar, get_user, issue_token, register,
     resolve_token, revoke_token, update_avatar, verify_login,
-    update_display_name,
+    update_display_name, revoke_other_tokens,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -22,6 +22,11 @@ class CredentialsRequest(BaseModel):
 
 class DisplayNameRequest(BaseModel):
     display_name: str
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 
 
 class RegisterRequest(CredentialsRequest):
@@ -194,3 +199,16 @@ def put_display_name(request: DisplayNameRequest,
         raise HTTPException(status_code=400, detail=str(e))
     user = _user_info(user_id).model_dump()
     return {"status": "saved", "user": user, **user}
+
+
+@router.put("/password")
+def put_password(request: ChangePasswordRequest,
+                 credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> dict:
+    #修改密码：先校验当前密码，新密码至少 8 位；改成功后撤销该用户的其他登录会话
+    user_id = _require_user(credentials)
+    try:
+        change_password(user_id, request.current_password, request.new_password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    revoke_other_tokens(user_id, credentials.credentials)
+    return {"status": "changed"}

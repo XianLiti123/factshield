@@ -43,6 +43,32 @@ def update_display_name(user_id: int, display_name: str) -> None:
         conn.execute("UPDATE users SET display_name=? WHERE id=?", (name, user_id))
 
 
+def change_password(user_id: int, current_password: str, new_password: str) -> None:
+    #修改密码：先校验当前密码，再写入新密码的 PBKDF2 哈希；校验失败抛 ValueError
+    if len(new_password) < 8:
+        raise ValueError("新密码至少需要 8 位")
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT password_hash FROM users WHERE id=?", (user_id,)
+        ).fetchone()
+    if row is None:
+        raise ValueError("用户不存在")
+    salt = row["password_hash"].split("$", 1)[0]
+    if not secrets.compare_digest(_hash_password(current_password, salt), row["password_hash"]):
+        raise ValueError("当前密码不正确")
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE users SET password_hash=? WHERE id=?",
+            (_hash_password(new_password), user_id)
+        )
+
+
+def revoke_other_tokens(user_id: int, keep_token: str) -> None:
+    #撤销该用户的全部登录 token，但保留当前这一次（改密码后踢掉其他会话）
+    with get_connection() as conn:
+        conn.execute("DELETE FROM tokens WHERE user_id=? AND token<>?", (user_id, keep_token))
+
+
 def verify_login(email: str, password: str) -> int | None:
     #校验邮箱密码，成功返回 user_id，失败返回 None
     with get_connection() as conn:
