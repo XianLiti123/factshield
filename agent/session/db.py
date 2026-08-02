@@ -75,6 +75,11 @@ CREATE TABLE IF NOT EXISTS user_search_settings (
     api_key_enc TEXT NOT NULL DEFAULT '',  -- 用户级 Tavily API key（加密入库，可空：回退 .env）
     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
+CREATE TABLE IF NOT EXISTS user_context_settings (
+    user_id INTEGER PRIMARY KEY,
+    compact_trigger_percent INTEGER NOT NULL DEFAULT 80,  -- 上下文自动整理触发比例（窗口百分比）
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
 -- 以下为事实核查流水线（agent/research）的结构化存储
 CREATE TABLE IF NOT EXISTS research_tasks (
     task_id TEXT PRIMARY KEY,

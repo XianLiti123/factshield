@@ -9,6 +9,7 @@ from .core.context import estimate_tokens,needs_compaction,compact_messages
 from .core.prompt import build_system_prompt
 from .failures import retry_call
 from .session import store as session_store
+from .session.context_config import get_compact_trigger_percent
 from .session.users import ensure_admin, get_user
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,8 @@ class Agent:
     #上下文压缩：达到窗口阈值时（或force手动触发）调一次LLM把历史压成摘要
     #只在每轮开始时检查，不每轮压缩，保证提示缓存命中率
     def _maybe_compact(self,force:bool=False)->bool:
-        if not force and not needs_compaction(self.context_tokens):
+        if not force and not needs_compaction(self.context_tokens,
+                                              get_compact_trigger_percent(self.user_id)):
             return False
         summary = compact_messages(self.messages[1:],self.user_id)#系统提示不参与压缩
         self.messages = [self.messages[0],SystemMessage(content=f"以下是此前对话的摘要：\n{summary}")]

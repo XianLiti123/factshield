@@ -5,9 +5,9 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from ..llm.client import ChatClient
 
 #上下文窗口与压缩阈值，可用环境变量覆盖
-CONTEXT_WINDOW_TOKENS = int(os.getenv("FS_CONTEXT_WINDOW", "65536"))#模型总上下文窗口
-COMPACT_TRIGGER_RATIO = 0.8#上下文达到窗口的 80% 时触发压缩
-COMPACT_TARGET_RATIO = 0.05#压缩目标：总窗口的 5%（约为原上下文的 1/10 量级）
+CONTEXT_WINDOW_TOKENS = int(os.getenv("FS_CONTEXT_WINDOW", "65536"))  #模型总上下文窗口
+COMPACT_TRIGGER_RATIO = 0.8  #默认触发比例（窗口的 80%）；用户可经设置页按用户覆盖
+COMPACT_TARGET_RATIO = 0.05  #压缩目标：总窗口的 5%（约为原上下文的 1/10 量级）
 
 _SUMMARY_PROMPT = """请将以下对话历史压缩成一段摘要，控制在 {target_chars} 字以内。
 保留：用户的真实需求与结论、关键事实与数据、未完成的任务与约定、影响后续对话的重要上下文。
@@ -27,9 +27,10 @@ def estimate_tokens(messages: list[BaseMessage]) -> int:
     return total
 
 
-def needs_compaction(input_tokens: int) -> bool:
-    #根据最近一次 LLM 调用的真实输入 token 数判断是否达到压缩阈值
-    return input_tokens >= CONTEXT_WINDOW_TOKENS * COMPACT_TRIGGER_RATIO
+def needs_compaction(input_tokens: int, trigger_percent: int = 80) -> bool:
+    #根据最近一次 LLM 调用的真实输入 token 数判断是否达到压缩阈值；
+    #trigger_percent 为占窗口的百分比（用户可自定义，缺省 80）
+    return input_tokens >= CONTEXT_WINDOW_TOKENS * (trigger_percent / 100)
 
 
 def _format_history(messages: list[BaseMessage]) -> str:

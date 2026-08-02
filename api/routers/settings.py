@@ -2,6 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from agent import config as env_config
+from agent.core.context import CONTEXT_WINDOW_TOKENS
+from agent.session.context_config import (
+    DEFAULT_COMPACT_TRIGGER_PERCENT, MAX_COMPACT_TRIGGER_PERCENT,
+    MIN_COMPACT_TRIGGER_PERCENT, get_compact_trigger_percent,
+    save_compact_trigger_percent,
+)
 from agent.session.model_config import SLOTS, _mask, get_config, get_masked_configs, save_config
 from agent.session.search_config import (DEFAULT_ENGINE, get_search_config,
                                          save_search_config, tavily_configured)
@@ -23,11 +29,16 @@ class SettingsResponse(BaseModel):
     search_engine: str
     search: dict
     global_capabilities: dict[str, bool]
+    context: dict  #上下文自动整理：用户自定义触发比例 + 服务端默认/边界/窗口大小
 
 
 class SearchEngineRequest(BaseModel):
     engine: str
     api_key: str | None = None  #可选：Tavily API key；空/掩码表示保留原 key
+
+
+class ContextCompactRequest(BaseModel):
+    trigger_percent: int
 
 
 def _efinance_available() -> bool:
@@ -63,6 +74,13 @@ def get_settings(user_id: int = Depends(get_current_user)) -> SettingsResponse:
         configs=get_masked_configs(user_id),
         search_engine=get_search_config(user_id)["engine"],
         search=_search_status(user_id),
+        context={
+            "trigger_percent": get_compact_trigger_percent(user_id),
+            "default_percent": DEFAULT_COMPACT_TRIGGER_PERCENT,
+            "min_percent": MIN_COMPACT_TRIGGER_PERCENT,
+            "max_percent": MAX_COMPACT_TRIGGER_PERCENT,
+            "window_tokens": CONTEXT_WINDOW_TOKENS,
+        },
         global_capabilities={
             #以下均为全局共享能力（.env 由运维配置），只报告就绪状态，不含 key
             "embedding": bool(env_config.EMBEDDING_API_KEY and env_config.EMBEDDING_BASE_URL and env_config.EMBEDDING_MODEL),
@@ -89,6 +107,18 @@ def update_search_engine(request: SearchEngineRequest, user_id: int = Depends(ge
         "tavily_configured": configured,
         "needs_key": cfg["engine"] == "tavily" and not configured,
     }
+
+
+@router.put("/context-compact")
+def update_context_compact(request: ContextCompactRequest,
+                           user_id: int = Depends(get_current_user)) -> dict:
+    #保存当前用户的上下文自动整理触发比例（窗口百分比），自动压缩立即按新阈值生效
+    try:
+        percent = save_compact_trigger_percent(user_id, request.trigger_percent)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "saved", "trigger_percent": percent,
+            "default_percent": DEFAULT_COMPACT_TRIGGER_PERCENT}
 
 
 def _resolve_api_key(user_id: int, slot: str, incoming: str) -> str | None:
