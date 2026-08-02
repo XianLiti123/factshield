@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Background,
   Controls,
@@ -13,7 +13,7 @@ import {
 import { CheckCircleFilled, ClockCircleFilled, CloseOutlined, LoadingOutlined, LockFilled, WarningFilled } from '@ant-design/icons'
 import { Button, Drawer, Empty, Spin, Tag, message } from 'antd'
 import { useWorkspaceStore } from '../store'
-import { getAgentExecution, type AgentExecution, type AuditEvent } from '../services/api'
+import { getAgentExecution, getTaskAgents, type AgentExecution, type AuditEvent } from '../services/api'
 import type { AgentInfo, ResearchRun } from '../types'
 
 type AgentNodeData = AgentInfo & {
@@ -26,7 +26,8 @@ type AgentNodeData = AgentInfo & {
 
 const agentNames: Record<string, string> = {
   supervisor: '小盾', collector: '采集员', parser: '解析员', retriever: '检索员',
-  scorer: '评分员', assembler: '组装员', reviewer: '审查员', system: '系统',
+  scorer: '评分员', assembler: '组装员', reviewer: '审查员', deepener: '定向深挖员',
+  history: '统计员', researcher: '研究员', system: '系统',
 }
 
 type AgentDetailProps = {
@@ -43,9 +44,12 @@ const agentDetailLabels: Record<string, string> = {
   collector: '采集进展',
   parser: '解析产出',
   retriever: '取证进展',
+  deepener: '深挖进展',
   scorer: '标注进展',
   assembler: '底稿进展',
   reviewer: '复核结论',
+  history: '统计进展',
+  researcher: '人工介入',
 }
 
 function getAgentFallbackDetail(
@@ -75,6 +79,10 @@ function getAgentFallbackDetail(
       if (isDone) return `已绑定 ${run.evidence.length} 条原文证据`
       if (isRunning) return '正在为主张定位原文证据'
       return '等待主张提取完成'
+    case 'deepener':
+      if (isDone) return '已完成证据薄弱主张的定向补采'
+      if (isRunning) return '正在针对薄弱主张补充证据'
+      return '没有需要定向深挖的主张'
     case 'scorer':
       if (isDone) return `已完成 ${run.evidence.length} 条证据的来源标注`
       if (isRunning) return '正在标注信源类型与可信度'
@@ -89,6 +97,14 @@ function getAgentFallbackDetail(
       if (isDone) return '独立复核已完成，未发现待处理冲突'
       if (isRunning) return '正在独立检查事实与证据'
       return '等待一级核验完成'
+    case 'history':
+      if (isDone) return '历史情景统计结果已生成'
+      if (isRunning) return '正在整理历史事件与时序数据'
+      return '尚未启动历史情景复盘'
+    case 'researcher':
+      if (isDone) return '已记录研究员介入与复核动作'
+      if (isRunning) return '正在等待研究员介入指令'
+      return '尚无人工介入记录'
     default:
       if (isDone) return '当前环节已完成'
       if (isRunning) return '当前环节正在处理'
@@ -172,7 +188,50 @@ const nodeTypes = { agent: AgentNode }
 
 export function AgentTopology({ run }: { run: ResearchRun }) {
   const setActiveView = useWorkspaceStore((state) => state.setActiveView)
-  const workers = run.agents.filter((agent) => !['supervisor', 'reviewer'].includes(agent.id))
+  const [agentSummaries, setAgentSummaries] = useState<Array<{
+    id: string
+    label: string
+    event_count: number
+    tool_call_count: number
+  }>>([])
+
+  useEffect(() => {
+    let cancelled = false
+    const refresh = async () => {
+      try {
+        const result = await getTaskAgents(run.id)
+        if (!cancelled) setAgentSummaries(result.agents)
+      } catch {
+        if (!cancelled) setAgentSummaries([])
+      }
+    }
+    void refresh()
+    // /tasks/:id/agents 是执行量摘要接口；研究运行时定期刷新，保证新出现的
+    // 深挖、历史统计等 Agent 不会等到重新进入页面才显示。
+    const timer = run.status === 'running' ? window.setInterval(() => { void refresh() }, 2500) : undefined
+    return () => {
+      cancelled = true
+      if (timer !== undefined) window.clearInterval(timer)
+    }
+  }, [run.id, run.status])
+
+  const allAgents = useMemo(() => {
+    const agents = [...run.agents]
+    const known = new Set(agents.map((agent) => agent.id))
+    for (const summary of agentSummaries) {
+      if (known.has(summary.id)) continue
+      agents.push({
+        id: summary.id,
+        name: agentNames[summary.id] ?? summary.label,
+        role: summary.label,
+        status: summary.event_count > 0 || summary.tool_call_count > 0 ? 'done' : 'waiting',
+        detail: `已记录 ${summary.event_count} 个事件、${summary.tool_call_count} 次工具调用`,
+      })
+    }
+    return agents
+  }, [agentSummaries, run.agents])
+
+  const workers = allAgents.filter((agent) => !['supervisor', 'reviewer'].includes(agent.id))
   const completedCount = workers.filter((agent) => agent.status === 'done').length
   const waitingCount = workers.filter((agent) => agent.status === 'waiting').length
   const pendingReviewClaims = run.claims.filter((claim) => claim.status !== 'verified' && !claim.humanAction)
@@ -180,11 +239,10 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
   const conflictCount = conflictClaims.length
   const conflictClaim = conflictClaims[0]
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
-  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([])
   const [agentExecution, setAgentExecution] = useState<AgentExecution | null>(null)
   const [auditLoading, setAuditLoading] = useState(false)
   const [auditError, setAuditError] = useState('')
-  const selectedAgent = selectedAgentId ? run.agents.find((agent) => agent.id === selectedAgentId) : undefined
+  const selectedAgent = selectedAgentId ? allAgents.find((agent) => agent.id === selectedAgentId) : undefined
 
   const openAgentDetail = async (agentId: string) => {
     setSelectedAgentId(agentId)
@@ -194,7 +252,6 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
       const result = await getAgentExecution(run.id, agentId)
       setAgentExecution(result)
     } catch (error) {
-      setAuditEvents([])
       setAgentExecution(null)
       setAuditError(error instanceof Error ? error.message : '执行记录读取失败')
       message.error('执行记录读取失败')
@@ -204,7 +261,7 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
   }
 
   const { nodes, edges } = useMemo(() => {
-    const find = (id: string) => run.agents.find((agent) => agent.id === id)!
+    const find = (id: string) => allAgents.find((agent) => agent.id === id)
     const asNodeData = (agent: AgentInfo, kind?: 'supervisor' | 'reviewer'): AgentNodeData => {
       // 后端的 reviewer warning 可能来自历史复核事件；当前没有未处理冲突时，
       // 独立复核已经完成，不能继续在执行监控中显示为阻塞节点。
@@ -223,20 +280,31 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
       }
     }
     const rowGap = 170
-    const topologyNodes: Node<AgentNodeData>[] = [
-      { id: 'supervisor', type: 'agent', position: { x: 300, y: 0 }, data: asNodeData(find('supervisor'), 'supervisor') },
-      { id: 'collector', type: 'agent', position: { x: 0, y: rowGap }, data: asNodeData(find('collector')) },
-      { id: 'parser', type: 'agent', position: { x: 300, y: rowGap }, data: asNodeData(find('parser')) },
-      { id: 'retriever', type: 'agent', position: { x: 600, y: rowGap }, data: asNodeData(find('retriever')) },
-      { id: 'scorer', type: 'agent', position: { x: 0, y: rowGap * 2 }, data: asNodeData(find('scorer')) },
-      { id: 'assembler', type: 'agent', position: { x: 300, y: rowGap * 2 }, data: asNodeData(find('assembler')) },
-      { id: 'reviewer', type: 'agent', position: { x: 300, y: rowGap * 3 }, data: asNodeData(find('reviewer'), 'reviewer') },
-    ]
+    const positions: Record<string, { x: number; y: number }> = {
+      supervisor: { x: 450, y: 0 },
+      collector: { x: 0, y: rowGap },
+      parser: { x: 300, y: rowGap },
+      retriever: { x: 600, y: rowGap },
+      deepener: { x: 900, y: rowGap },
+      scorer: { x: 0, y: rowGap * 2 },
+      history: { x: 300, y: rowGap * 2 },
+      assembler: { x: 600, y: rowGap * 2 },
+      researcher: { x: 900, y: rowGap * 2 },
+      reviewer: { x: 450, y: rowGap * 3 },
+    }
+    const topologyNodes: Node<AgentNodeData>[] = allAgents
+      .filter((agent) => positions[agent.id])
+      .map((agent) => ({
+        id: agent.id,
+        type: 'agent',
+        position: positions[agent.id],
+        data: asNodeData(agent, agent.id === 'supervisor' ? 'supervisor' : agent.id === 'reviewer' ? 'reviewer' : undefined),
+      }))
 
     const normalStyle = { stroke: '#79aaa4', strokeWidth: 1.6 }
     const reviewStyle = { stroke: '#d39a43', strokeWidth: 1.9 }
     const retryStyle = { stroke: '#dc6267', strokeWidth: 1.6, strokeDasharray: '5 4' }
-    const workerIds = ['collector', 'parser', 'retriever', 'scorer', 'assembler']
+    const workerIds = workers.map((agent) => agent.id).filter((id) => positions[id])
     const topologyEdges: Edge[] = [
       ...workerIds.map((id) => ({
         id: `dispatch-${id}`,
@@ -256,7 +324,7 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
       }] : []),
     ]
     return { nodes: topologyNodes, edges: topologyEdges }
-  }, [conflictCount, openAgentDetail, pendingReviewClaims.length, run.agents, run.claims.length, run.evidence.length])
+  }, [allAgents, conflictCount, openAgentDetail, pendingReviewClaims.length, run.claims.length, run.evidence.length, workers])
 
   return (
     <div className="page-card topology-page">
@@ -286,8 +354,8 @@ export function AgentTopology({ run }: { run: ResearchRun }) {
           edges={edges}
           nodeTypes={nodeTypes}
           fitView
-          fitViewOptions={{ padding: 0.04, minZoom: 0.95, maxZoom: 1 }}
-          minZoom={0.8}
+           fitViewOptions={{ padding: 0.06, minZoom: 0.65, maxZoom: 1 }}
+           minZoom={0.6}
           maxZoom={1.15}
           nodesDraggable={false}
           nodesConnectable={false}

@@ -129,7 +129,7 @@ export function AppShell({ children, user, onLogout, onUserUpdated }: { children
   const displayName = localProfile.displayName?.trim() || user.display_name?.trim() || user.email.split('@')[0] || '研究员'
   const avatarInitial = Array.from(displayName)[0] || '研'
   const avatarText = /^[a-z]$/i.test(avatarInitial) ? avatarInitial.toUpperCase() : avatarInitial
-  // 后端将来提供 avatar/avatar_url 时优先使用远端头像；旧账号继续读取本地头像。
+  // 账号头像优先读取后端；旧版本留下的本地头像仅作为兼容兜底。
   const avatarSrc = user.avatar_url || user.avatar || localProfile.avatar
   const searchRequestRef = useRef(0)
 
@@ -295,7 +295,7 @@ export function AppShell({ children, user, onLogout, onUserUpdated }: { children
     }
     saveLocalProfile({ displayName: nextName })
     setNameEditOpen(false)
-    message.success('用户名已更新')
+    message.success('用户名已更新到当前浏览器')
   }
 
   const openAvatarEditor = () => {
@@ -440,6 +440,7 @@ export function AppShell({ children, user, onLogout, onUserUpdated }: { children
             avatar: updated.avatar ?? user.avatar,
           })
         }
+        message.success('头像已同步到账号')
       } catch (error) {
         // Keep the existing local fallback for older API deployments without the avatar route.
         saveLocalProfile({ avatar })
@@ -447,7 +448,6 @@ export function AppShell({ children, user, onLogout, onUserUpdated }: { children
         message.warning(`头像已保存在当前浏览器（${detail}）`)
       }
       setAvatarEditOpen(false)
-      if (!onUserUpdated) message.success('头像已更新')
     } catch (error) {
       message.error(error instanceof Error ? error.message : '头像保存失败')
     } finally {
@@ -623,7 +623,7 @@ export function AppShell({ children, user, onLogout, onUserUpdated }: { children
             <div><small>账号编号</small><strong>FS-{String(user.id).padStart(6, '0')}</strong></div>
           </div>
         </div>
-        <div className="account-profile-note">头像与修改后的用户名保存在当前浏览器；登录邮箱与账号权限仍由后端账号管理。</div>
+        <div className="account-profile-note">头像会同步到当前账号；修改后的用户名暂时只保存在当前浏览器，等待后端开放用户名更新接口后再同步。</div>
       </Modal>
 
       <Modal

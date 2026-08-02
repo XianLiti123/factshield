@@ -86,7 +86,7 @@ function saveHistory(userId: number, records: DatabaseQueryRecord[]) {
 function channelForTool(tool: string): ChannelKey | null {
   const normalized = tool.toLowerCase()
   if (/web_search|web_extract|search|网页|网络/.test(normalized)) return 'web'
-  if (/finance|efinance|tickflow|data_source|datasource|数据源|行情|财务/.test(normalized)) return 'source'
+  if (/finance|efinance|tickflow|data_source|datasource|execute_command|curl|python|数据源|行情|财务/.test(normalized)) return 'source'
   if (/memory|recall|advanced_research|knowledge|database|数据库|知识库|记忆/.test(normalized)) return 'database'
   return null
 }
@@ -116,6 +116,8 @@ function buildSearchPrompt(query: string) {
   return `你是 FactShield 的三路资料检索助手。请围绕下面的问题进行真实检索，并把结果整理成可核对的事实：
 
 研究问题：${query}
+
+开始前先激活 web、finance、memory 三个工具集。每一部分至少调用一个对应的真实检索工具；如果某类工具不可用或检索失败，必须明确写出实际原因，不能仅凭已有知识补写成已检索结果。
 
 请按下面三个一级标题严格输出，三个标题都必须保留，不要合并：
 ## 网络检索
@@ -200,8 +202,12 @@ export function DatabaseView({ userId }: { userId: number }) {
           saveHistory(userId, next)
           return next.slice(0, 8)
         })
+      } else {
+        throw new Error('Agent 没有返回可展示的检索结果')
       }
-      message.success('三路检索已完成')
+      const usedChannels = new Set(streamedTools.map(channelForTool).filter(Boolean))
+      if (usedChannels.size === CHANNEL_KEYS.length) message.success('三路检索已完成')
+      else message.warning(`Agent 已返回结果，实际调用了 ${usedChannels.size}/3 类检索工具`)
     } catch (requestError) {
       const detail = requestError instanceof Error ? requestError.message : '检索失败，请稍后重试'
       setError(detail)
@@ -269,7 +275,10 @@ export function DatabaseView({ userId }: { userId: number }) {
                   <header>
                     <span className="database-channel-icon">{meta.icon}</span>
                     <div><strong>{meta.title}</strong><small>{meta.description}</small></div>
-                    <span className={`database-channel-status${loading ? ' loading' : ''}`}>{loading ? <Spin size="small" /> : <CheckCircleFilled />} {loading ? '检索中' : '已返回'}</span>
+                    <span className={`database-channel-status${loading ? ' loading' : channelTools[key].length > 0 ? '' : ' not-used'}`}>
+                      {loading ? <Spin size="small" /> : channelTools[key].length > 0 ? <CheckCircleFilled /> : <ClockCircleOutlined />}
+                      {loading ? '检索中' : channelTools[key].length > 0 ? '已检索' : '未调用'}
+                    </span>
                   </header>
                   {channelTools[key].length > 0 && (
                     <div className={`database-tool-card${expandedTools === key ? ' expanded' : ''}`}>
@@ -281,6 +290,7 @@ export function DatabaseView({ userId }: { userId: number }) {
                     </div>
                   )}
                   <div className="database-channel-content">
+                    {!loading && answer && channelTools[key].length === 0 && <div className="database-channel-notice">本次 Agent 没有调用这类检索工具，下方文字仅是模型返回的分段内容。</div>}
                     {liveContent ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{liveContent}</ReactMarkdown> : loading ? <div className="database-channel-placeholder"><Spin /><span>等待模型返回这一类资料…</span></div> : <p>模型没有返回明确的分段内容，请查看其他结果或重新提问。</p>}
                   </div>
                 </article>

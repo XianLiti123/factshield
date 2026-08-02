@@ -18,9 +18,14 @@ import { Button, Input, Modal, Segmented, Select, Slider, Switch, Tag, message }
 import {
   getCapabilities,
   getDataSources,
+  getFlowError,
   getSettings,
+  listFlowErrors,
+  markFlowErrorRepaired,
+  repairFlowError,
   saveDataSources,
   saveModelConfig,
+  saveSearchEngine,
   type CapabilityStatus,
   type DataSourceConfig,
   type DataSourceMode,
@@ -47,8 +52,10 @@ type ModelSlot = {
   selectedModelId: string
 }
 
+type SearchEngineId = 'tavily' | 'python'
+
 type SearchEngine = {
-  id: string
+  id: SearchEngineId
   name: string
   description: string
   apiKey: string
@@ -133,27 +140,8 @@ function createBuiltInDataSources(capabilities: SettingsResponse['global_capabil
 }
 
 const DEFAULT_CONTEXT_TRIGGER = 80
-const CONTEXT_PREFERENCE_KEY = 'factshield.settings.context-compaction'
-
-function loadContextPreference() {
-  try {
-    const stored = JSON.parse(window.localStorage.getItem(CONTEXT_PREFERENCE_KEY) ?? '{}') as {
-      custom?: boolean
-      trigger?: number
-    }
-    return {
-      custom: Boolean(stored.custom),
-      trigger: typeof stored.trigger === 'number'
-        ? Math.min(100, Math.max(0, Math.round(stored.trigger)))
-        : DEFAULT_CONTEXT_TRIGGER,
-    }
-  } catch {
-    return { custom: false, trigger: DEFAULT_CONTEXT_TRIGGER }
-  }
-}
 
 export function SettingsView() {
-  const initialContextPreference = useMemo(loadContextPreference, [])
   const [slots, setSlots] = useState<ModelSlot[]>(initialSlots)
   const [activeSlotId, setActiveSlotId] = useState<ModelSlotId>('primary')
   const [deepThinking, setDeepThinking] = useState(true)
@@ -161,13 +149,13 @@ export function SettingsView() {
   const [addModalOpen, setAddModalOpen] = useState(false)
   const [newModelName, setNewModelName] = useState('')
   const [searchEngines, setSearchEngines] = useState<SearchEngine[]>(initialSearchEngines)
-  const [activeSearchEngineId, setActiveSearchEngineId] = useState(initialSearchEngines[0].id)
+  const [activeSearchEngineId, setActiveSearchEngineId] = useState<SearchEngineId>(initialSearchEngines[0].id)
   const [showSearchApiKey, setShowSearchApiKey] = useState(false)
+  const [searchSaving, setSearchSaving] = useState(false)
+  const [searchStatus, setSearchStatus] = useState<SettingsResponse['search'] | null>(null)
   const [saving, setSaving] = useState(false)
   const [capabilities, setCapabilities] = useState<CapabilityStatus | null>(null)
   const [settingsCapabilities, setSettingsCapabilities] = useState<SettingsResponse['global_capabilities'] | null>(null)
-  const [customContextTrigger, setCustomContextTrigger] = useState(initialContextPreference.custom)
-  const [contextTrigger, setContextTrigger] = useState(initialContextPreference.trigger)
   const [dataSources, setDataSources] = useState<DataSourceConfig[]>([])
   const [dataSourcesLoading, setDataSourcesLoading] = useState(true)
   const [dataSourcesSaving, setDataSourcesSaving] = useState(false)
@@ -175,10 +163,20 @@ export function SettingsView() {
   const [dataSourceModalOpen, setDataSourceModalOpen] = useState(false)
   const [activeDataSourceId, setActiveDataSourceId] = useState('efinance')
   const [deleteDataSourceTarget, setDeleteDataSourceTarget] = useState<DataSourceConfig | null>(null)
+  const [flowErrors, setFlowErrors] = useState<import('../services/api').FlowError[]>([])
+  const [flowErrorsLoading, setFlowErrorsLoading] = useState(false)
+  const [flowErrorDetail, setFlowErrorDetail] = useState<import('../services/api').FlowErrorDetail | null>(null)
+  const [flowErrorDetailLoading, setFlowErrorDetailLoading] = useState(false)
+  const [flowErrorActionId, setFlowErrorActionId] = useState<number | null>(null)
 
   useEffect(() => {
     getSettings().then((settings) => {
       setSettingsCapabilities(settings.global_capabilities)
+      setSearchStatus(settings.search)
+      setActiveSearchEngineId(settings.search_engine)
+      setSearchEngines((current) => current.map((engine) => engine.id === 'tavily'
+        ? { ...engine, apiKey: settings.search.tavily_configured ? '***' : '' }
+        : engine))
       setSlots((current) => current.map((slot) => {
         const serverSlot = slot.id === 'primary' ? 'llm' : slot.id === 'vision' ? 'vision' : null
         const config = serverSlot ? settings.configs[serverSlot] : undefined
@@ -201,14 +199,12 @@ export function SettingsView() {
       .then(({ data_sources }) => setDataSources(data_sources))
       .catch((error) => message.error(error instanceof Error ? error.message : '数据源加载失败'))
       .finally(() => setDataSourcesLoading(false))
+    setFlowErrorsLoading(true)
+    listFlowErrors({ status: 'failed' })
+      .then(({ errors }) => setFlowErrors(errors))
+      .catch(() => setFlowErrors([]))
+      .finally(() => setFlowErrorsLoading(false))
   }, [])
-
-  useEffect(() => {
-    window.localStorage.setItem(CONTEXT_PREFERENCE_KEY, JSON.stringify({
-      custom: customContextTrigger,
-      trigger: contextTrigger,
-    }))
-  }, [contextTrigger, customContextTrigger])
 
   const activeSlot = useMemo(
     () => slots.find((slot) => slot.id === activeSlotId) ?? slots[0],
@@ -338,6 +334,66 @@ export function SettingsView() {
     setSearchEngines((current) => current.map((engine) => engine.id === activeSearchEngineId ? { ...engine, apiKey } : engine))
   }
 
+  const saveSearchSettings = async () => {
+    setSearchSaving(true)
+    try {
+      const result = await saveSearchEngine(
+        activeSearchEngineId,
+        activeSearchEngine.requiresApiKey ? activeSearchEngine.apiKey : undefined,
+      )
+      setSearchStatus((current) => current ? {
+        ...current,
+        engine: result.search_engine,
+        tavily_configured: result.tavily_configured,
+        needs_key: result.needs_key,
+        engines: current.engines.map((engine) => engine.id === 'tavily'
+          ? { ...engine, configured: result.tavily_configured }
+          : engine),
+      } : current)
+      if (result.tavily_configured) {
+        setSearchEngines((current) => current.map((engine) => engine.id === 'tavily'
+          ? { ...engine, apiKey: '***' }
+          : engine))
+      }
+      setCapabilities(await getCapabilities())
+      if (result.needs_key) message.warning('已切换到 Tavily，但还需要填写可用的 API Key')
+      else message.success(`搜索引擎已切换为 ${result.search_engine === 'tavily' ? 'Tavily' : 'Python'}`)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '搜索设置保存失败')
+    } finally {
+      setSearchSaving(false)
+    }
+  }
+
+  const openFlowError = async (errorId: number) => {
+    setFlowErrorDetailLoading(true)
+    try {
+      setFlowErrorDetail(await getFlowError(errorId))
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '错误详情读取失败')
+    } finally {
+      setFlowErrorDetailLoading(false)
+    }
+  }
+
+  const runFlowErrorAction = async (errorId: number, action: 'repair' | 'mark') => {
+    setFlowErrorActionId(errorId)
+    try {
+      if (action === 'repair') await repairFlowError(errorId)
+      else await markFlowErrorRepaired(errorId)
+      const result = await listFlowErrors({ status: 'failed' })
+      setFlowErrors(result.errors)
+      if (flowErrorDetail?.id === errorId && action === 'mark') {
+        setFlowErrorDetail({ ...flowErrorDetail, status: 'repaired', repairedAt: new Date().toISOString() })
+      }
+      message.success(action === 'repair' ? '已发起后端修复' : '已标记为人工修复')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '错误处理失败')
+    } finally {
+      setFlowErrorActionId(null)
+    }
+  }
+
   const saveSettings = async () => {
     if (!selectedModel.baseUrl.trim() || !selectedModel.modelName.trim()) {
       message.warning(`请补全${activeSlot.name}的 Base URL 和模型名称`)
@@ -345,11 +401,6 @@ export function SettingsView() {
     }
     if (activeSlot.id !== 'primary' && activeSlot.id !== 'vision') {
       message.info(`${activeSlot.name}当前由服务端环境统一配置，页面只显示连接状态`)
-      return
-    }
-    const maskedKey = selectedModel.apiKey.includes('...') || selectedModel.apiKey === '***'
-    if (maskedKey || !selectedModel.apiKey.trim()) {
-      message.warning('请输入新的 API Key 后再保存；服务端不会回传已保存的明文密钥')
       return
     }
     setSaving(true)
@@ -465,7 +516,7 @@ export function SettingsView() {
           </div>
 
           {activeSlot.id === 'primary' && (
-            <div className={`settings-inline-context${customContextTrigger ? ' custom' : ''}`}>
+            <div className="settings-inline-context">
               <div className="settings-inline-context-copy">
                 <span><CompressOutlined /></span>
                 <div><strong>上下文自动整理</strong><p>接近窗口上限时整理较早内容，保留关键结论和未完成事项。</p></div>
@@ -473,23 +524,23 @@ export function SettingsView() {
               <div className="settings-inline-context-control">
                 <div className="settings-context-toggle">
                   <div>
-                    <strong>自定义触发比例</strong>
-                    <span>{customContextTrigger ? `达到 ${contextTrigger}% 时开始整理` : `使用系统默认 ${DEFAULT_CONTEXT_TRIGGER}%`}</span>
+                    <strong>触发比例</strong>
+                    <span>服务端当前固定在窗口的 {DEFAULT_CONTEXT_TRIGGER}% 开始整理</span>
                   </div>
-                  <Switch size="small" checked={customContextTrigger} onChange={setCustomContextTrigger} />
+                  <Switch size="small" checked disabled />
                 </div>
                 <div className="settings-context-slider">
-                  <div><span>触发比例</span><strong>{customContextTrigger ? contextTrigger : DEFAULT_CONTEXT_TRIGGER}%</strong></div>
+                  <div><span>当前阈值</span><strong>{DEFAULT_CONTEXT_TRIGGER}%</strong></div>
                   <Slider
                     min={0}
                     max={100}
-                    value={customContextTrigger ? contextTrigger : DEFAULT_CONTEXT_TRIGGER}
-                    disabled={!customContextTrigger}
-                    onChange={setContextTrigger}
+                    value={DEFAULT_CONTEXT_TRIGGER}
+                    disabled
                     tooltip={{ formatter: (value) => `${value ?? 0}%` }}
                     marks={{ 0: '0%', 50: '50%', 80: '80%', 100: '100%' }}
                   />
                 </div>
+                <small className="settings-context-server-note">自定义阈值需要后端提供账号级配置接口，当前开关仅展示服务端实际策略。</small>
               </div>
             </div>
           )}
@@ -521,13 +572,12 @@ export function SettingsView() {
               <label className="search-key-field">
                 <span>{activeSearchEngine.name} API Key</span>
                 <Input
-                  disabled
                   prefix={<SafetyCertificateOutlined />}
                   suffix={<button className="settings-key-visibility" type="button" aria-label={showSearchApiKey ? '隐藏搜索 API Key' : '显示搜索 API Key'} onClick={() => setShowSearchApiKey((current) => !current)}>{showSearchApiKey ? <EyeOutlined /> : <EyeInvisibleOutlined />}</button>}
                   type={showSearchApiKey ? 'text' : 'password'}
                   value={activeSearchEngine.apiKey}
                   onChange={(event) => updateSearchApiKey(event.target.value)}
-                  placeholder={capabilities?.web_search ? '服务端已配置' : '请在服务端 .env 中配置'}
+                  placeholder={searchStatus?.tavily_configured ? '已保存，留空可保留原 Key' : '请输入 Tavily API Key'}
                 />
               </label>
             ) : (
@@ -536,8 +586,32 @@ export function SettingsView() {
                 <strong><CheckCircleFilled /> 本地 Python · 无需 API Key</strong>
               </div>
             )}
-            <small>{activeSearchEngine.description} · {activeSearchEngine.requiresApiKey ? '由服务端环境统一配置' : '本地能力'}</small>
+            <small>{activeSearchEngine.description} · {activeSearchEngine.requiresApiKey
+              ? searchStatus?.tavily_configured ? '账号已配置 Key' : '尚未配置 Key'
+              : '免 Key，本机直接检索'}</small>
+            <div className="settings-search-actions">
+              <span>{searchStatus?.engine === activeSearchEngineId ? '当前后端正在使用此引擎' : '选择尚未保存到后端'}</span>
+              <Button type="primary" loading={searchSaving} onClick={saveSearchSettings}>保存搜索设置</Button>
+            </div>
           </div>
+        </section>
+
+        <section className="settings-errors-card page-card">
+          <div className="settings-errors-heading">
+            <div><strong>服务错误记录</strong><p>查看后端记录的失败流程，并从这里发起修复。</p></div>
+            <Button size="small" onClick={() => {
+              setFlowErrorsLoading(true)
+              listFlowErrors({ status: 'failed' }).then(({ errors }) => setFlowErrors(errors)).catch(() => message.error('错误记录读取失败')).finally(() => setFlowErrorsLoading(false))
+            }}>刷新</Button>
+          </div>
+          {flowErrorsLoading ? <div className="settings-errors-empty">正在读取错误记录…</div> : flowErrors.length === 0 ? <div className="settings-errors-empty"><CheckCircleFilled /> 当前没有待处理的服务错误</div> : (
+            <div className="settings-error-list">
+              {flowErrors.slice(0, 8).map((item) => <div className="settings-error-item" key={item.id}>
+                <div className="settings-error-copy"><strong>{item.node || item.flowType}</strong><span>{item.error}</span><small>{item.flowType} · {item.flowId} · {new Date(item.createdAt).toLocaleString('zh-CN')}</small></div>
+                <div className="settings-error-actions"><Button size="small" onClick={() => void openFlowError(item.id)}>详情</Button><Button size="small" type="primary" loading={flowErrorActionId === item.id} onClick={() => void runFlowErrorAction(item.id, 'repair')}>修复</Button></div>
+              </div>)}
+            </div>
+          )}
         </section>
 
       </div>
@@ -560,6 +634,17 @@ export function SettingsView() {
           <Input value={newModelName} onChange={(event) => setNewModelName(event.target.value)} onPressEnter={addModel} placeholder="例如：自建模型服务" autoFocus />
           <small>新配置只会加入当前的“{activeSlot.name}”槽位。</small>
         </div>
+      </Modal>
+
+      <Modal title="服务错误详情" open={Boolean(flowErrorDetail) || flowErrorDetailLoading} footer={null} onCancel={() => setFlowErrorDetail(null)}>
+        {flowErrorDetailLoading ? <div className="settings-errors-empty">正在读取详情…</div> : flowErrorDetail && <div className="settings-error-detail">
+          <div><span>流程</span><strong>{flowErrorDetail.flowType} · {flowErrorDetail.flowId}</strong></div>
+          <div><span>节点</span><strong>{flowErrorDetail.node}</strong></div>
+          <div><span>错误</span><p>{flowErrorDetail.error}</p></div>
+          <div><span>触发输入</span><pre>{flowErrorDetail.prompt || '未返回'}</pre></div>
+          <div><span>堆栈</span><pre>{flowErrorDetail.traceback || '未返回'}</pre></div>
+          <Button type="primary" loading={flowErrorActionId === flowErrorDetail.id} onClick={() => void runFlowErrorAction(flowErrorDetail.id, 'mark')}>标记为已修复</Button>
+        </div>}
       </Modal>
 
       <Modal className="data-source-modal" title="数据源管理" open={dataSourceModalOpen} width={900} footer={null} onCancel={() => setDataSourceModalOpen(false)} closeIcon={<CloseOutlined />}>
