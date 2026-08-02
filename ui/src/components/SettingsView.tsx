@@ -25,6 +25,7 @@ import {
   listSessions,
   markFlowErrorRepaired,
   repairFlowError,
+  saveContextCompactTrigger,
   saveDataSources,
   saveModelConfig,
   saveSearchEngine,
@@ -143,7 +144,13 @@ function createBuiltInDataSources(capabilities: SettingsResponse['global_capabil
   ]
 }
 
-const DEFAULT_CONTEXT_TRIGGER = 80
+const FALLBACK_CONTEXT_CONFIG = {
+  triggerPercent: 80,
+  defaultPercent: 80,
+  minPercent: 10,
+  maxPercent: 100,
+  windowTokens: 65536,
+}
 
 export function SettingsView() {
   const [slots, setSlots] = useState<ModelSlot[]>(initialSlots)
@@ -177,6 +184,14 @@ export function SettingsView() {
   const [contextSessionsLoading, setContextSessionsLoading] = useState(true)
   const [contextCompacting, setContextCompacting] = useState(false)
   const [contextCompactResult, setContextCompactResult] = useState<SessionCompactResult | null>(null)
+  const [contextCustomEnabled, setContextCustomEnabled] = useState(false)
+  const [contextTriggerPercent, setContextTriggerPercent] = useState(FALLBACK_CONTEXT_CONFIG.triggerPercent)
+  const [savedContextTriggerPercent, setSavedContextTriggerPercent] = useState(FALLBACK_CONTEXT_CONFIG.triggerPercent)
+  const [contextDefaultPercent, setContextDefaultPercent] = useState(FALLBACK_CONTEXT_CONFIG.defaultPercent)
+  const [contextMinPercent, setContextMinPercent] = useState(FALLBACK_CONTEXT_CONFIG.minPercent)
+  const [contextMaxPercent, setContextMaxPercent] = useState(FALLBACK_CONTEXT_CONFIG.maxPercent)
+  const [contextWindowTokens, setContextWindowTokens] = useState(FALLBACK_CONTEXT_CONFIG.windowTokens)
+  const [contextTriggerSaving, setContextTriggerSaving] = useState(false)
   const workspaceTasks = useWorkspaceStore((state) => state.tasks)
 
   useEffect(() => {
@@ -184,6 +199,13 @@ export function SettingsView() {
       setSettingsCapabilities(settings.global_capabilities)
       setSearchStatus(settings.search)
       setActiveSearchEngineId(settings.search_engine)
+      setContextTriggerPercent(settings.context.trigger_percent)
+      setSavedContextTriggerPercent(settings.context.trigger_percent)
+      setContextDefaultPercent(settings.context.default_percent)
+      setContextMinPercent(settings.context.min_percent)
+      setContextMaxPercent(settings.context.max_percent)
+      setContextWindowTokens(settings.context.window_tokens)
+      setContextCustomEnabled(settings.context.trigger_percent !== settings.context.default_percent)
       setSearchEngines((current) => current.map((engine) => engine.id === 'tavily'
         ? { ...engine, apiKey: settings.search.tavily_configured ? '***' : '' }
         : engine))
@@ -462,6 +484,36 @@ export function SettingsView() {
     }
   }
 
+  const persistContextTrigger = async (triggerPercent: number) => {
+    if (contextTriggerSaving) return false
+    const normalized = Math.min(contextMaxPercent, Math.max(contextMinPercent, Math.round(triggerPercent)))
+    setContextTriggerSaving(true)
+    try {
+      const result = await saveContextCompactTrigger(normalized)
+      setContextTriggerPercent(result.trigger_percent)
+      setSavedContextTriggerPercent(result.trigger_percent)
+      setContextDefaultPercent(result.default_percent)
+      message.success(`自动整理阈值已保存为 ${result.trigger_percent}%`)
+      return true
+    } catch (error) {
+      setContextTriggerPercent(savedContextTriggerPercent)
+      message.error(error instanceof Error ? error.message : '自动整理阈值保存失败')
+      return false
+    } finally {
+      setContextTriggerSaving(false)
+    }
+  }
+
+  const toggleCustomContextTrigger = async (enabled: boolean) => {
+    if (contextTriggerSaving) return
+    setContextCustomEnabled(enabled)
+    if (enabled) return
+    const previousCustomState = savedContextTriggerPercent !== contextDefaultPercent
+    setContextTriggerPercent(contextDefaultPercent)
+    const saved = await persistContextTrigger(contextDefaultPercent)
+    if (!saved) setContextCustomEnabled(previousCustomState)
+  }
+
   return (
     <div className="settings-page">
       <aside className="settings-side-column">
@@ -560,25 +612,37 @@ export function SettingsView() {
             <div className="settings-inline-context">
               <div className="settings-inline-context-copy">
                 <span><CompressOutlined /></span>
-                <div><strong>上下文自动整理</strong><p>接近窗口上限时整理较早内容，保留关键结论和未完成事项。</p></div>
+                <div><strong>上下文自动整理</strong><p>接近 {contextWindowTokens.toLocaleString('zh-CN')} tokens 的窗口上限时，整理较早内容并保留关键结论。</p></div>
               </div>
               <div className="settings-inline-context-control">
                 <div className="settings-context-toggle">
                   <div>
-                    <strong>触发比例</strong>
-                    <span>服务端当前固定在窗口的 {DEFAULT_CONTEXT_TRIGGER}% 开始整理</span>
+                    <strong>自定义触发比例</strong>
+                    <span>{contextCustomEnabled ? `当前在窗口的 ${contextTriggerPercent}% 开始整理` : `关闭时使用默认值 ${contextDefaultPercent}%`}</span>
                   </div>
-                  <Switch size="small" checked disabled />
+                  <Switch
+                    size="small"
+                    checked={contextCustomEnabled}
+                    loading={contextTriggerSaving}
+                    onChange={(checked) => void toggleCustomContextTrigger(checked)}
+                  />
                 </div>
                 <div className="settings-context-slider">
-                  <div><span>当前阈值</span><strong>{DEFAULT_CONTEXT_TRIGGER}%</strong></div>
+                  <div><span>{contextCustomEnabled ? '自定义阈值' : '默认阈值'}</span><strong>{contextTriggerPercent}%</strong></div>
                   <Slider
-                    min={0}
-                    max={100}
-                    value={DEFAULT_CONTEXT_TRIGGER}
-                    disabled
+                    min={contextMinPercent}
+                    max={contextMaxPercent}
+                    value={contextTriggerPercent}
+                    disabled={!contextCustomEnabled || contextTriggerSaving}
+                    onChange={(value) => setContextTriggerPercent(value)}
+                    onChangeComplete={(value) => void persistContextTrigger(value)}
                     tooltip={{ formatter: (value) => `${value ?? 0}%` }}
-                    marks={{ 0: '0%', 50: '50%', 80: '80%', 100: '100%' }}
+                    marks={{
+                      [contextMinPercent]: `${contextMinPercent}%`,
+                      50: '50%',
+                      [contextDefaultPercent]: `${contextDefaultPercent}%`,
+                      [contextMaxPercent]: `${contextMaxPercent}%`,
+                    }}
                   />
                 </div>
                 <div className="settings-context-manual">
@@ -610,7 +674,7 @@ export function SettingsView() {
                     <strong>{contextCompactResult.tokens_before.toLocaleString('zh-CN')} → {contextCompactResult.tokens_after.toLocaleString('zh-CN')} tokens</strong>
                   </div>
                 )}
-                <small className="settings-context-server-note">自动触发仍由服务端固定为 {DEFAULT_CONTEXT_TRIGGER}%；“立即整理”已接入会话压缩接口，完整聊天记录不会删除。</small>
+                <small className="settings-context-server-note">自定义比例已按账号保存并立即生效；关闭开关会恢复默认 {contextDefaultPercent}%。“立即整理”只处理所选会话，完整聊天记录不会删除。</small>
               </div>
             </div>
           )}

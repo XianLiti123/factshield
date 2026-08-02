@@ -37,6 +37,13 @@ export type SettingsResponse = {
       configured: boolean
     }>
   }
+  context: {
+    trigger_percent: number
+    default_percent: number
+    min_percent: number
+    max_percent: number
+    window_tokens: number
+  }
   global_capabilities: {
     embedding: boolean
     reranker: boolean
@@ -412,6 +419,14 @@ export async function streamResumeSession(sessionId: string, onEvent: (event: St
   }
 }
 export const getSettings = () => request<SettingsResponse>('/api/settings')
+export const saveContextCompactTrigger = (triggerPercent: number) => request<{
+  status: string
+  trigger_percent: number
+  default_percent: number
+}>('/api/settings/context-compact', {
+  method: 'PUT',
+  body: JSON.stringify({ trigger_percent: triggerPercent }),
+})
 export const saveSearchEngine = (engine: 'tavily' | 'python', apiKey?: string) => (
   request<{
     status: string
