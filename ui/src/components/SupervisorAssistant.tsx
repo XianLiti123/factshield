@@ -19,7 +19,7 @@ import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ResearchRun } from '../types'
 import { getActiveTask, useWorkspaceStore } from '../store'
-import { abortSession, getSessionStatus, getTaskChatHistory, pauseSession, streamResumeSession, streamTaskChat, uploadDocument } from '../services/api'
+import { abortSession, getSessionStatus, getTaskChatHistory, pauseSession, streamResumeSession, streamTaskChat, uploadDocumentForAgent } from '../services/api'
 import { ASSISTANT_ATTACHMENT_ACCEPT, isImageAttachment, mergeAssistantAttachmentFiles } from '../utils/attachments'
 
 type AssistantMessage = {
@@ -243,28 +243,33 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
     const content = request.trim()
     if ((!content && attachments.length === 0) || sending) return
     const timestamp = Date.now()
-    const attachmentInfos = attachments.map((file) => ({ name: file.name, size: file.size, type: file.type }))
+    const filesToSend = attachments
+    const replyToSend = replyTarget
+    const attachmentInfos = filesToSend.map((file) => ({ name: file.name, size: file.size, type: file.type }))
     const userContent = content || '请结合我补充的附件继续核验。'
     setMessages((current) => [
       ...current,
-      { id: timestamp, role: 'user', content: userContent, attachments: attachmentInfos, replyTo: replyTarget ?? undefined },
+      { id: timestamp, role: 'user', content: userContent, attachments: attachmentInfos, replyTo: replyToSend ?? undefined },
       { id: timestamp + 1, role: 'assistant', content: '', status: '正在理解你的问题…', streaming: true },
     ])
     setInput('')
+    setAttachments([])
     setReplyTarget(null)
     setSending(true)
     setSessionPaused(false)
     try {
       let wasPaused = false
-      const converted = []
-      for (const file of attachments) {
-        converted.push(await uploadDocument(file, { mode: isImageAttachment(file) ? 'ai' : 'normal', save: false }))
-      }
-      const attachmentContext = converted.length > 0
-        ? `\n用户补充材料摘要：\n${converted.map((item) => `【${item.filename}】\n${item.content}`).join('\n\n')}`
+      const uploaded = await Promise.all(filesToSend.map(uploadDocumentForAgent))
+      const attachmentContext = uploaded.length > 0
+        ? `\n\n用户提供了以下附件，路径均位于服务端本地：\n${uploaded.map((item, index) => (
+            `${index + 1}. 文件名：${item.filename || filesToSend[index].name}\n`
+            + `   文件路径：${item.file_path}\n`
+            + `   文件大小：${item.size} 字节`
+          )).join('\n')}\n`
+          + '请结合用户问题按需读取附件：先激活 document 工具集；图片或扫描版 PDF 使用 ai_recognize_document，其他文档使用 convert_document。不要在未读取附件时猜测其内容。'
         : ''
       const taskMessage = [
-        replyTarget ? `追问上一条回复：${replyTarget.content}` : '',
+        replyToSend ? `追问上一条回复：${replyToSend.content}` : '',
         `用户要求：${userContent}${attachmentContext}`,
       ].filter(Boolean).join('\n\n')
       await streamTaskChat(taskMessage, run.id, userId, hasClaimContext ? selectedClaimId : undefined, (event) => {
@@ -302,7 +307,6 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
             streaming: false,
           }
         : item))
-      setAttachments([])
     } catch (error) {
       const errorText = error instanceof Error ? error.message : '对话失败'
       setMessages((current) => current.map((item) => item.id === timestamp + 1

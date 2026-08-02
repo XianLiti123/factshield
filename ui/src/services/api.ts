@@ -479,6 +479,18 @@ export function uploadDocument(file: File, options: { mode?: 'normal' | 'ai'; sa
   return request<DocumentConversion>(`/api/documents/convert?${params}`, { method: 'POST', body })
 }
 
+export type AgentDocumentUpload = {
+  file_path: string
+  filename: string
+  size: number
+}
+
+export function uploadDocumentForAgent(file: File) {
+  const body = new FormData()
+  body.append('file', file)
+  return request<AgentDocumentUpload>('/api/documents/upload', { method: 'POST', body })
+}
+
 export type TaskAttachmentUpload = {
   upload_id: string
   filename: string
