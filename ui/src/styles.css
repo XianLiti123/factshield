@@ -140,6 +140,15 @@ button { color: inherit; }
 }
 .login-options { min-height: 30px; margin: -3px 0 25px; display: flex; align-items: center; justify-content: space-between; }
 .register-agreement { min-height: 30px; margin: -3px 0 25px; display: flex; align-items: center; }
+.password-change-note { min-height: 30px; margin: -4px 0 18px; display: flex; align-items: center; gap: 7px; color: #718087; font-size: 12px; line-height: 1.45; }
+.password-change-note .anticon { flex: none; color: #2d827a; }
+.auth-password-panel .login-heading { margin-bottom: 20px; }
+.auth-password-panel .login-form .ant-form-item { margin-bottom: 13px; }
+.auth-password-panel .login-form .ant-form-item-label { padding-bottom: 5px; }
+.auth-password-panel .login-form .ant-input-affix-wrapper { height: 49px; }
+.auth-password-panel .password-change-note { min-height: 24px; margin: -1px 0 13px; }
+.auth-password-panel .login-submit.ant-btn { height: 51px; }
+.auth-password-panel .login-signup { margin-top: 15px; }
 .auth-check-control { display: inline-flex; align-items: center; gap: 7px; color: #66747a; font-size: 13px; }
 .auth-check-copy { color: #66747a; cursor: default; user-select: text; transition: none; }
 .login-form .ant-checkbox-wrapper { color: #66747a; font-size: 13px; }

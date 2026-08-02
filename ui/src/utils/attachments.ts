@@ -1,8 +1,11 @@
 export const ATTACHMENT_ACCEPT = '.pdf,.xlsx,.xls,.docx,.txt'
+export const ASSISTANT_ATTACHMENT_ACCEPT = `${ATTACHMENT_ACCEPT},.jpg,.jpeg,.png,.gif,.bmp,.webp,.tif,.tiff`
 export const MAX_ATTACHMENT_FILES = 5
 export const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024
 
 const supportedExtensions = new Set(['pdf', 'xlsx', 'xls', 'docx', 'txt'])
+const imageExtensions = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tif', 'tiff'])
+const assistantSupportedExtensions = new Set([...supportedExtensions, ...imageExtensions])
 
 export function attachmentKey(file: File) {
   return `${file.name}-${file.size}-${file.lastModified}`
@@ -14,14 +17,19 @@ export function formatAttachmentSize(size: number) {
   return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
-export function mergeAttachmentFiles(current: File[], incoming: File[]) {
+export function isImageAttachment(file: Pick<File, 'name' | 'type'>) {
+  const extension = file.name.split('.').pop()?.toLowerCase() ?? ''
+  return file.type.startsWith('image/') || imageExtensions.has(extension)
+}
+
+function mergeFiles(current: File[], incoming: File[], allowedExtensions: Set<string>) {
   const accepted: File[] = []
   const rejected: string[] = []
   const known = new Set(current.map(attachmentKey))
 
   for (const file of incoming) {
     const extension = file.name.split('.').pop()?.toLowerCase() ?? ''
-    if (!supportedExtensions.has(extension)) {
+    if (!allowedExtensions.has(extension)) {
       rejected.push(`${file.name}：不支持该格式`)
       continue
     }
@@ -40,4 +48,12 @@ export function mergeAttachmentFiles(current: File[], incoming: File[]) {
   }
 
   return { files: [...current, ...accepted], rejected }
+}
+
+export function mergeAttachmentFiles(current: File[], incoming: File[]) {
+  return mergeFiles(current, incoming, supportedExtensions)
+}
+
+export function mergeAssistantAttachmentFiles(current: File[], incoming: File[]) {
+  return mergeFiles(current, incoming, assistantSupportedExtensions)
 }

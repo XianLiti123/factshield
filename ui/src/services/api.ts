@@ -212,7 +212,7 @@ async function parseError(response: Response) {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   const token = getToken()
-  if (token) headers.set('Authorization', `Bearer ${token}`)
+  if (token && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`)
   if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json')
   const response = await fetch(path, { ...init, headers })
   if (!response.ok) throw new ApiError(await parseError(response), response.status)
@@ -228,6 +228,37 @@ export const login = (email: string, password: string) => request<AuthResponse>(
 })
 
 export const getMe = () => request<UserInfo>('/api/auth/me')
+
+export async function updateDisplayName(displayName: string) {
+  const payload = await request<AvatarUpdateResponse>('/api/auth/display-name', {
+    method: 'PUT',
+    body: JSON.stringify({ display_name: displayName }),
+  })
+  return payload.user ? { ...payload, ...payload.user } : payload
+}
+
+export const changePassword = (currentPassword: string, newPassword: string, token?: string) => request<{ status: string }>('/api/auth/password', {
+  method: 'PUT',
+  headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+})
+
+export async function changePasswordFromLogin(email: string, currentPassword: string, newPassword: string) {
+  const session = await login(email, currentPassword)
+  try {
+    return await changePassword(currentPassword, newPassword, session.token)
+  } finally {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.token}` },
+      })
+    } catch {
+      // The password change has already completed; an unreachable logout endpoint
+      // should not make the user repeat the operation.
+    }
+  }
+}
 
 type AvatarUpdateResponse = Partial<UserInfo> & {
   user?: Partial<UserInfo>
@@ -333,8 +364,21 @@ export type SessionStatus = {
   thread_id: string | null
 }
 
+export type SessionCompactResult = {
+  status: 'compacted' | string
+  session_id: string
+  tokens_before: number
+  tokens_after: number
+}
+
+export const listSessions = () => request<{ session_ids: string[] }>('/api/sessions')
+
 export const getSessionStatus = (sessionId: string) => request<SessionStatus>(
   `/api/sessions/${encodeURIComponent(sessionId)}/status`,
+)
+
+export const compactSession = (sessionId: string) => request<SessionCompactResult>(
+  `/api/sessions/${encodeURIComponent(sessionId)}/compact`, { method: 'POST' },
 )
 
 export const pauseSession = (sessionId: string) => request<{ status: string; session_id: string }>(

@@ -9,6 +9,7 @@ import {
   FileSearchOutlined,
   MessageOutlined,
   PaperClipOutlined,
+  PictureOutlined,
   RetweetOutlined,
   SafetyCertificateOutlined,
   ToolOutlined,
@@ -19,7 +20,7 @@ import remarkGfm from 'remark-gfm'
 import type { ResearchRun } from '../types'
 import { getActiveTask, useWorkspaceStore } from '../store'
 import { abortSession, getSessionStatus, getTaskChatHistory, pauseSession, streamResumeSession, streamTaskChat, uploadDocument } from '../services/api'
-import { ATTACHMENT_ACCEPT, mergeAttachmentFiles } from '../utils/attachments'
+import { ASSISTANT_ATTACHMENT_ACCEPT, isImageAttachment, mergeAssistantAttachmentFiles } from '../utils/attachments'
 
 type AssistantMessage = {
   id: number
@@ -256,7 +257,9 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
     try {
       let wasPaused = false
       const converted = []
-      for (const file of attachments) converted.push(await uploadDocument(file, { save: false }))
+      for (const file of attachments) {
+        converted.push(await uploadDocument(file, { mode: isImageAttachment(file) ? 'ai' : 'normal', save: false }))
+      }
       const attachmentContext = converted.length > 0
         ? `\n用户补充材料摘要：\n${converted.map((item) => `【${item.filename}】\n${item.content}`).join('\n\n')}`
         : ''
@@ -369,11 +372,34 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
   const addAttachments = (files: FileList | File[] | null) => {
     if (!files) return
     setAttachments((current) => {
-      const result = mergeAttachmentFiles(current, Array.from(files))
+      const result = mergeAssistantAttachmentFiles(current, Array.from(files))
       if (result.rejected.length > 0) message.warning(result.rejected[0])
       return result.files
     })
     if (attachmentInputRef.current) attachmentInputRef.current.value = ''
+  }
+
+  const addPastedAttachments = (clipboardData: DataTransfer) => {
+    const clipboardFiles = Array.from(clipboardData.files)
+    const files = clipboardFiles.length > 0
+      ? clipboardFiles
+      : Array.from(clipboardData.items)
+          .filter((item) => item.kind === 'file')
+          .map((item) => item.getAsFile())
+          .filter((file): file is File => file !== null)
+    if (files.length === 0) return false
+
+    const timestamp = Date.now()
+    const normalized = files.map((file, index) => {
+      if (!isImageAttachment(file) || (file.name && !/^image\.[a-z0-9]+$/i.test(file.name))) return file
+      const extension = file.name.split('.').pop()?.toLowerCase() || file.type.split('/').pop() || 'png'
+      return new File([file], `粘贴图片-${timestamp}${files.length > 1 ? `-${index + 1}` : ''}.${extension}`, {
+        type: file.type,
+        lastModified: timestamp,
+      })
+    })
+    addAttachments(normalized)
+    return true
   }
 
   if (activeView === 'tasks' || activeView === 'settings' || activeView === 'database') return null
@@ -478,7 +504,7 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
                   <div className="assistant-message-attachments">
                     {message.attachments.map((file) => (
                       <div className="assistant-sent-attachment-card" key={`${file.name}-${file.size}`}>
-                        <span><FileOutlined /></span>
+                        <span>{isImageAttachment(file) ? <PictureOutlined /> : <FileOutlined />}</span>
                         <div><strong>{file.name}</strong><small>{getFileExtension(file.name)} · {formatFileSize(file.size)}</small></div>
                       </div>
                     ))}
@@ -510,6 +536,9 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
             <Input.TextArea
               value={input}
               onChange={(event) => setInput(event.target.value)}
+              onPaste={(event) => {
+                if (addPastedAttachments(event.clipboardData)) event.preventDefault()
+              }}
               onPressEnter={(event) => {
                 if (!event.shiftKey) {
                   event.preventDefault()
@@ -523,7 +552,7 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
               <div className="assistant-pending-attachments">
                 {attachments.map((file, index) => (
                   <div className="assistant-attachment-card" key={`${file.name}-${file.size}`}>
-                    <span className="assistant-attachment-icon"><FileOutlined /></span>
+                    <span className="assistant-attachment-icon">{isImageAttachment(file) ? <PictureOutlined /> : <FileOutlined />}</span>
                     <div>
                       <strong>{file.name}</strong>
                       <small>{getFileExtension(file.name)} · {formatFileSize(file.size)}</small>
@@ -538,7 +567,7 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
                 ref={attachmentInputRef}
                 type="file"
                 multiple
-                accept={ATTACHMENT_ACCEPT}
+                accept={ASSISTANT_ATTACHMENT_ACCEPT}
                 onChange={(event) => addAttachments(event.target.files)}
               />
               <Button type="text" icon={<PaperClipOutlined />} aria-label="添加附件" onClick={() => attachmentInputRef.current?.click()}>添加附件</Button>
@@ -548,7 +577,7 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
               <Button type="primary" loading={sending} icon={<ArrowUpOutlined />} aria-label="发送给小盾" onClick={() => sendRequest(input)} />
             </div>
           </div>
-          <span>Enter 发送 · Shift + Enter 换行 · 已连接 FastAPI 流式对话</span>
+          <span>Enter 发送 · Shift + Enter 换行 · Ctrl+V 粘贴文件或截图</span>
         </div>
       </Drawer>
     </>

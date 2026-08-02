@@ -17,10 +17,12 @@ import {
 import { Button, Input, Modal, Segmented, Select, Slider, Switch, Tag, message } from 'antd'
 import {
   getCapabilities,
+  compactSession,
   getDataSources,
   getFlowError,
   getSettings,
   listFlowErrors,
+  listSessions,
   markFlowErrorRepaired,
   repairFlowError,
   saveDataSources,
@@ -30,7 +32,9 @@ import {
   type DataSourceConfig,
   type DataSourceMode,
   type SettingsResponse,
+  type SessionCompactResult,
 } from '../services/api'
+import { useWorkspaceStore } from '../store'
 
 type ModelConfig = {
   id: string
@@ -168,6 +172,12 @@ export function SettingsView() {
   const [flowErrorDetail, setFlowErrorDetail] = useState<import('../services/api').FlowErrorDetail | null>(null)
   const [flowErrorDetailLoading, setFlowErrorDetailLoading] = useState(false)
   const [flowErrorActionId, setFlowErrorActionId] = useState<number | null>(null)
+  const [contextSessions, setContextSessions] = useState<string[]>([])
+  const [selectedContextSessionId, setSelectedContextSessionId] = useState('')
+  const [contextSessionsLoading, setContextSessionsLoading] = useState(true)
+  const [contextCompacting, setContextCompacting] = useState(false)
+  const [contextCompactResult, setContextCompactResult] = useState<SessionCompactResult | null>(null)
+  const workspaceTasks = useWorkspaceStore((state) => state.tasks)
 
   useEffect(() => {
     getSettings().then((settings) => {
@@ -204,6 +214,13 @@ export function SettingsView() {
       .then(({ errors }) => setFlowErrors(errors))
       .catch(() => setFlowErrors([]))
       .finally(() => setFlowErrorsLoading(false))
+    listSessions()
+      .then(({ session_ids }) => {
+        setContextSessions(session_ids)
+        setSelectedContextSessionId((current) => current && session_ids.includes(current) ? current : (session_ids[0] ?? ''))
+      })
+      .catch(() => setContextSessions([]))
+      .finally(() => setContextSessionsLoading(false))
   }, [])
 
   const activeSlot = useMemo(
@@ -421,6 +438,30 @@ export function SettingsView() {
     }
   }
 
+  const contextSessionOptions = useMemo(() => contextSessions.map((sessionId) => {
+    if (sessionId.startsWith('task-')) {
+      const taskId = sessionId.slice(5)
+      const task = workspaceTasks.find((item) => item.id === taskId)
+      return { value: sessionId, label: task ? `${task.title} · ${taskId}` : `研究任务 · ${taskId}` }
+    }
+    return { value: sessionId, label: `普通对话 · ${sessionId}` }
+  }), [contextSessions, workspaceTasks])
+
+  const compactSelectedContext = async () => {
+    if (!selectedContextSessionId || contextCompacting) return
+    setContextCompacting(true)
+    setContextCompactResult(null)
+    try {
+      const result = await compactSession(selectedContextSessionId)
+      setContextCompactResult(result)
+      message.success(`上下文已从 ${result.tokens_before.toLocaleString('zh-CN')} tokens 整理至 ${result.tokens_after.toLocaleString('zh-CN')} tokens`)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '上下文整理失败')
+    } finally {
+      setContextCompacting(false)
+    }
+  }
+
   return (
     <div className="settings-page">
       <aside className="settings-side-column">
@@ -540,7 +581,36 @@ export function SettingsView() {
                     marks={{ 0: '0%', 50: '50%', 80: '80%', 100: '100%' }}
                   />
                 </div>
-                <small className="settings-context-server-note">自定义阈值需要后端提供账号级配置接口，当前开关仅展示服务端实际策略。</small>
+                <div className="settings-context-manual">
+                  <div>
+                    <span>立即整理指定会话</span>
+                    <Select
+                      value={selectedContextSessionId || undefined}
+                      loading={contextSessionsLoading}
+                      disabled={contextSessionsLoading || contextSessionOptions.length === 0}
+                      options={contextSessionOptions}
+                      placeholder={contextSessionsLoading ? '正在读取会话' : '暂无可整理的会话'}
+                      onChange={(value) => {
+                        setSelectedContextSessionId(value)
+                        setContextCompactResult(null)
+                      }}
+                    />
+                  </div>
+                  <Button
+                    icon={<CompressOutlined />}
+                    loading={contextCompacting}
+                    disabled={!selectedContextSessionId}
+                    onClick={() => void compactSelectedContext()}
+                  >立即整理</Button>
+                </div>
+                {contextCompactResult && (
+                  <div className="settings-context-result">
+                    <CheckCircleFilled />
+                    <span>整理完成</span>
+                    <strong>{contextCompactResult.tokens_before.toLocaleString('zh-CN')} → {contextCompactResult.tokens_after.toLocaleString('zh-CN')} tokens</strong>
+                  </div>
+                )}
+                <small className="settings-context-server-note">自动触发仍由服务端固定为 {DEFAULT_CONTEXT_TRIGGER}%；“立即整理”已接入会话压缩接口，完整聊天记录不会删除。</small>
               </div>
             </div>
           )}

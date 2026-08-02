@@ -22,7 +22,7 @@ import {
 import { Avatar, Button, Dropdown, Empty, Input, Modal, Popover, Slider, Spin, Tag, message } from 'antd'
 import type { MenuProps } from 'antd'
 import { useWorkspaceStore } from '../store'
-import { checkApiHealth, searchWorkspace, updateAvatar, type UserInfo, type WorkspaceSearchResult } from '../services/api'
+import { checkApiHealth, searchWorkspace, updateAvatar, updateDisplayName, type UserInfo, type WorkspaceSearchResult } from '../services/api'
 
 const PROFILE_STORAGE_PREFIX = 'factshield.profile.'
 const AVATAR_CROP_SIZE = 280
@@ -91,6 +91,7 @@ export function AppShell({ children, user, onLogout, onUserUpdated }: { children
   const [localProfile, setLocalProfile] = useState<LocalProfile>(() => readLocalProfile(user.id))
   const [nameEditOpen, setNameEditOpen] = useState(false)
   const [nameDraft, setNameDraft] = useState('')
+  const [savingDisplayName, setSavingDisplayName] = useState(false)
   const [avatarEditOpen, setAvatarEditOpen] = useState(false)
   const [cropImage, setCropImage] = useState<CropImage | null>(null)
   const [cropZoom, setCropZoom] = useState(1)
@@ -126,7 +127,7 @@ export function AppShell({ children, user, onLogout, onUserUpdated }: { children
     : [])
   const pendingCount = pendingItems.length
   const nextPendingItem = pendingItems[0]
-  const displayName = localProfile.displayName?.trim() || user.display_name?.trim() || user.email.split('@')[0] || '研究员'
+  const displayName = user.display_name?.trim() || localProfile.displayName?.trim() || user.email.split('@')[0] || '研究员'
   const avatarInitial = Array.from(displayName)[0] || '研'
   const avatarText = /^[a-z]$/i.test(avatarInitial) ? avatarInitial.toUpperCase() : avatarInitial
   // 账号头像优先读取后端；旧版本留下的本地头像仅作为兼容兜底。
@@ -287,15 +288,29 @@ export function AppShell({ children, user, onLogout, onUserUpdated }: { children
     setNameEditOpen(true)
   }
 
-  const saveDisplayName = () => {
+  const saveDisplayName = async () => {
     const nextName = nameDraft.trim()
     if (nextName.length < 2 || nextName.length > 32) {
       message.error('用户名需要保持在 2–32 个字符之间')
       return
     }
-    saveLocalProfile({ displayName: nextName })
-    setNameEditOpen(false)
-    message.success('用户名已更新到当前浏览器')
+    setSavingDisplayName(true)
+    try {
+      const updated = await updateDisplayName(nextName)
+      const nextUser = {
+        ...user,
+        ...updated,
+        display_name: updated.display_name ?? nextName,
+      }
+      saveLocalProfile({ displayName: undefined })
+      onUserUpdated?.(nextUser)
+      setNameEditOpen(false)
+      message.success('用户名已同步到账号')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '用户名修改失败')
+    } finally {
+      setSavingDisplayName(false)
+    }
   }
 
   const openAvatarEditor = () => {
@@ -623,7 +638,6 @@ export function AppShell({ children, user, onLogout, onUserUpdated }: { children
             <div><small>账号编号</small><strong>FS-{String(user.id).padStart(6, '0')}</strong></div>
           </div>
         </div>
-        <div className="account-profile-note">头像会同步到当前账号；修改后的用户名暂时只保存在当前浏览器，等待后端开放用户名更新接口后再同步。</div>
       </Modal>
 
       <Modal
@@ -634,6 +648,7 @@ export function AppShell({ children, user, onLogout, onUserUpdated }: { children
         onOk={saveDisplayName}
         okText="保存修改"
         cancelText="取消"
+        confirmLoading={savingDisplayName}
       >
         <label className="profile-edit-label" htmlFor="profile-display-name">用户名</label>
         <Input
@@ -643,7 +658,7 @@ export function AppShell({ children, user, onLogout, onUserUpdated }: { children
           showCount
           autoFocus
           onChange={(event) => setNameDraft(event.target.value)}
-          onPressEnter={saveDisplayName}
+          onPressEnter={() => void saveDisplayName()}
           placeholder="请输入 2–32 个字符"
         />
         <p className="profile-edit-hint">修改后会立即应用到右上角账户卡和用户信息页。</p>

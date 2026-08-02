@@ -10,17 +10,20 @@ import {
   UserOutlined,
 } from '@ant-design/icons'
 import { Button, Checkbox, Form, Input, message } from 'antd'
-import { login, register, setToken, type UserInfo } from '../services/api'
+import { changePasswordFromLogin, login, register, setToken, type UserInfo } from '../services/api'
 
 interface LoginValues {
   username?: string
   email: string
   password: string
+  currentPassword?: string
+  newPassword?: string
+  confirmPassword?: string
   remember: boolean
   agreement?: boolean
 }
 
-type AuthMode = 'login' | 'register'
+type AuthMode = 'login' | 'register' | 'password'
 type TransitionPhase = 'idle' | 'exit' | 'enter'
 type TransitionDirection = 'forward' | 'backward'
 type ShowcaseKind = 'tasks' | 'review' | 'report'
@@ -221,7 +224,7 @@ export function LoginView({ onLogin }: { onLogin: (user: UserInfo) => void }) {
     if (target === mode || transition.phase !== 'idle' || submitting) return
     setTransition({
       phase: 'exit',
-      direction: target === 'register' ? 'forward' : 'backward',
+      direction: ({ login: 0, register: 1, password: 2 }[target] > { login: 0, register: 1, password: 2 }[mode]) ? 'forward' : 'backward',
       target,
     })
   }
@@ -268,7 +271,21 @@ export function LoginView({ onLogin }: { onLogin: (user: UserInfo) => void }) {
     }
   }
 
+  const submitPasswordChange = async (values: LoginValues) => {
+    setSubmitting(true)
+    try {
+      await changePasswordFromLogin(values.email, values.currentPassword ?? '', values.newPassword ?? '')
+      message.success('密码已修改，请使用新密码登录')
+      setTransition({ phase: 'exit', direction: 'backward', target: 'login' })
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '密码修改失败')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   const isRegister = mode === 'register'
+  const isPasswordChange = mode === 'password'
   const invalidFieldClass = (name: string) => invalidFields.includes(name)
     ? `auth-field-shake auth-field-shake-${shakeAttempt % 2}`
     : ''
@@ -290,21 +307,21 @@ export function LoginView({ onLogin }: { onLogin: (user: UserInfo) => void }) {
           </div>
           <div
             key={mode}
-            className={`login-form-wrap auth-panel ${panelMotionClass}`}
+            className={`login-form-wrap auth-panel${isPasswordChange ? ' auth-password-panel' : ''} ${panelMotionClass}`}
             onAnimationEnd={handlePanelAnimationEnd}
           >
             <div className="login-heading">
-              <h1>{isRegister ? '创建账号' : '欢迎回来'}</h1>
-              <p>{isRegister ? '创建您的金融研究工作台账号' : '请输入您的工作台账号信息'}</p>
+              <h1>{isPasswordChange ? '修改密码' : isRegister ? '创建账号' : '欢迎回来'}</h1>
+              <p>{isPasswordChange ? '验证当前账号后设置一个新密码' : isRegister ? '创建您的金融研究工作台账号' : '请输入您的工作台账号信息'}</p>
             </div>
 
             <Form<LoginValues>
               key={mode}
               className="login-form"
               layout="vertical"
-              initialValues={isRegister ? { agreement: true } : { remember: true }}
+              initialValues={isRegister ? { agreement: true } : isPasswordChange ? {} : { remember: true }}
               requiredMark={false}
-              onFinish={isRegister ? submitRegistration : submitLogin}
+              onFinish={isPasswordChange ? submitPasswordChange : isRegister ? submitRegistration : submitLogin}
               onFinishFailed={handleValidationFailed}
             >
               {isRegister && (
@@ -331,16 +348,54 @@ export function LoginView({ onLogin }: { onLogin: (user: UserInfo) => void }) {
                 <Input prefix={<MailOutlined />} placeholder="请输入邮箱地址" autoComplete="email" />
               </Form.Item>
 
-              <Form.Item
-                className={invalidFieldClass('password')}
-                label="密码"
-                name="password"
-                rules={[{ required: true, message: '请输入密码' }, { min: 6, message: '密码至少 6 位' }]}
-              >
-                <Input.Password prefix={<LockOutlined />} placeholder="请输入密码" autoComplete={isRegister ? 'new-password' : 'current-password'} />
-              </Form.Item>
+              {!isPasswordChange && <Form.Item
+                  className={invalidFieldClass('password')}
+                  label="密码"
+                  name="password"
+                  rules={[{ required: true, message: '请输入密码' }, { min: 6, message: '密码至少 6 位' }]}
+                >
+                  <Input.Password prefix={<LockOutlined />} placeholder="请输入密码" autoComplete={isRegister ? 'new-password' : 'current-password'} />
+                </Form.Item>}
 
-              {isRegister ? (
+              {isPasswordChange && <>
+                <Form.Item
+                  className={invalidFieldClass('currentPassword')}
+                  label="当前密码"
+                  name="currentPassword"
+                  rules={[{ required: true, message: '请输入当前密码完成身份验证' }]}
+                >
+                  <Input.Password prefix={<LockOutlined />} placeholder="请输入当前密码" autoComplete="current-password" />
+                </Form.Item>
+                <Form.Item
+                  className={invalidFieldClass('newPassword')}
+                  label="新密码"
+                  name="newPassword"
+                  rules={[{ required: true, message: '请输入新密码' }, { min: 8, message: '新密码至少 8 位' }]}
+                >
+                  <Input.Password prefix={<LockOutlined />} placeholder="请输入至少 8 位的新密码" autoComplete="new-password" />
+                </Form.Item>
+                <Form.Item
+                  className={invalidFieldClass('confirmPassword')}
+                  label="确认新密码"
+                  name="confirmPassword"
+                  dependencies={['newPassword']}
+                  rules={[
+                    { required: true, message: '请再次输入新密码' },
+                    ({ getFieldValue }) => ({
+                      validator(_, value) {
+                        return !value || getFieldValue('newPassword') === value
+                          ? Promise.resolve()
+                          : Promise.reject(new Error('两次输入的新密码不一致'))
+                      },
+                    }),
+                  ]}
+                >
+                  <Input.Password prefix={<LockOutlined />} placeholder="请再次输入新密码" autoComplete="new-password" />
+                </Form.Item>
+                <div className="password-change-note"><SafetyCertificateFilled /> 当前密码仅用于确认账号身份，修改成功后不会保留。</div>
+              </>}
+
+              {isPasswordChange ? null : isRegister ? (
                 <div className="register-agreement">
                   <div className="auth-check-control">
                     <Form.Item name="agreement" valuePropName="checked" noStyle>
@@ -358,18 +413,20 @@ export function LoginView({ onLogin }: { onLogin: (user: UserInfo) => void }) {
                     </Form.Item>
                     <span className="auth-check-copy">记住我</span>
                   </div>
-                  <Button className="auth-link" type="link" onClick={() => message.info('找回密码功能等待后端接入')}>忘记密码？</Button>
+                  <Button className="auth-link" type="link" onClick={() => switchMode('password')}>忘记密码？</Button>
                 </div>
               )}
 
               <Button className="login-submit" type="primary" htmlType="submit" loading={submitting} block>
-                {submitting ? (isRegister ? '正在注册' : '正在登录') : (isRegister ? '注册' : '登录')}
+                {submitting
+                  ? isPasswordChange ? '正在修改' : isRegister ? '正在注册' : '正在登录'
+                  : isPasswordChange ? '确认修改密码' : isRegister ? '注册' : '登录'}
               </Button>
             </Form>
 
             <div className="login-signup">
-              <span>{isRegister ? '已有账号？' : '还没有账号？'}</span>
-              <Button className="auth-link" type="link" onClick={() => switchMode(isRegister ? 'login' : 'register')}>{isRegister ? '返回登录' : '申请账号'}</Button>
+              <span>{isPasswordChange ? '想起当前登录信息了？' : isRegister ? '已有账号？' : '还没有账号？'}</span>
+              <Button className="auth-link" type="link" onClick={() => switchMode(isPasswordChange || isRegister ? 'login' : 'register')}>{isPasswordChange || isRegister ? '返回登录' : '申请账号'}</Button>
             </div>
           </div>
         </div>
