@@ -8,6 +8,8 @@ from .core.loop import graph,get_stream_config
 from .core.context import estimate_tokens,needs_compaction,compact_messages
 from .core.prompt import build_system_prompt
 from .failures import retry_call
+from .llm.responses import search_call_parts
+from .llm.text import content_to_text
 from .session import store as session_store
 from .session.context_config import get_compact_trigger_percent
 from .session.users import ensure_admin, get_user
@@ -34,6 +36,7 @@ class Agent:
         self._turn_seq = 0#当前轮次序号，与 turns 表的 seq 对应
         self._persist = True#embedding 不可用时降级为内存态
         self._pause_event = threading.Event()#手动叫停标志：置位后 run_stream 在节点边界挂起
+        self._search_cards_emitted: set[tuple[str, str]] = set()#本轮已播报的服务端搜索去重
 
         #尝试从 sessions.db 恢复会话状态（跨进程/重启续聊）
         try:
@@ -120,8 +123,8 @@ class Agent:
         self.messages = result["messages"]
         self.active_toolsets = result.get("active_toolsets",self.active_toolsets)
         self._update_context_tokens(result["messages"])
-        answer = result["messages"][-1].content
-        self._save_turn(user_input,answer if isinstance(answer,str) else str(answer))
+        answer = content_to_text(result["messages"][-1].content)
+        self._save_turn(user_input,answer)
         return answer
 
     #消费 graph 流并产出事件；_pause_event 置位时停止拉动生成器（图在节点边界挂起），
@@ -149,7 +152,20 @@ class Agent:
                 reasoning = chunk.additional_kwargs.get("reasoning_content")
                 if reasoning:
                     yield "think",reasoning
-                if chunk.content:
+                #Responses API 原生服务端搜索：web_search_call 输出块 -> tool 事件（搜索卡片）
+                for block in chunk.content if isinstance(chunk.content, list) else []:
+                    if not isinstance(block, dict) or block.get("type") != "web_search_call":
+                        continue
+                    query, url = search_call_parts(block)
+                    key = ("q", query) if query else ("u", url)
+                    if key in self._search_cards_emitted:
+                        continue
+                    self._search_cards_emitted.add(key)
+                    if query:
+                        yield "tool", f"web_search: 检索“{query}”"
+                    elif url:
+                        yield "tool", f"web_search: 打开来源 {url}"
+                if isinstance(chunk.content, str) and chunk.content:
                     yield "token",chunk.content
             elif node == "tools" and isinstance(chunk,ToolMessage):
                 args_text = self._find_tool_args(collected,chunk.tool_call_id)
@@ -163,9 +179,10 @@ class Agent:
         answer = ""
         for msg_id in reversed(order):
             msg = collected[msg_id]
-            if isinstance(msg,AIMessage) and isinstance(msg.content,str) and msg.content:
-                answer = msg.content
-                break
+            if isinstance(msg,AIMessage):
+                answer = content_to_text(msg.content)
+                if answer:
+                    break
         self._save_turn(user_input,answer)
 
     #带流式调用LLM的函数
@@ -185,6 +202,7 @@ class Agent:
         collected:dict[str,BaseMessage] = {}
         order:list[str] = []
         self._paused = False
+        self._search_cards_emitted = set()
         thread_id = get_stream_config(self.session_id,self._turn_seq+1)["configurable"]["thread_id"]
         stream = self.graph.stream(
             {"messages":self.messages,"active_toolsets":self.active_toolsets,
@@ -215,6 +233,7 @@ class Agent:
         collected:dict[str,BaseMessage] = {}
         order:list[str] = []
         self._paused = False
+        self._search_cards_emitted = set()
         config = {"configurable":{"thread_id":thread_id}}
         stream = self.graph.stream(None,config=config,stream_mode=["messages","updates"])#type:ignore
         streamed_any = False
@@ -233,9 +252,10 @@ class Agent:
         self._update_context_tokens(self.messages)
         answer = ""
         for msg in reversed(self.messages):
-            if isinstance(msg,AIMessage) and isinstance(msg.content,str) and msg.content:
-                answer = msg.content
-                break
+            if isinstance(msg,AIMessage):
+                answer = content_to_text(msg.content)
+                if answer:
+                    break
         if not streamed_any and answer:
             #打断发生在最后一次 LLM 生成期间：图在后台已完成该轮（messages 模式节点在后台线程执行，
             #关闭流不会中断当前节点），resume 收不到任何分片；这里把已生成的结果补发给前端

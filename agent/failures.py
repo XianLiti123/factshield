@@ -140,6 +140,7 @@ def _invoke_subagent(prompt: str, user_id: int, session_id: str | None) -> str:
     #手动修复子代理：用原提示词原样重启子代理图（与工具内自动修复同路径）
     from langchain_core.messages import SystemMessage
     from .core.loop import subagent_graph
+    from .llm.text import content_to_text
     from .tools.toolslist import toolsets
     state = {
         "messages": [SystemMessage(content=prompt)],
@@ -148,7 +149,7 @@ def _invoke_subagent(prompt: str, user_id: int, session_id: str | None) -> str:
         "session_id": session_id,
     }
     result = subagent_graph.invoke(state)  # type: ignore[arg-type]
-    return str(result["messages"][-1].content)
+    return content_to_text(result["messages"][-1].content)
 
 
 def _repair_worker(error_id: int, user_id: int) -> None:

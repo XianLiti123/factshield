@@ -172,6 +172,15 @@ CREATE TABLE IF NOT EXISTS task_events (
     payload TEXT NOT NULL DEFAULT '{}',
     ts TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
+CREATE TABLE IF NOT EXISTS task_node_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    node TEXT NOT NULL,
+    started_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    finished_at TEXT,
+    duration REAL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
 CREATE TABLE IF NOT EXISTS task_guidance (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id TEXT NOT NULL,
@@ -221,11 +230,46 @@ CREATE TABLE IF NOT EXISTS flow_errors (
 """
 
 
-def get_connection() -> sqlite3.Connection:
-    #获取一个数据库连接，Row 工厂让查询结果可以按列名访问
+class ClosableConnection:
+    """sqlite3.Connection 代理：`with` 退出时自动 commit/rollback 并 close。
+
+    sqlite3 原生连接的 with 语句只提交/回滚、不关闭连接，导致每次
+    `with get_connection() as conn` 都泄漏一个连接（长时间运行积累大量
+    未关闭连接并刷 ResourceWarning）。本代理保持原调用方式不变，只补上关闭。
+    """
+
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
+
+    def __setattr__(self, name: str, value) -> None:
+        if name.startswith("_"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._conn, name, value)
+
+    def __enter__(self) -> "ClosableConnection":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        try:
+            if exc_type is None:
+                self._conn.commit()
+            else:
+                self._conn.rollback()
+        finally:
+            self._conn.close()
+        return False
+
+
+def get_connection() -> ClosableConnection:
+    #获取一个数据库连接，Row 工厂让查询结果可以按列名访问；
+    #返回 ClosableConnection 代理：with 退出自动关闭，避免连接泄漏
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    return conn
+    return ClosableConnection(conn)
 
 
 def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:

@@ -29,10 +29,18 @@ COPY agent ./agent
 COPY api ./api
 COPY --from=ui-build /ui/dist ./ui/dist
 
+# 本地数据种子：把本机 agent/session、agent/memory、agent/workspace 的一致性快照
+# 打进镜像，首次启动（或挂空卷）时由 entrypoint.sh 灌入运行目录，实现“云端与本地完全一样”；
+# 之后云上产生的数据独立持久化，不会被种子覆盖。生成快照：python deploy/snapshot_seed.py
+COPY deploy/seed ./seed
+COPY deploy/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
 # 运行期数据（会话库/检查点/向量库/master key）落在以下目录，容器外应挂卷持久化：
-#   /app/agent/session   /app/agent/memory
+#   /app/agent/session   /app/agent/memory   /app/agent/workspace
 EXPOSE 8000
 
 # 全局密钥一律经环境变量注入（见 README），不要使用 .env 文件打入镜像
 # 单容器同时提供：前端页面 /、API /api/*（根路径 /* 同样可用）、Agent 能力内嵌于后端进程
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

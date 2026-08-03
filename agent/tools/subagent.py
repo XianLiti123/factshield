@@ -7,6 +7,7 @@ from langchain_core.messages import SystemMessage
 from langgraph.prebuilt import InjectedState
 from ..failures import (format_traceback, mark_repair_failed, mark_repaired,
                         mark_repairing, record_error)
+from ..llm.text import content_to_text
 from .toolslist import toolsets
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ def subagent(prompt:str,user_id:Annotated[int,InjectedState("user_id")]=None,
             if error_id is not None:
                 mark_repaired(error_id, user_id, f"子代理第 {attempt + 1} 次重启后执行成功")
                 logger.info("子代理失败后自动修复成功 (error_id=%s)", error_id)
-            return str(result["messages"][-1].content)
+            return content_to_text(result["messages"][-1].content)
         except Exception as e:  # noqa: BLE001
             last = e
             logger.warning("子代理执行失败（第 %d/%d 次）: %s", attempt + 1, SUBAGENT_MAX_ATTEMPTS, e)

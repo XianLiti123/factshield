@@ -3,6 +3,7 @@ import os
 from langchain_core.messages import BaseMessage, HumanMessage
 
 from ..llm.client import ChatClient
+from ..llm.text import content_to_text
 
 #上下文窗口与压缩阈值，可用环境变量覆盖
 CONTEXT_WINDOW_TOKENS = int(os.getenv("FS_CONTEXT_WINDOW", "65536"))  #模型总上下文窗口
@@ -38,8 +39,7 @@ def _format_history(messages: list[BaseMessage]) -> str:
     lines = []
     for msg in messages:
         role = getattr(msg, "type", "unknown")
-        content = msg.content if isinstance(msg.content, str) else str(msg.content)
-        lines.append(f"[{role}] {content}")
+        lines.append(f"[{role}] {content_to_text(msg.content)}")
     return "\n".join(lines)
 
 

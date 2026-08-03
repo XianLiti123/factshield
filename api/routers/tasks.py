@@ -172,7 +172,8 @@ def search_tasks(q: str = "", user_id: int = Depends(get_current_user)) -> dict:
 def get_task(task_id: str, user_id: int = Depends(get_current_user)) -> ResearchRun:
     task = _get_task_or_404(task_id, user_id)
     dto = run_to_dto(task, store.list_claims(task_id), store.list_evidence(task_id),
-                     store.claim_evidence_ids(task_id), store.list_events(task_id))
+                     store.claim_evidence_ids(task_id), store.list_events(task_id),
+                     store.list_node_runs(task_id))
     return ResearchRun(**dto)
 
 

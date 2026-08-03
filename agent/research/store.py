@@ -126,8 +126,38 @@ def reset_task_data(task_id: str) -> None:
     #流程重启（自动修复）前调用，附件素材由 runner.reset_task 重新入库
     with get_connection() as conn:
         for table in ("task_materials", "claims", "evidence", "claim_evidence",
-                      "agent_tool_traces"):
+                      "agent_tool_traces", "task_node_runs"):
             conn.execute(f"DELETE FROM {table} WHERE task_id=?", (task_id,))
+
+
+# ---------------- 节点真实耗时（Agent 运行时间统计） ----------------
+
+def start_node_run(task_id: str, node: str) -> int:
+    #记录一个流水线节点的开始时刻，返回 run_id（节点完成时回写耗时）
+    with get_connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO task_node_runs (task_id, node) VALUES (?,?)", (task_id, node)
+        )
+        return cur.lastrowid  # type: ignore[return-value]
+
+
+def finish_node_run(run_id: int, duration: float) -> None:
+    #回写节点耗时与完成时刻（duration 为实际执行的秒数）
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE task_node_runs SET finished_at=datetime('now','localtime'), duration=? WHERE id=?",
+            (round(duration, 3), run_id)
+        )
+
+
+def list_node_runs(task_id: str) -> list[dict]:
+    #按时间顺序返回该任务的全部节点执行记录（含未完成项，供前端实时统计运行中的 Agent）
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, node, started_at, finished_at, duration"
+            " FROM task_node_runs WHERE task_id=? ORDER BY id", (task_id,)
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ---------------- 素材（采集到的原始资料，group_id 对应知识库向量块） ----------------

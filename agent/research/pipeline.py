@@ -8,6 +8,8 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, StateGraph
 
 from ..llm.client import ChatClient
+from ..llm.responses import extract_web_search_calls
+from ..llm.text import content_to_text
 from ..memory.vector_store.store import add_document
 from ..memory.SQLite.db import get_connection as memory_conn
 from ..searchengine import extract, search
@@ -89,17 +91,25 @@ class NodeFailedError(Exception):
 
 
 def _node_with_retry(node: str, fn: Callable[[ResearchState, RunnableConfig], dict]) -> Callable:
-    #给节点包一层重试：失败即重启该节点，重试耗尽抛 NodeFailedError；手动终止不重试
+    #给节点包一层重试：失败即重启该节点，重试耗尽抛 NodeFailedError；手动终止不重试。
+    #每次实际执行都记录真实起止时间（task_node_runs），前端展示的 Agent 运行时间以此为准，
+    #不再用"事件时间片"估算（多节点 Actor / 深挖等场景会算错）
     def wrapped(state: ResearchState, config: RunnableConfig) -> dict:
         last: Exception | None = None
         for attempt in range(NODE_MAX_ATTEMPTS):
             _check_stop(config)
+            run_id = store.start_node_run(state["task_id"], node)
+            t0 = time.monotonic()
             try:
-                return fn(state, config)
+                result = fn(state, config)
+                store.finish_node_run(run_id, time.monotonic() - t0)
+                return result
             except TaskStopped:
+                store.finish_node_run(run_id, time.monotonic() - t0)
                 raise
             except Exception as e:  # noqa: BLE001
                 last = e
+                store.finish_node_run(run_id, time.monotonic() - t0)
                 if attempt < NODE_MAX_ATTEMPTS - 1:
                     time.sleep(NODE_RETRY_DELAYS[min(attempt, len(NODE_RETRY_DELAYS) - 1)])
         raise NodeFailedError(node, last, NODE_MAX_ATTEMPTS) from last  # type: ignore[arg-type]
@@ -134,18 +144,33 @@ def _consume_guidance(config: RunnableConfig, task_id: str, progress: float) -> 
 
 
 def _llm_json(llm: ChatClient, prompt: str, retries: int = 1) -> dict:
-    #调 LLM 并解析 JSON 输出；容忍 markdown 代码块包裹，失败重试
+    #调 LLM 并解析 JSON 输出；容忍 markdown 代码块包裹与首尾多余文字，失败重试
     last_err: Exception | None = None
     for _ in range(retries + 1):
         try:
             text = str(llm.chat([HumanMessage(content=prompt)]))
-            start, end = text.find("{"), text.rfind("}")
-            if start == -1 or end <= start:
-                raise ValueError(f"LLM 未输出 JSON: {text[:200]}")
-            return json.loads(text[start:end + 1])
+            return _parse_json_loose(text)
         except Exception as e:
             last_err = e
     raise RuntimeError(f"LLM JSON 解析失败: {last_err}")
+
+
+def _parse_json_loose(text: str) -> dict:
+    #优先整体解析；其次去掉 markdown 代码块围栏；最后按首尾花括号截取
+    text = text.strip()
+    if text.startswith("```"):
+        body = text.split("\n", 1)
+        text = body[1].strip() if len(body) > 1 else text[len("```"):].strip()
+        if text.endswith("```"):
+            text = text[:-3].strip()
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        raise ValueError(f"LLM 未输出 JSON: {text[:200]}")
+    return json.loads(text[start:end + 1])
 
 
 def _llm(config: RunnableConfig) -> ChatClient:
@@ -288,8 +313,17 @@ def _run_collector_agent(state: ResearchState, config: RunnableConfig, tools: li
         _check_stop(config)
         response = llm.invoke(messages, tools=tools)
         calls = getattr(response, "tool_calls", None) or []
+        #Responses API 原生服务端搜索：web_search_call 输出块 -> 研究动态里的搜索卡片
+        for card in extract_web_search_calls(response.content):
+            query = card["query"] or "服务端联网检索"
+            urls = card["urls"]
+            _emit(config, "collector", "progress",
+                  title=f"服务端联网检索：{query[:40]}",
+                  speech=f"DeepSeek 服务端已完成搜索，打开 {len(urls)} 个来源页面，模型将据此采集材料。",
+                  details=[{"label": f"来源 {i + 1}", "text": u} for i, u in enumerate(urls[:5])],
+                  metrics=[{"label": "来源数", "value": str(len(urls))}])
         if not calls:
-            summary = str(response.content or "") if response.content else summary
+            summary = content_to_text(response.content) if response.content else summary
             break
         messages.append(response)
         for tc in calls:
@@ -303,7 +337,7 @@ def _run_collector_agent(state: ResearchState, config: RunnableConfig, tools: li
             store.append_tool_trace(task_id, actor, node, name, args, result)
             messages.append(ToolMessage(content=result, tool_call_id=tc["id"], name=name))
     else:
-        summary = summary or str(messages[-1].content or "")
+        summary = summary or content_to_text(messages[-1].content or "")
     return summary
 
 
@@ -635,7 +669,7 @@ def _run_review_agent(state: ResearchState, config: RunnableConfig, tools: list,
         _check_stop(config)
         response = llm.invoke(messages, tools=tools)
         calls = getattr(response, "tool_calls", None) or []
-        last_text = str(response.content or "") if response.content else last_text
+        last_text = content_to_text(response.content) if response.content else last_text
         if not calls:
             break
         messages.append(response)

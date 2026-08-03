@@ -1,6 +1,8 @@
 import sqlite3
 from pathlib import Path
 
+from ...session.db import ClosableConnection
+
 #数据库文件路径，与本模块同目录
 DB_PATH = Path(__file__).parent / "memory.db"
 
@@ -15,11 +17,12 @@ CREATE TABLE IF NOT EXISTS documents (
 """
 
 
-def get_connection() -> sqlite3.Connection:
-    #获取一个数据库连接，Row 工厂让查询结果可以按列名访问
+def get_connection() -> ClosableConnection:
+    #获取一个数据库连接，Row 工厂让查询结果可以按列名访问；
+    #返回 ClosableConnection 代理：with 退出自动关闭，避免连接泄漏
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    return conn
+    return ClosableConnection(conn)
 
 
 def init_db() -> None:

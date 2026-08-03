@@ -165,3 +165,7 @@ agent/memory/vector_store/chroma_db/
 
 # FactShield 运行时附件（上传/下载的工作文件，不入库）
 agent/workspace/
+
+# Docker 打包产物：本地数据快照与导出镜像包（不入库）
+deploy/seed/
+deploy/factshield-deploy/
