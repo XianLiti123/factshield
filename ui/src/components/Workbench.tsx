@@ -356,7 +356,6 @@ function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: E
       startScrollLeft: event.currentTarget.scrollLeft,
       moved: false,
     }
-    event.currentTarget.setPointerCapture(event.pointerId)
   }
 
   const moveEvidenceDrag = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -364,9 +363,12 @@ function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: E
     if (drag.pointerId !== event.pointerId) return
     const distance = event.clientX - drag.startX
     if (!drag.moved && Math.abs(distance) < 4) return
-    drag.moved = true
-    suppressEvidenceClickRef.current = true
-    setEvidenceDragging(true)
+    if (!drag.moved) {
+      drag.moved = true
+      suppressEvidenceClickRef.current = true
+      setEvidenceDragging(true)
+      event.currentTarget.setPointerCapture(event.pointerId)
+    }
     event.currentTarget.scrollLeft = drag.startScrollLeft - distance
   }
 
