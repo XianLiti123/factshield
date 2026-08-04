@@ -19,6 +19,16 @@ def content_to_text(content: object) -> str:
         return ""
     if isinstance(content, str):
         return content
+    if isinstance(content, dict):
+        #流式分片有时直接给单个输出块（如 output_text），做同样归一
+        btype = content.get("type")
+        if btype in ("text", "output_text"):
+            text = content.get("text")
+            return str(text) if text else ""
+        if btype == "refusal":
+            refusal = content.get("refusal")
+            return str(refusal) if refusal else ""
+        return ""
     if isinstance(content, (list, tuple)):
         parts: list[str] = []
         for block in content:

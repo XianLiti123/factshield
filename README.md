@@ -14,6 +14,7 @@
 - **全链路审计**：事件时间线、工具调用轨迹、人工裁决记录全程留痕
 - **任务专属对话与中途指导**：随时向 Supervisor 提问，或在任务执行中提交调整指令，流水线在下一个核验点读取并执行
 - **通用 Agent 对话**：联网搜索、终端、金融数据、文档转换、记忆检索等工具集，会话持久化、上下文自动压缩、支持暂停 / 恢复 / 中止
+- **Agent 技能系统**：技能以 `agent/skills/<skill_id>/SKILL.md`（可附 `run.py`）形式存放，Agent 自主判断并调用 `use_skill` 工具，用户无需手动触发；技能文件改动自动热重载
 - **知识库**：Markdown 文档入库（Chroma 向量库 + SQLite 元数据），BM25 + 向量 + Reranker 混合检索
 - **数据源与金融数据**：用户自定义数据源列表；TickFlow 行情（未配置时退化为免费档：历史日 K 与标的信息），efinance 爬虫库内置可用
 - **多用户与安全**：注册 / 登录 / Token、头像、显示名、密码管理；模型密钥经 Fernet 加密后入库；任务与数据按用户隔离
@@ -36,12 +37,36 @@ FastAPI (api/) —— 鉴权 / 研究任务 / SSE 播报 / 设置 / 知识库 / 
    ▼
 Agent 引擎 (agent/)
    ├── research/   事实核查流水线（pipeline · runner · store · history · export · trace）
-   ├── core/       通用 Agent 循环 / 上下文压缩 / 提示词组装
-   ├── llm/        OpenAI 兼容客户端 / Responses API（含原生服务端搜索）
-   ├── memory/     知识库（SQLite 元数据 + Chroma 向量库 + Reranker 精排）
-   ├── session/    账号 / 会话 / 模型配置 / 数据源（sessions.db，按用户隔离）
-   └── tools/      联网搜索 / 终端 / 金融数据 / 文档转换 / 记忆 / 子智能体调用
+  ├── core/       通用 Agent 循环 / 上下文压缩 / 提示词组装
+  ├── llm/        OpenAI 兼容客户端 / Responses API（含原生服务端搜索）
+  ├── memory/     知识库（SQLite 元数据 + Chroma 向量库 + Reranker 精排）
+  ├── session/    账号 / 会话 / 模型配置 / 数据源（sessions.db，按用户隔离）
+  ├── skills/     技能系统：SKILL.md（+ 可选 run.py），Agent 自主调用
+  └── tools/      联网搜索 / 终端 / 金融数据 / 文档转换 / 记忆 / 子智能体调用
 ```
+
+### 技能系统
+
+Agent 常驻 `use_skill` 工具，启动时扫描 `agent/skills/` 下的技能目录并把“名称 + 描述”注入系统提示词，由 Agent 自主决定何时调用哪个技能（用户不需要手动触发）。
+
+每个技能目录包含：
+
+```text
+agent/skills/<skill_id>/
+  SKILL.md   # 必填：frontmatter（name/description/version/timeout）+ 操作说明
+  run.py     # 可选：可执行型技能，从 stdin 读取 {"task": "..."} 并打印结果
+  assets/    # 可选：技能附带资源
+```
+
+纯指令型技能由 `use_skill` 返回操作说明，Agent 再使用已有工具按步骤执行；可执行型技能由 `use_skill` 子进程隔离运行并带超时。自检/冒烟脚本：
+
+```bash
+conda run -n suanfa_learning python -m agent.skills.check
+conda run -n suanfa_learning python -m agent.skills.smoke
+conda run -n suanfa_learning python -m agent.skills.e2e   # 需已配置模型，验证 Agent 自主调用技能
+```
+
+技能列表只读接口：`GET /api/skills`（需登录）。
 
 ### 事实核查流水线
 

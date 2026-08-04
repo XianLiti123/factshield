@@ -174,8 +174,11 @@ class Agent:
                         yield "tool", f"web_search: 检索“{query}”"
                     elif url:
                         yield "tool", f"web_search: 打开来源 {url}"
-                if isinstance(chunk.content, str) and chunk.content:
-                    yield "token",chunk.content
+                #Responses API 模式下 content 是输出块列表（output_text 等），
+                #chat completions 是 str；统一归一后发 token 事件，避免前端拿到空正文
+                block_text = content_to_text(chunk.content)
+                if block_text:
+                    yield "token",block_text
             elif node == "tools" and isinstance(chunk,ToolMessage):
                 args_text = self._find_tool_args(collected,chunk.tool_call_id)
                 yield ("tool",f"{chunk.name}: {args_text}" if args_text else str(chunk.name))

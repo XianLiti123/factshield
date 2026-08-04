@@ -21,6 +21,7 @@ from .routers.errors import router as errors_router
 from .routers.knowledge import router as knowledge_router
 from .routers.sessions import router as sessions_router
 from .routers.settings import router as settings_router
+from .routers.skills import router as skills_router
 from .routers.tasks import router as tasks_router
 
 _routers = (
@@ -33,6 +34,7 @@ _routers = (
     settings_router,
     datasources_router,
     errors_router,
+    skills_router,
     auth_router,
 )
 
