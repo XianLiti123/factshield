@@ -4,6 +4,7 @@ from typing import Callable
 from langchain_core.messages import HumanMessage
 
 from ..core.loop import get_llm_client
+from ..searchengine import extract as web_extract
 from ..searchengine import search as web_search
 from ..session.search_config import get_engine
 from . import prompts, store
@@ -116,11 +117,25 @@ def run_history_analysis(task_id: str, user_id: int, emit: Callable, config: dic
     total_points = 0
     for e in planned:
         name = str(e.get("name", ""))
+        engine = get_engine(user_id)
         try:
-            items = web_search(str(e["search_query"]), get_engine(user_id),
-                               max_results=5, user_id=user_id)
+            items = web_search(str(e["search_query"]), engine, max_results=5, user_id=user_id)
         except Exception:
             items = []
+        #response_api 引擎的服务端搜索只返回 URL（标题/正文为空），
+        #补抓前几个页面的正文，保证 LLM 有可抽取的时序文本
+        for item in items[:3]:
+            if (item.get("title") or "").strip() and (item.get("content") or "").strip():
+                continue
+            url = str(item.get("url") or "").strip()
+            if not url:
+                continue
+            try:
+                body = web_extract(url, engine, user_id=user_id)
+            except Exception:
+                continue
+            if body.strip():
+                item["content"] = ((item.get("content") or "") + "\n" + body).strip()[:2000]
         search_text = "\n\n".join(
             f"{it.get('title', '')}: {it.get('content', '')}" for it in items)[:4000]
         if not search_text.strip():

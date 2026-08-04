@@ -339,10 +339,25 @@ def get_history_analysis(task_id: str, user_id: int = Depends(get_current_user))
     #取最新一次历史情景统计结果（前端据此绘制时序曲线与样本表）
     _get_task_or_404(task_id, user_id)
     analysis = store.get_latest_analysis(task_id)
+    if not runner.is_analysis_running(task_id):
+        #最近一次统计尝试失败且没有更新的成功结果时，把失败原因暴露给前端轮询，
+        #避免“复盘生成中”无限等待（前端轮询收到非 404 错误会结束生成状态）
+        latest_error = _latest_history_error(user_id, task_id)
+        if latest_error and (analysis is None or latest_error["created_at"] > analysis["created_at"]):
+            raise HTTPException(status_code=409,
+                                detail=f"历史情景统计失败：{latest_error['error']}")
     if analysis is None:
         raise HTTPException(status_code=404, detail="尚无历史情景统计结果")
     return {"id": analysis["id"], "task_id": task_id, "attached": bool(analysis["attached"]),
             "created_at": analysis["created_at"], **analysis["payload"]}
+
+
+def _latest_history_error(user_id: int, task_id: str) -> dict | None:
+    #最近一次历史情景统计失败记录（按 id 倒序取最新），供 GET 接口把失败原因暴露给前端
+    from agent.failures import list_errors
+    errors = list_errors(user_id, flow_type="history_analysis",
+                         flow_id=task_id, limit=1).get("errors") or []
+    return errors[0] if errors else None
 
 
 @router.post("/{task_id}/history-analysis/attach")

@@ -202,7 +202,7 @@ def start_retry(task_id: str, claim_id: str, user_id: int, *,
             )
             if repair_error_id:
                 mark_repair_failed(repair_error_id, user_id, f"重启后仍失败: {message}")
-            emit("system", "error", {"title": "重新取证失败", "speech": message})
+            emit("system", "error", title="重新取证失败", speech=message)
         if error_id is not None and allow_auto_repair:
             trigger_auto_repair(error_id, user_id)  #自动修复：重启该条主张的重新取证流程
 
@@ -250,7 +250,7 @@ def start_history_analysis(task_id: str, user_id: int, config: dict | None = Non
             )
             if repair_error_id:
                 mark_repair_failed(repair_error_id, user_id, f"重启后仍失败: {message}")
-            emit("system", "error", {"title": "历史情景统计失败", "speech": message})
+            emit("system", "error", title="历史情景统计失败", speech=message)
         finally:
             with _registry_lock:
                 _running_analysis.discard(task_id)
