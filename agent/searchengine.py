@@ -1,14 +1,15 @@
+"""搜索引擎统一入口。
+
+支持三种引擎：
+- tavily       - API 服务，需 TAVILY_API_KEY（用户 key 或服务端 .env key）。
+- python       - 必应中国版网页爬虫，无需 key。
+- response_api - DeepSeek Responses API 服务端 web_search（无需搜索 key）。
+
+search/extract 为统一入口，按用户选择的引擎路由；选了 tavily 但未配置 key 时
+直接报错，不静默降级。
+"""
+
 import logging
-
-import requests
-
-from . import config
-
-#搜索引擎统一入口：
-#  tavily       - API 服务，需 TAVILY_API_KEY（用户 key 或服务端 .env key）
-#  python       - 必应中国版网页爬虫，无需 key
-#  response_api - DeepSeek Responses API 服务端 web_search（无需搜索 key，依赖用户配置的 LLM，建议 deepseek-v4-flash）
-#调用方按用户选择的引擎路由；选了 tavily 但未配置 key 时直接报错，不静默降级
 
 logger = logging.getLogger(__name__)
 

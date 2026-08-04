@@ -1,3 +1,12 @@
+"""LLM 客户端扩展实现。
+
+ReasoningChatOpenAI 在 ChatOpenAI 基础上补齐思考内容（reasoning_content）的解析：
+- chat completions 模式：从 choices/delta 中提取 reasoning_content。
+- Responses API 模式：从 response.reasoning_text.delta 流块中提取并映射为
+  additional_kwargs["reasoning_content"]，与 chat completions 展示逻辑保持一致。
+兼容 DeepSeek、通义千问、GLM 等使用 reasoning_content 字段的第三方接口。
+"""
+
 import logging
 
 from langchain_openai import ChatOpenAI
@@ -12,9 +21,13 @@ logger = logging.getLogger(__name__)
 
 
 class ReasoningChatOpenAI(ChatOpenAI):
-    #通用 ChatOpenAI 子类：额外提取思考内容（reasoning_content）
-    #langchain-openai 只解析官方 OpenAI 字段，第三方兼容接口的 reasoning_content 会被丢弃，这里补上
-    #DeepSeek、通义千问、GLM 等兼容接口都使用 reasoning_content 字段，换模型时无需改动本类
+    """通用 ChatOpenAI 子类：额外提取思考内容（reasoning_content）。
+
+    langchain-openai 只解析官方 OpenAI 字段，第三方兼容接口的 reasoning_content
+    会被丢弃，这里补上。DeepSeek、通义千问、GLM 等兼容接口都使用
+    reasoning_content 字段，换模型时无需改动本类。
+    """
+
     thinking: bool = True  #思考模式：chat completions -> extra_body.thinking；responses -> reasoning.effort
 
     def _create_chat_result(self,response,generation_info=None):

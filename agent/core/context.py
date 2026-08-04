@@ -1,3 +1,10 @@
+"""上下文管理与压缩模块。
+
+- 维护模型上下文窗口与压缩触发/目标阈值（支持环境变量 FS_CONTEXT_WINDOW 覆盖）。
+- 提供 token 估算（兜底方案，保守不溢出）与压缩判定。
+- 调用 LLM 把对话历史压缩为摘要，压缩使用用户自己的模型配置、关闭思考模式。
+"""
+
 import os
 
 from langchain_core.messages import BaseMessage, HumanMessage

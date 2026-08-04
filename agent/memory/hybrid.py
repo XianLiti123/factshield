@@ -1,3 +1,12 @@
+"""混合检索（Hybrid Search）：让 SQLite 与向量库协同参与召回。
+
+- 向量召回：Chroma 语义检索（全库：知识库/任务素材/会话切片同库召回）。
+- 关键词召回 A：SQLite FTS5（trigram，中文子串）素材全文索引。
+- 关键词召回 B：Chroma where_document $contains 子串匹配。
+- RRF（Reciprocal Rank Fusion）融合三路召回，再经 reranker 精排（未配置时按融合分兜底）。
+返回 [{content, group_id, chunk_index, score}]。
+"""
+
 import logging
 import re
 import sqlite3
