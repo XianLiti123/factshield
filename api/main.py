@@ -1,3 +1,10 @@
+"""FactShield Agent API 应用入口。
+
+- 负责创建 FastAPI 应用实例、装配 CORS 中间件并挂载全部业务路由。
+- 同一套路由同时挂载在根路径（开发联调用）与 /api 前缀下（生产单容器部署用）。
+- 若前端已构建（ui/dist 存在），则由本服务直接托管静态资源。
+"""
+
 from pathlib import Path
 
 import uvicorn

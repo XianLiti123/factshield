@@ -23,6 +23,15 @@ SYSTEM_PROMPT = build_system_prompt()
 #Agent的对外接口
 #agent类
 class Agent:
+    """Agent 对外接口类（同步/流式对话、暂停恢复、上下文压缩）。
+
+    职责：
+    - 会话生命周期管理：建会话、从 sessions.db 恢复状态、跨轮持久化。
+    - 上下文管理：增量维护 token 计数，达阈值时调用 LLM 压缩历史。
+    - 与 LangGraph 图交互：同步 invoke 与流式 stream 两条路径。
+    - 支持手动暂停 / 恢复 / 丢弃（依赖 checkpointer 落盘状态）。
+    """
+
     def __init__(self,session_id:str|None=None,user_id:int|None=None):
         self.graph = graph
         self.user_id = user_id if user_id is not None else ensure_admin()#缺省归 admin（CLI 直用免登录）

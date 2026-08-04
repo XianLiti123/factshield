@@ -1,3 +1,15 @@
+"""事实核查流水线：固定骨架 + 多子智能体（互相隔离，无通信边）。
+
+流程：plan(主控拆解) -> collect(信源采集) -> parse(主张提取) -> retrieve(证据检索)
+      -> score(信源打分) -> verify(主控一级核验，冲突时回 collect 二次取证)
+      -> review(独立幻觉审查) -> assemble(底稿组装)
+
+机制：
+- 单节点失败按固定退避重启，耗尽抛 NodeFailedError 交由 runner 自动修复。
+- 采集员/审查员均为受限工具集子智能体，各自只拿到本环节输入。
+- 全程支持研究员介入（guidance）与手动终止（stop_event），进度只增不减。
+"""
+
 import json
 import threading
 import time

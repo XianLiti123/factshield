@@ -62,6 +62,12 @@ def _sanitize_messages(messages: list) -> list:
 
 # llm调用类
 class ChatClient:
+    """LLM 调用客户端封装。
+
+    统一入口：按用户配置的协议（chat completions / Responses API）与思考模式装配
+    langchain 客户端并调用模型，不做任何自动降级；端点拒绝参数时直接抛错由上层处理。
+    """
+
     def __init__(self,model = DEEPSEEK_MODEL,base_url = DEEPSEEK_BASE_URL,api_key = DEEPSEEK_API_KEY,
                  thinking = True,use_response_api = False):
         #thinking=True 开启思考模式（chat completions 用 DeepSeek 私有参数 thinking，

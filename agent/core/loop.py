@@ -1,3 +1,12 @@
+"""Agent 运行图构建模块。
+
+基于 LangGraph StateGraph 构建主代理图与子代理图：
+- 主代理图：含 subagent 工具、挂 checkpointer，支持暂停/恢复/继续调用子代理。
+- 子代理图：不含 subagent（防止套娃），不挂 checkpointer（一次性内部调用）。
+- 每轮一个 graph thread（thread_id = session_id-turn_seq），恢复时复用同一 thread_id。
+- 按 user_id 缓存 LLM client，配置变更时通过 invalidate_llm_cache 失效。
+"""
+
 from langgraph.graph import StateGraph,END
 from ..state.base import AgentState
 from ..llm.client import ChatClient
