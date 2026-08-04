@@ -1,3 +1,11 @@
+"""DeepSeek Responses API 服务端搜索支持。
+
+- web_search：直接调用 Responses API 的 web_search 工具（服务端执行搜索），
+  无需 Tavily key，依赖用户在设置页配置的 LLM。
+- extract_web_search_calls / search_call_parts：解析响应输出块，把服务端搜索
+  记录归一为「查询词 + 来源 URL 列表」，供搜索卡片渲染与结果提取使用。
+"""
+
 import logging
 
 logger = logging.getLogger(__name__)

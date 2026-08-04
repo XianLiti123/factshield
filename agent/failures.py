@@ -1,16 +1,12 @@
+"""流程错误登记与重试/自动修复机制。
+
+所有 Agent 流程（对话/子代理/研究流水线/重取证/历史统计）执行失败时经
+record_error 落库，可自动重启对应流程（自动修复），也可经 API 手动触发修复
+（repair_error）。错误记录按 user_id 隔离，通过 /errors 系列接口查询。
+状态机：failed(可修复) -> repairing(修复中) -> repaired / repair_failed。
+"""
+
 import logging
-import threading
-import time
-import traceback as _traceback
-from typing import Any, Callable
-
-from .session.db import get_connection, init_db
-
-#流程错误登记 + 重试/自动修复机制：
-#所有 Agent 流程（对话/子代理/研究流水线/重取证/历史统计）执行失败时经 record_error 落库，
-#可自动重启对应流程（自动修复），也可经 API 手动触发修复（repair_error）。
-#错误记录按 user_id 隔离，通过 /errors 系列接口查询。
-
 init_db()
 
 logger = logging.getLogger(__name__)

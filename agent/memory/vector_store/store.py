@@ -1,3 +1,10 @@
+"""向量知识库（Chroma）封装。
+
+- 文本切分（固定长度 + 重叠）后写入向量库，同一文档所有块共享 group_id。
+- 支持语义检索与按组前缀删除（供任务重启时清理失败产生的半成品）。
+- embedding 未配置时明确报错，不静默降级。
+"""
+
 import logging
 import uuid
 from pathlib import Path

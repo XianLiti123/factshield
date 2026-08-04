@@ -1,3 +1,9 @@
+"""知识库元数据（SQLite）存储。
+
+documents 表只存结构化元数据（group_id、块数），文档正文（非结构化数据）
+存 Chroma 向量库，二者通过 group_id 对应。
+"""
+
 import sqlite3
 from pathlib import Path
 

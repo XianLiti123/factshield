@@ -1,4 +1,9 @@
-#智能体名册与 DTO 序列化：字段名与前端 ui/src/types.ts 一一对应
+"""智能体名册与 DTO 序列化。
+
+- AGENT_ROSTER：拓扑固定的子智能体名册（字段名与前端 ui/src/types.ts 一一对应）。
+- STATUS_LABEL：主张可信度状态标签（verified/review/conflict）。
+- claim_to_dto / evidence_to_dto：主张与证据记录的 API 传输对象（DTO）序列化。
+"""
 
 #拓扑固定的智能体名册（历史情景复盘单元本期未启用）
 AGENT_ROSTER = [
