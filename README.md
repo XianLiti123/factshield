@@ -40,6 +40,7 @@ Agent 引擎 (agent/)
   ├── core/       通用 Agent 循环 / 上下文压缩 / 提示词组装
   ├── llm/        OpenAI 兼容客户端 / Responses API（含原生服务端搜索）
   ├── memory/     知识库（SQLite 元数据 + Chroma 向量库 + Reranker 精排）
+  ├── prompts.py  # 全部 Agent 提示词的唯一存放文件（开发修改提示词只改这里）
   ├── session/    账号 / 会话 / 模型配置 / 数据源（sessions.db，按用户隔离）
   ├── skills/     技能系统：SKILL.md（+ 可选 run.py），Agent 自主调用
   └── tools/      联网搜索 / 终端 / 金融数据 / 文档转换 / 记忆 / 子智能体调用

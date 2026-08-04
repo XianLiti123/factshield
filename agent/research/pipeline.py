@@ -26,7 +26,9 @@ from ..memory.vector_store.store import add_document
 from ..memory.SQLite.db import get_connection as memory_conn
 from ..searchengine import extract, search
 from ..session.search_config import get_engine
-from . import prompts, store
+from .. import prompts
+from ..prompts import COLLECTOR_PROMPT, DEEPEN_PROMPT, REVIEW_AGENT_PROMPT
+from . import store
 
 #事实核查流水线（固定骨架 + LLM 判定）：
 #plan(主控拆解) -> collect(信源采集) -> parse(主张提取) -> retrieve(证据检索)
@@ -231,22 +233,6 @@ def _ingest_material(task_id: str, seq: int, title: str, publisher: str, url: st
 #轮次/素材数量均有硬上限，控制流仍由固定骨架保证（stop/进度/审计不受影响）
 
 COLLECTOR_MAX_ROUNDS = 10  #采集员单任务最大工具调用轮次（成本上限）
-
-COLLECTOR_PROMPT = """你是金融事实核查任务的数据采集员，负责把可靠的一手资料存入任务素材库。
-
-【任务】主题：{topic}；公司：{company}
-【核查点】{checkpoints}
-【检索关键词】{keywords}
-【素材库】现有 {material_count} 份材料（总量上限 {max_materials_total} 份，本轮新增上限 {max_materials} 份）
-
-工作流程：
-1. 对每个核查点/关键词先联网检索（web_search），重要页面用 web_extract 读取正文；
-2. 涉及 A 股公司财务数据（营业收入/净利润/ROE/毛利率等）时用 query_financials 直接查询东方财富一手财报数据；
-3. 涉及股价、涨跌幅、历史走势类内容时用 query_kline 查询行情序列；
-4. 用户启用了自定义数据源时可用 list_data_sources 查看其接入规范并按其取数；未启用则忽略；
-5. 凡是有价值的材料（网页正文摘录、财报数据、行情序列等）立即调用 archive_material 入库，title/publisher/url/content 必须完整；
-6. 入库纪律：同一链接或同一公司同一报告期不要重复入库；content 控制在 300~5000 字（过长截断，过短无信息量不入库）；
-7. 完成标准：所有核查点均有材料覆盖、或素材已达上限、或已尽力无法获取更多 → 停止调用工具，直接输出一段简短的采集总结（不要调用任何工具）。"""
 
 
 def _make_collector_tools(task_id: str, user_id: int, new_count: dict) -> list:
@@ -471,21 +457,6 @@ def retrieve_node(state: ResearchState, config: RunnableConfig) -> dict:
     return {"guidance": guidance}
 
 
-#定向深挖员提示词：复用采集员工具集，聚焦单条主张补证据（财务类查财报/行情类查K线/新闻类搜网页）
-DEEPEN_PROMPT = """你是金融事实核查任务的定向深挖员。主控发现以下主张证据不足，需要你定向补充可靠材料：
-【待核查主张】{claim}
-【任务背景】主题：{topic}；公司：{company}
-【素材库】现有 {material_count} 份材料（总量上限 {max_total} 份，本轮新增上限 {max_new} 份）
-
-工作方式：
-1. 先判断主张类型：财务数据类（营收/净利/ROE/毛利率等）用 query_financials 查东方财富一手财报；
-   股价/涨跌幅/走势类用 query_kline 查行情；其他事实/新闻类用 web_search/web_extract 检索公开网页；
-2. 用户启用了自定义数据源时可用 list_data_sources 按其规范取数；未启用则忽略；
-3. 找到的可靠材料立即用 archive_material 入库（title/publisher/url/content 完整，同链接不重复入库）；
-4. 完成标准：找到支持或反驳该主张的可靠材料、或已尽力无法获取更多 → 停止调用工具，
-   直接输出一句简短说明（不要调用任何工具）。"""
-
-
 def deepen_node(state: ResearchState, config: RunnableConfig) -> dict:
     #逐条定向深挖：对证据不足 2 条的薄弱主张，由定向深挖员带受限工具集逐条补采
     #（财务主张查财报、行情主张查K线、事实主张搜网页），新素材入库后重新匹配证据
@@ -583,31 +554,6 @@ def _claims_snapshot(task_id: str) -> list[dict]:
 #只读、无入库/无执行能力，审查结论仍以结构化 JSON 交回主控
 
 REVIEW_MAX_ROUNDS = 6  #审查员工具查阅轮次上限（引文核对完即可输出结论）
-
-REVIEW_PROMPT = """你是金融事实核查任务的独立幻觉审查员，与采集/检索链路完全隔离，只做二级复核与可信度分级。
-职责：对主控一级核验后的每条主张，独立复核证据是否真实、引用是否准确，防止流水线"自说自话"式幻觉。
-
-【任务】主题：{topic}；公司：{company}
-【处理轨迹】（前序子智能体的处理记录，供你交叉核对）
-{trace}
-【待复核主张与证据链】
-{claims_with_verdicts}
-
-【素材库】共 {material_count} 份任务材料。可用工具核对原文：
-- read_material：读取任务素材库中某编号材料的原文，核对证据引文是否真实存在、与原文一致；
-- search_materials：在知识库（含本任务素材）内按语义检索，定位引文所在段落（返回归属组与原文）。
-
-【复核要点】
-1. 引文核验：每条证据的 quote 必须能在对应材料原文中找到（允许个别字词差异），
-   找不到、拼接断章取义、或与原文明显不符 → 判 red；
-2. 关系核验：evidence 的 relation（support/challenge）是否与原文语义一致；
-3. 主控意见复核：supervisor_verdict 与证据是否自洽，confidence 是否虚高；
-4. 处理轨迹交叉检查：前序环节声称的采集/检索结果与证据链是否吻合，"查无此据"即 red；
-5. 证据不足但无矛盾 → yellow；证据充分且无幻觉迹象 → green。
-
-【输出】完成复核后，输出 JSON（不要再调用任何工具）：
-{{"reviews": [{{"claim_id": "c1", "level": "green|yellow|red",
-"verdict": "复核结论（一句话）", "conflict_reason": "判 red/yellow 的具体依据（引用材料编号与原文片段），判 green 填空串"}}]}}"""
 
 
 def _processing_trace(state: ResearchState) -> str:
@@ -752,7 +698,7 @@ def review_node(state: ResearchState, config: RunnableConfig) -> dict:
     data = _run_review_agent(
         state, config,
         _make_review_tools(task_id, state["user_id"]),
-        REVIEW_PROMPT.format(
+        REVIEW_AGENT_PROMPT.format(
             topic=state["topic"], company=state["company"] or "未指定",
             trace=_processing_trace(state),
             claims_with_verdicts=json.dumps(_claims_snapshot(task_id), ensure_ascii=False)[:8000],

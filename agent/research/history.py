@@ -6,8 +6,9 @@ from langchain_core.messages import HumanMessage
 from ..core.loop import get_llm_client
 from ..searchengine import extract as web_extract
 from ..searchengine import search as web_search
+from .. import prompts
 from ..session.search_config import get_engine
-from . import prompts, store
+from . import store
 from .pipeline import _llm_json
 
 #历史情景时序统计单元（方案 SubAgent 6）：

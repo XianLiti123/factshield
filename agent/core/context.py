@@ -11,18 +11,12 @@ from langchain_core.messages import BaseMessage, HumanMessage
 
 from ..llm.client import ChatClient
 from ..llm.text import content_to_text
+from ..prompts import SUMMARY_PROMPT
 
 #上下文窗口与压缩阈值，可用环境变量覆盖
 CONTEXT_WINDOW_TOKENS = int(os.getenv("FS_CONTEXT_WINDOW", "65536"))  #模型总上下文窗口
 COMPACT_TRIGGER_RATIO = 0.8  #默认触发比例（窗口的 80%）；用户可经设置页按用户覆盖
 COMPACT_TARGET_RATIO = 0.05  #压缩目标：总窗口的 5%（约为原上下文的 1/10 量级）
-
-_SUMMARY_PROMPT = """请将以下对话历史压缩成一段摘要，控制在 {target_chars} 字以内。
-保留：用户的真实需求与结论、关键事实与数据、未完成的任务与约定、影响后续对话的重要上下文。
-丢弃：寒暄、客套、中间过程性的表述。
-对话历史：
-{history}"""
-
 
 def estimate_tokens(messages: list[BaseMessage]) -> int:
     #兜底估算：按字符数≈token 数保守估计（中文偏准，英文偏高，宁保守不溢出）
@@ -58,7 +52,7 @@ def compact_messages(messages: list[BaseMessage], user_id: int) -> str:
     if cfg is None:
         raise RuntimeError("未配置 LLM 模型，请先在设置中配置 base_url、api_key 和模型名")
     target_chars = int(CONTEXT_WINDOW_TOKENS * COMPACT_TARGET_RATIO)
-    prompt = _SUMMARY_PROMPT.format(target_chars=target_chars, history=_format_history(messages))
+    prompt = SUMMARY_PROMPT.format(target_chars=target_chars, history=_format_history(messages))
     summarizer = ChatClient(model=cfg["model_name"], base_url=cfg["base_url"], api_key=cfg["api_key"],
                             thinking=False, use_response_api=get_use_response_api(user_id))
     return summarizer.chat([HumanMessage(content=prompt)])
