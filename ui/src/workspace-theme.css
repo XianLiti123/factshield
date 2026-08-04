@@ -1364,6 +1364,12 @@ svg text {
 .running-progress-meta { margin: 7px 0 23px; display: flex; justify-content: space-between; align-items: center; }
 .running-progress-meta strong { color: #173e38; font-size: 18px; }
 .running-progress-meta span { color: #758680; font-size: 11px; }
+.running-question-space { min-height: 118px; padding: 12px 0 20px; display: flex; flex: 1 1 auto; align-items: center; }
+.running-original-question { width: 100%; min-width: 0; padding: 10px 2px 11px 15px; border-left: 2px solid #91c5b6; background: #f7faf9; }
+.running-original-question > span { display: flex; align-items: center; gap: 7px; color: #668078; font-size: 11px; font-weight: 600; line-height: 1.4; }
+.running-original-question > span .anticon { flex: none; color: #297864; font-size: 12px; line-height: 1; }
+.running-original-question p { max-height: 104px; margin: 7px 0 0; padding-right: 10px; overflow: auto; color: #29463f; font-size: 13px; font-weight: 500; line-height: 1.7; overflow-wrap: anywhere; scrollbar-width: thin; scrollbar-color: #c1d4ce transparent; }
+.running-progress-card.with-original-question .running-progress-summary { margin-top: 0; }
 .running-progress-card .ant-steps { min-height: 190px; margin-bottom: 18px; }
 .running-progress-card .ant-steps-item { min-width: 0; padding-bottom: 10px !important; }
 .running-progress-card .ant-steps-item:last-child { padding-bottom: 0 !important; }

@@ -158,7 +158,9 @@ function App() {
       )}
       {activeView === 'tasks' && <TaskCenter />}
       {activeView === 'settings' && <SettingsView />}
-      {activeView === 'database' && <DatabaseView userId={user.id} />}
+      <div hidden={activeView !== 'database'}>
+        <DatabaseView userId={user.id} />
+      </div>
       {isPersistedTask && (runLoading || (runFetching && !currentPersistedRun)) && !['tasks', 'settings', 'database'].includes(activeView) && (
         <div className="loading-state"><Skeleton active paragraph={{ rows: 8 }} /></div>
       )}

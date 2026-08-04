@@ -20,12 +20,13 @@ import {
   CloseOutlined,
 } from '@ant-design/icons'
 import { Button, Drawer, Empty, Input, Modal, Progress, Segmented, Steps, message } from 'antd'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { Claim, Evidence, ResearchRun } from '../types'
 import { getActiveTask, getResearchRunPhase, useWorkspaceStore } from '../store'
 import {
   assertResearchReady,
   createTask as createPersistedTask,
+  getAgentExecution,
   guideTask,
   resolveClaim as resolvePersistedClaim,
   retryClaim as retryPersistedClaim,
@@ -885,6 +886,19 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
       ? persistedRunPhase
       : activeTask.phase
   const researchTopic = preview ? run.title : activeTask.researchTopic
+  const { data: persistedOriginalQuestion } = useQuery({
+    queryKey: ['research-original-question', run.id, run.createdAt],
+    queryFn: async () => {
+      const execution = await getAgentExecution(run.id, 'supervisor')
+      const topic = execution.inputs.topic
+      return typeof topic === 'string' ? topic.trim() : ''
+    },
+    enabled: Boolean(activeTask.persisted && !preview),
+    staleTime: Number.POSITIVE_INFINITY,
+  })
+  const originalQuestion = activeTask.persisted && !preview
+    ? persistedOriginalQuestion
+    : researchTopic || run.title
   const demoStep = preview ? 8 : activeTask.demoStep
   const isDemoRunning = preview ? false : activeTask.isDemoRunning
   const focusedEvidenceId = !preview && searchFocus?.taskId === run.id ? searchFocus.evidenceId : undefined
@@ -1257,7 +1271,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
     return (
       <div className="research-running-page">
         <div className="running-two-column-layout">
-          <section className="running-progress-card">
+          <section className="running-progress-card with-original-question">
             <div className="running-card-heading">
               <div>
                 <span className="start-kicker"><i /> 小盾正在帮你查</span>
@@ -1267,6 +1281,12 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
             </div>
             <Progress percent={Math.round(run.progress)} showInfo={false} strokeColor="#0d6575" trailColor="#dfeae6" />
             <div className="running-progress-meta"><strong>{Math.round(run.progress)}%</strong><span>{progressStatus}</span></div>
+            <div className="running-question-space">
+              <div className="running-original-question">
+                <span><ReadOutlined /> 你最初想查的是</span>
+                <p>{originalQuestion || '正在读取你最初输入的问题...'}</p>
+              </div>
+            </div>
             <div className="running-progress-summary">
               <div><span>执行单元</span><strong>{completedAgents} / {run.agents.length}</strong><small>已完成</small></div>
               <div><span>已生成主张</span><strong>{run.claims.length}</strong><small>条事实主张</small></div>
