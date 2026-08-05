@@ -11,9 +11,12 @@
 """
 
 import json
+import logging
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse
 from typing import Any, Callable, TypedDict
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -28,11 +31,16 @@ from ..memory.SQLite.db import get_connection as memory_conn
 from ..searchengine import extract, search
 from ..session.search_config import get_engine
 from .. import prompts
-from ..prompts import COLLECTOR_PROMPT, DEEPEN_PROMPT, REVIEW_AGENT_PROMPT
+from ..llm.client import observe_llm_calls
+from ..prompts import COVERAGE_CHECK_PROMPT, REVIEW_AGENT_PROMPT
 from ..questions import QuestionCancelled
 from ..tools.ask_user import make_task_ask_tool
 from ..tools.skill import use_skill
+from .logging_setup import get_research_logger
 from . import store
+
+logger = get_research_logger()
+llm_logger = logging.getLogger("research.llm")
 
 #事实核查流水线（固定骨架 + LLM 判定）：
 #plan(主控拆解) -> collect(信源采集) -> parse(主张提取) -> retrieve(证据检索)
@@ -49,13 +57,25 @@ ASK_MAX_ROUNDS = 3      #主控 JSON 节点最多 LLM 轮次（可提问 1~2 次
 #单次 LLM 调用输出上限（token）：工具循环里模型一次生成几万字是单轮 30~100 秒的主因，
 #限制后超长输出被截断，配合 fetch_and_archive 服务端抓正文，模型不再生成正文参数
 TOOL_LOOP_MAX_OUTPUT = 6000
+#工具循环单轮读超时（秒）：服务端搜索偶尔单轮卡住，收紧到 90s，卡住快速失败并走节点级重试
+TOOL_LOOP_TIMEOUT = 90
 JSON_NODE_MAX_OUTPUT = 8192
 LLM_JSON_MAX_OUTPUT = 4096
+#流水线内纯 JSON 节点的单次 LLM 读超时（秒）
+LLM_INVOKE_TIMEOUT = 90
+#看门狗心跳间隔（秒）：节点/LLM 调用长时间无事件时，每 20 秒补发“仍在执行”事件
+HEARTBEAT_INTERVAL = 20
 
 #服务端原生联网搜索结果的自动归档上限：每个 LLM 响应最多自动抓取 2 个来源
 AUTO_ARCHIVE_PER_RESPONSE = 2
-#确定性备用采集方案的最大来源数（0 素材时不依赖 LLM，直接检索抓取）
-FALLBACK_MAX_SOURCES = 6
+#确定性批量采集的并发数与每个关键词的候选数
+#确定性批量采集的并发数与每个关键词的候选数（快速引擎下并发越高越接近“一次收齐”）
+DETERMINISTIC_COLLECT_WORKERS = 8
+DETERMINISTIC_COLLECT_PER_KEYWORD = 4
+#确定性采集同域名来源上限：避免必应兜底时整批入库同一官网/导航页
+MAX_SAME_DOMAIN = 3
+#抓取域名熔断：同域名连续失败此次数后，本任务内不再抓该域名（ Reuters 等反爬站会反复失败）
+DOMAIN_FAIL_BREAKER = 2
 
 #金融研究框架：用于选择企业/政策分析框架并组织底稿模块
 _COMPANY_HINTS = ("company", "enterprise", "经营质量", "企业", "公司", "基本面", "尽调", "财务")
@@ -85,13 +105,43 @@ def _parse_level(value: object) -> str:
     if "低" in text or "low" in text:
         return "低"
     return "中"
-MAX_RETRY = 2           #冲突二次取证上限（重试纪律由 VERIFY_PROMPT 约束，仅数据矛盾/证据缺失时触发）
 MAX_DEEPEN_CLAIMS = 4   #单次定向深挖的主张上限（按证据薄弱程度取前 N，每条补采 1 篇信源）
 
 
 def _web_search(query: str, user_id: int, max_results: int = 3) -> list[dict]:
     #按用户选择的搜索引擎联网检索，返回 [{"title","url","content"}]；失败抛异常由调用方降级
     return search(query, get_engine(user_id), max_results=max_results, user_id=user_id)
+
+
+def _fast_web_search(query: str, user_id: int, max_results: int = 4) -> list[dict]:
+    #代码驱动的确定性采集/补证据专用检索。引擎选择依据实测：
+    #- Response API 服务端搜索 25-40s/次，结果相关且多样（质量优先，主引擎）；
+    #- python（必应）~1s，但对多数查询只返回官网/导航页（仅作兜底，避免空手）；
+    #- Tavily 当前 key 静默返回空结果（仅用户显式选择 tavily 时尝试）。
+    #每次尝试都记录引擎/耗时/结果数，杜绝“静默空转”
+    from ..searchengine import search as _search
+    engine = get_engine(user_id)
+    if engine == "response_api":
+        attempts = ["response_api", "python"]
+    elif engine == "tavily":
+        attempts = ["tavily", "python", "response_api"]
+    else:
+        attempts = [engine, "response_api", "python"]
+    last_err = "无可用引擎"
+    for eng in attempts:
+        t0 = time.monotonic()
+        try:
+            items = _search(query, eng, max_results=max_results, user_id=user_id)
+            dur = time.monotonic() - t0
+            logger.info("快速检索 engine=%s query=%r n=%d 耗时%.2fs",
+                        eng, query, len(items), dur)
+            if items:
+                return items
+            last_err = f"{eng} 返回空结果（{dur:.2f}s）"
+        except Exception as e:  # noqa: BLE001
+            last_err = f"{eng} 失败: {e}"
+            logger.warning("快速检索 engine=%s 失败 query=%r: %s", eng, query, e)
+    raise RuntimeError(f"快速检索全部失败（{last_err}）")
 
 
 def _web_extract(url: str, user_id: int) -> str:
@@ -116,10 +166,7 @@ class ResearchState(TypedDict, total=False):
     checkpoints: list[str]
     materials: list[dict]      #[{group_id,title,publisher,url,content}]
     claims: list[dict]         #[{id,statement,category}]
-    retry_count: int
-    need_retry: bool
     guidance: list[str]       #研究员中途介入指令（各节点边界消费并累计，verify 统一拼入提示词）
-    collect_strategy: str     #采集策略：agent（LLM 自主采集）/ fallback（确定性检索兜底）
 
 
 #节点（子智能体）重试机制：单节点失败按固定退避重启该节点（子智能体），重试耗尽后抛出
@@ -137,29 +184,113 @@ class NodeFailedError(Exception):
         self.attempts = attempts
 
 
+def _add_llm_usage(usage: dict, info: dict) -> None:
+    #累计一次 LLM 调用到节点级 usage（线程池 worker 内显式调用，绕过 contextvar 不传播的问题）
+    usage["llm_calls"] += 1
+    usage["prompt_tokens"] += int(info.get("prompt_tokens") or 0)
+    usage["completion_tokens"] += int(info.get("completion_tokens") or 0)
+
+
+def _is_transient_error(e: Exception) -> bool:
+    #瞬时错误（网络/超时/限流/服务端 5xx）才值得节点级重试；
+    #本地确定性错误（JSON 解析失败、0 素材、参数错误）重试注定再失败，
+    #原样重跑三遍只会把 token 消耗放大 3 倍
+    try:
+        import openai
+        if isinstance(e, (openai.APIConnectionError, openai.APITimeoutError,
+                          openai.RateLimitError, openai.InternalServerError)):
+            return True
+    except Exception:  # noqa: BLE001 openai 不可用/属性缺失时按文本判断
+        pass
+    try:
+        import requests
+        if isinstance(e, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    text = str(e)
+    return any(k in text for k in ("Connection error", "timed out", "Timeout",
+                                   "502", "503", "504"))
+
+
 def _node_with_retry(node: str, fn: Callable[[ResearchState, RunnableConfig], dict]) -> Callable:
-    #给节点包一层重试：失败即重启该节点，重试耗尽抛 NodeFailedError；手动终止不重试。
+    #给节点包一层重试：仅瞬时错误（网络/超时/限流/5xx）重试，耗尽抛 NodeFailedError；
+    #手动终止与确定性错误（JSON 解析失败、0 素材等）不重试——后者重试注定再失败。
     #每次实际执行都记录真实起止时间（task_node_runs），前端展示的 Agent 运行时间以此为准，
-    #不再用"事件时间片"估算（多节点 Actor / 深挖等场景会算错）
+    #不再用"事件时间片"估算（多节点 Actor / 深挖等场景会算错）；
+    #同时写入 research_step_logs（全步骤日志）并累计该节点的 LLM 调用/token 用量；
+    #执行期间由看门狗每 HEARTBEAT_INTERVAL 秒补发一次"仍在执行"事件，杜绝长空窗
     def wrapped(state: ResearchState, config: RunnableConfig) -> dict:
         last: Exception | None = None
+        task_id = state["task_id"]
         for attempt in range(NODE_MAX_ATTEMPTS):
             _check_stop(config)
-            run_id = store.start_node_run(state["task_id"], node)
+            run_id = store.start_node_run(task_id, node, attempt=attempt + 1)
+            log_id = store.start_step_log(task_id, node, "node", attempt=attempt + 1,
+                                          params={"node": node, "attempt": attempt + 1})
             t0 = time.monotonic()
+            usage = {"llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+            config["configurable"]["_node_usage"] = usage  #供节点内线程池 worker 显式累计
+
+            def _on_llm(info: dict) -> None:
+                _add_llm_usage(usage, info)
+
+            heartbeat_stop = threading.Event()
+
+            def _heartbeat() -> None:
+                while not heartbeat_stop.wait(HEARTBEAT_INTERVAL):
+                    try:
+                        _emit(config, "system", "heartbeat",
+                              title=f"节点 {node} 仍在执行",
+                              speech=f"已等待 {int(time.monotonic() - t0)} 秒，模型调用/工具执行尚未结束，请稍候。",
+                              details=[], metrics=[], progress=None)
+                    except Exception:  # noqa: BLE001 心跳失败不影响主流程
+                        pass
+
+            hb = threading.Thread(target=_heartbeat, daemon=True, name=f"hb-{task_id}-{node}")
+            hb.start()
             try:
-                result = fn(state, config)
-                store.finish_node_run(run_id, time.monotonic() - t0)
+                with observe_llm_calls(_on_llm):
+                    result = fn(state, config)
+                duration = time.monotonic() - t0
+                store.finish_node_run(run_id, duration, status="ok",
+                                      llm_calls=usage["llm_calls"],
+                                      prompt_tokens=usage["prompt_tokens"],
+                                      completion_tokens=usage["completion_tokens"])
+                store.finish_step_log(log_id, status="ok", duration_ms=int(duration * 1000),
+                                      llm_calls=usage["llm_calls"],
+                                      prompt_tokens=usage["prompt_tokens"],
+                                      completion_tokens=usage["completion_tokens"],
+                                      result_summary="节点执行成功")
                 return result
             except TaskStopped:
-                store.finish_node_run(run_id, time.monotonic() - t0)
+                duration = time.monotonic() - t0
+                store.finish_node_run(run_id, duration, status="stopped")
+                store.finish_step_log(log_id, status="stopped", duration_ms=int(duration * 1000),
+                                      llm_calls=usage["llm_calls"], error="任务被研究员终止")
                 raise
             except Exception as e:  # noqa: BLE001
                 last = e
-                store.finish_node_run(run_id, time.monotonic() - t0)
+                duration = time.monotonic() - t0
+                store.finish_node_run(run_id, duration, status="error",
+                                      llm_calls=usage["llm_calls"],
+                                      prompt_tokens=usage["prompt_tokens"],
+                                      completion_tokens=usage["completion_tokens"])
+                store.finish_step_log(log_id, status="error", duration_ms=int(duration * 1000),
+                                      llm_calls=usage["llm_calls"],
+                                      prompt_tokens=usage["prompt_tokens"],
+                                      completion_tokens=usage["completion_tokens"],
+                                      error=str(e)[:3000])
+                logger.warning("节点 %s 第 %s 次执行失败: %s", node, attempt + 1, e)
+                if not _is_transient_error(e):
+                    break  #确定性错误：重试注定再失败，直接耗尽
                 if attempt < NODE_MAX_ATTEMPTS - 1:
                     time.sleep(NODE_RETRY_DELAYS[min(attempt, len(NODE_RETRY_DELAYS) - 1)])
-        raise NodeFailedError(node, last, NODE_MAX_ATTEMPTS) from last  # type: ignore[arg-type]
+            finally:
+                heartbeat_stop.set()
+                hb.join(timeout=1)
+                config["configurable"].pop("_node_usage", None)
+        raise NodeFailedError(node, last, attempt + 1) from last  # type: ignore[arg-type]
     return wrapped
 
 
@@ -190,17 +321,19 @@ def _consume_guidance(config: RunnableConfig, task_id: str, progress: float) -> 
     return guidance
 
 
-def _llm_json(llm: ChatClient, prompt: str, retries: int = 1,
+def _llm_json(llm: ChatClient, prompt: str, retries: int = 0,
               *, max_output_tokens: int = LLM_JSON_MAX_OUTPUT,
-              reasoning: str = "low") -> dict:
-    #调 LLM 并解析 JSON 输出；容忍 markdown 代码块包裹与首尾多余文字，失败重试。
+              reasoning: str = "low", timeout: int | None = LLM_INVOKE_TIMEOUT) -> dict:
+    #调 LLM 并解析 JSON 输出；容忍 markdown 代码块包裹与首尾多余文字。
+    #默认不重试（retries=0）：解析失败多为输出截断/提示词问题，原样重问结果一样，
+    #白白再烧一次 API；调用方确有需要时显式传 retries。
     #机械节点（主张提取/打分/证据判定）默认低思考 + 输出上限；质量关键节点由调用方传 high
     last_err: Exception | None = None
     for _ in range(retries + 1):
         try:
             text = str(llm.chat([HumanMessage(content=prompt)],
                                 max_output_tokens=max_output_tokens,
-                                reasoning=reasoning))
+                                reasoning=reasoning, timeout=timeout))
             return _parse_json_loose(text)
         except Exception as e:
             last_err = e
@@ -262,7 +395,8 @@ def _research_framework_guide(state: ResearchState) -> str:
 
 
 def _ask_capable_json(state: ResearchState, config: RunnableConfig, prompt: str,
-                      actor: str, node: str, retries: int = 1) -> dict:
+                      actor: str, node: str, retries: int = 1,
+                      reasoning: str = "low") -> dict:
     #主控 JSON 节点带 ask_user 的 LLM 调用：LLM 可先向研究员提问（阻塞等待答案），
     #得到回答后再输出 JSON；最多 ASK_MAX_ROUNDS 轮，防失控
     llm = _llm(config)
@@ -277,7 +411,8 @@ def _ask_capable_json(state: ResearchState, config: RunnableConfig, prompt: str,
         for _round in range(ASK_MAX_ROUNDS):
             _check_stop(config)
             response = llm.invoke(messages, tools=[ask_tool, use_skill],
-                                  max_output_tokens=JSON_NODE_MAX_OUTPUT)
+                                  max_output_tokens=JSON_NODE_MAX_OUTPUT,
+                                  reasoning=reasoning, timeout=LLM_INVOKE_TIMEOUT)
             calls = getattr(response, "tool_calls", None) or []
             text = content_to_text(response.content) if response.content else ""
             if text:
@@ -364,55 +499,129 @@ COLLECTOR_MAX_SEARCHES = 12  #采集员单任务服务端联网搜索次数预�
 DEEPEN_MAX_SEARCHES = 4      #深挖员单条主张服务端联网搜索次数预算
 
 
-def _fallback_collect(task_id: str, user_id: int, keywords: list[str],
-                      config: RunnableConfig, actor: str = "collector",
-                      node: str = "collect") -> int:
-    #确定性备用采集：不走 LLM，按关键词直接联网检索并抓取正文入库。
-    #用于（1）采集员未产生任何材料的兜底；（2）自动修复后强制切换的采集策略
-    _emit(config, actor, "progress", title="启用备用采集方案",
-          speech="采集员未产生任何材料，切换为确定性检索：按关键词直接联网检索并抓取正文入库。",
-          details=[{"label": "检索词", "text": k} for k in keywords],
-          metrics=[], progress=None)
-    added = 0
-    existing = {m["url"] for m in store.list_materials(task_id)}
-    fetched = 0
-    for kw in keywords[:MAX_KEYWORDS]:
+def _extract_and_ingest(task_id: str, user_id: int, item: dict,
+                        existing: set[str], lock: threading.Lock,
+                        actor: str = "collector", node: str = "collect",
+                        content_limit: int = 5000) -> bool:
+    #确定性采集的“抓取+入库”原子动作：URL 去重（含并发下重复）、正文抓取失败降级搜索摘要；
+    #返回是否新增一份素材
+    url = str(item.get("url", "")).split("#")[0]
+    if not url:
+        logger.info("入库跳过：候选无 URL")
+        return False
+    with lock:
+        if url in existing:
+            logger.info("入库跳过：URL 已存在 %s", url)
+            return False
+    title = str(item.get("title", ""))[:200]
+    t0 = time.monotonic()
+    extract_ok = True
+    try:
+        content = _web_extract(url, user_id)[:content_limit]
+    except Exception as e:  # noqa: BLE001
+        extract_ok = False
+        content = str(item.get("content", ""))[:content_limit]
+        logger.warning("确定性采集正文抓取失败，降级搜索摘要: %s (%s)", url, e)
+    if not content.strip():
+        logger.info("入库跳过：正文为空 url=%s", url)
+        return False
+    publisher = url.split("/")[2] if "://" in url else url
+    with lock:
+        if url in existing:
+            return False
         if len(store.list_materials(task_id)) >= MAX_MATERIALS_TOTAL:
-            break
-        try:
-            items = _web_search(kw, user_id, max_results=3)
-        except Exception as e:  # noqa: BLE001
-            _emit(config, actor, "warning", title="备用检索失败",
-                  speech=f"关键词「{kw}」检索失败：{e}", details=[], metrics=[], progress=None)
-            continue
-        store.append_tool_trace(
-            task_id, actor, node, "fallback_search", {"query": kw, "max_results": 3},
-            "、".join(i.get("url", "") for i in items) or "无结果")
-        for item in items:
-            if fetched >= FALLBACK_MAX_SOURCES or len(store.list_materials(task_id)) >= MAX_MATERIALS_TOTAL:
-                break
-            url = str(item.get("url", "")).split("#")[0]
-            if not url or url in existing:
-                continue
-            title = str(item.get("title", ""))
+            logger.info("入库跳过：素材已达上限 %s", url)
+            return False  #并发下所有入库路径统一在锁内执行总量上限，杜绝超限
+        seq = len(store.list_materials(task_id)) + 1  #锁内计算编号，并发下不重号
+        _ingest_material(task_id, seq, title or url, publisher, url, content)
+        existing.add(url)
+    store.append_tool_trace(
+        task_id, actor, node,
+        "deterministic_extract" if extract_ok else "deterministic_extract_fallback",
+        {"url": url}, f"已入库，材料编号 {seq}",
+        duration_ms=int((time.monotonic() - t0) * 1000),
+        status="ok" if extract_ok else "fallback",
+    )
+    logger.info("确定性入库完成 url=%s seq=%s extract_ok=%s 耗时%.2fs",
+                url, seq, extract_ok, time.monotonic() - t0)
+    return True
+
+
+def _deterministic_collect(state: ResearchState, config: RunnableConfig,
+                           *, actor: str = "collector", node: str = "collect") -> int:
+    #混合采集第 1 阶段：不走 LLM，按计划关键词并行联网检索、去重后并行抓取正文入库。
+    #这是“第一次搜索就把材料收齐”的底座；不消耗 token，全部动作写入工具轨迹与步骤日志
+    task_id = state["task_id"]
+    user_id = state["user_id"]
+    keywords = list(state.get("keywords") or [state.get("topic") or ""])[:MAX_KEYWORDS]
+    existing = {m["url"] for m in store.list_materials(task_id)}
+    cap = MAX_MATERIALS_TOTAL - len(existing)
+    if cap <= 0:
+        return 0
+    _emit(config, actor, "progress", title="开始确定性批量采集",
+          speech=f"按 {len(keywords)} 组关键词并行检索并抓取正文入库（本次目标 {cap} 份）。",
+          details=[{"label": "检索词", "text": k} for k in keywords],
+          metrics=[{"label": "目标份数", "value": str(cap)}], progress=None)
+    candidates: list[tuple[str, dict]] = []
+    domain_count: dict[str, int] = {}
+    lock = threading.Lock()
+    workers = min(DETERMINISTIC_COLLECT_WORKERS, max(1, len(keywords)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_fast_web_search, kw, user_id, DETERMINISTIC_COLLECT_PER_KEYWORD): kw
+            for kw in keywords
+        }
+        for fut in as_completed(futures):
+            kw = futures[fut]
+            t0 = time.monotonic()
             try:
-                content = _web_extract(url, user_id)[:5000]
-            except Exception:  # noqa: BLE001
-                content = str(item.get("content", ""))[:5000]  #正文抓取失败时退化为搜索摘要
-            if not content.strip():
+                items = fut.result()
+            except Exception as e:  # noqa: BLE001
+                _emit(config, actor, "warning", title=f"确定性检索失败：{kw}",
+                      speech=str(e)[:200], details=[], metrics=[], progress=None)
                 continue
-            publisher = url.split("/")[2] if "://" in url else url
-            seq = len(store.list_materials(task_id)) + 1
-            _ingest_material(task_id, seq, (title or url)[:200], publisher, url, content)
-            existing.add(url)
-            added += 1
-            fetched += 1
-            store.append_tool_trace(task_id, actor, node, "fallback_extract",
-                                    {"url": url}, f"已入库，材料编号 {seq}")
-    if added:
-        _emit(config, actor, "progress", title="备用采集完成",
-              speech=f"已通过确定性检索归档 {added} 份材料。",
-              details=[], metrics=[{"label": "新增素材", "value": str(added)}], progress=None)
+            urls = [str(i.get("url", "")).split("#")[0] for i in items if i.get("url")]
+            store.append_tool_trace(
+                task_id, actor, node, "deterministic_search",
+                {"query": kw, "max_results": DETERMINISTIC_COLLECT_PER_KEYWORD},
+                "、".join(urls) or "无结果",
+                duration_ms=int((time.monotonic() - t0) * 1000),
+                status="ok" if urls else "empty",
+            )
+            logger.info("确定性检索 keyword=%r n=%d 耗时%.2fs", kw, len(urls),
+                        time.monotonic() - t0)
+            for item in items:
+                u = str(item.get("url", "")).split("#")[0]
+                domain = urlparse(u).netloc if u else ""
+                if domain_count.get(domain, 0) >= MAX_SAME_DOMAIN:
+                    continue
+                if u and u not in existing and not any(c[1] == u for c in candidates):
+                    candidates.append((kw, item))
+                    domain_count[domain] = domain_count.get(domain, 0) + 1
+    remaining = min(cap, len(candidates))
+    candidates = candidates[:remaining]
+    logger.info("确定性采集候选=%d 目标=%d", len(candidates), cap)
+    added = 0
+    if candidates:
+        _emit(config, actor, "progress", title="确定性采集：抓取正文入库",
+              speech=f"已检索到 {len(candidates)} 个候选来源，正在并行抓取正文。",
+              details=[], metrics=[{"label": "候选来源", "value": str(len(candidates))}],
+              progress=None)
+        with ThreadPoolExecutor(max_workers=DETERMINISTIC_COLLECT_WORKERS) as pool:
+            futures = [
+                pool.submit(_extract_and_ingest, task_id, user_id, item, existing, lock,
+                            actor, node)
+                for _, item in candidates
+            ]
+            for fut in as_completed(futures):
+                try:
+                    if fut.result():
+                        added += 1
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("确定性采集入库失败: %s", e)
+    _emit(config, actor, "progress", title="确定性批量采集完成",
+          speech=f"已通过确定性检索归档 {added} 份材料。",
+          details=[], metrics=[{"label": "新增素材", "value": str(added)}], progress=None)
     return added
 
 
@@ -422,6 +631,7 @@ def _make_collector_tools(task_id: str, user_id: int, new_count: dict,
     from langchain_core.tools import tool as _mk_tool
 
     extract_cache: dict[str, str] = {}  #url -> 最近一次抓取的正文（限 5000 字），入库时服务端直接取用
+    domain_fails: dict[str, int] = {}   #域名 -> 连续抓取失败次数（达到 DOMAIN_FAIL_BREAKER 后熔断跳过）
 
     def _fetch_text(url: str) -> str:
         #优先最近一次 web_extract 的缓存，其次现场抓取（Tavily 优先、失败降级本地爬虫）
@@ -441,13 +651,20 @@ def _make_collector_tools(task_id: str, user_id: int, new_count: dict,
         if any(m["url"] and m["url"] == url for m in store.list_materials(task_id)):
             return f"该链接已入库（{url}），跳过重复"
         if not (content or "").strip():
+            domain = urlparse(url).netloc if url else ""
+            if domain and domain_fails.get(domain, 0) >= DOMAIN_FAIL_BREAKER:
+                return (f"来源 {domain} 已连续 {domain_fails[domain]} 次抓取失败，"
+                        "已熔断跳过，请直接换一个可访问的链接，不要再尝试该站点")
             try:
                 content = _fetch_text(url)
             except Exception as e:  # noqa: BLE001
+                if domain:
+                    domain_fails[domain] = domain_fails.get(domain, 0) + 1
                 return (f"服务端自动抓取正文失败（{e}）。请先用 web_extract 阅读该页，"
                         "确认有内容后再用 archive_material 传入 content，或换一个可访问的链接")
         if not (content or "").strip():
             return "抓取到的正文为空，请换一个可访问的链接"
+        domain_fails.pop(urlparse(url).netloc if url else "", None)  #抓取成功：重置该域名熔断计数
         seq = len(store.list_materials(task_id)) + 1
         _ingest_material(task_id, seq, (title or url or "未命名材料")[:200],
                          publisher or "", url or "", (content or "")[:5000],
@@ -475,11 +692,12 @@ def _make_collector_tools(task_id: str, user_id: int, new_count: dict,
         return _do_archive(title, publisher, url, content, published_at)
 
     @_mk_tool
-    def web_search(query: str, max_results: int = 3) -> str:
+    def search_web(query: str, max_results: int = 5) -> str:
         """联网搜索，返回结果列表（标题/链接/摘要）。query 为搜索词。
+        走本地快速检索（必应优先，Response API 兜底），结果实时返回并全程记录耗时；
         每个响应最多调用一次本工具，一次只搜一个主题（把多个核查点拆成多次独立搜索会浪费预算）。"""
         max_results = max(1, min(int(max_results), 5))
-        items = _web_search(query, user_id, max_results=max_results)
+        items = _fast_web_search(query, user_id, max_results=max_results)
         return "\n\n".join(
             f"[{i}] {it.get('title', '')}\n链接: {it.get('url', '')}\n摘要: {str(it.get('content', ''))[:300]}"
             for i, it in enumerate(items, 1)
@@ -517,7 +735,7 @@ def _make_collector_tools(task_id: str, user_id: int, new_count: dict,
         from ..tools.datasource import list_data_sources as _lds  #延迟导入，保持加载顺序
         return _lds.func(user_id=user_id)
 
-    return [fetch_and_archive, archive_material, web_search, web_extract, query_financials,
+    return [fetch_and_archive, archive_material, search_web, web_extract, query_financials,
             query_kline, list_data_sources,
             make_task_ask_tool(task_id, user_id, actor, node, stop_event=stop_event),
             use_skill]
@@ -542,6 +760,42 @@ def _run_collector_agent(state: ResearchState, config: RunnableConfig, tools: li
     task_id = state["task_id"]
     searches = 0
     budget_exhausted = False
+    search_cache: dict[str, list[str]] = {}  #规范化 query -> 补搜来源 URL（本次运行内复用，防重复搜索）
+
+    def _fallback_urls(query: str) -> list[str]:
+        #服务端搜索卡片 0 来源时的确定性补搜：先用当前引擎按同一 query 补搜；
+        #仍为空则改写查询（追加“最新/latest”）再试一次；结果写入 tool_traces 并缓存
+        key = " ".join(query.lower().split())
+        if key in search_cache:
+            return search_cache[key]
+        rewritten = f"{query} 最新" if any("\u4e00" <= ch <= "\u9fff" for ch in query) \
+            else f"{query} latest"
+        urls: list[str] = []
+        last_msg = "补搜无结果"
+        for q in (query, rewritten):
+            t0 = time.monotonic()
+            try:
+                items = _web_search(q, state["user_id"], max_results=3)
+                found = [str(it.get("url", "")) for it in items if it.get("url")]
+                if found:
+                    urls = found
+                    last_msg = f"补搜到 {len(urls)} 个来源（第 1 次补搜）" if q == query \
+                        else f"补搜到 {len(urls)} 个来源（改写查询后补搜）"
+                    break
+            except Exception as e:  # noqa: BLE001
+                last_msg = f"补搜失败: {e}"
+            finally:
+                duration_ms = int((time.monotonic() - t0) * 1000)
+        if not urls:
+            logger.warning("服务端搜索 0 来源，确定性补搜也未命中: query=%r（%s）",
+                           query, last_msg)
+        store.append_tool_trace(task_id, actor, node, "fallback_search",
+                                {"query": query, "max_results": 3,
+                                 "rewrite": rewritten},
+                                last_msg, status="ok" if urls else "empty",
+                                duration_ms=duration_ms)
+        search_cache[key] = urls
+        return urls
 
     def _auto_archive(urls: list[str]) -> int:
         #把服务端原生搜索返回的来源 URL 自动抓取并入库（复用 fetch_and_archive 的上限/去重逻辑）
@@ -559,36 +813,72 @@ def _run_collector_agent(state: ResearchState, config: RunnableConfig, tools: li
             if tool is None:
                 break
             try:
+                t0 = time.monotonic()
                 result = str(tool.invoke({"url": url}))
             except Exception as e:  # noqa: BLE001
                 result = f"自动归档失败: {e}"
-            store.append_tool_trace(task_id, actor, node, "auto_archive", {"url": url}, result)
+            store.append_tool_trace(
+                task_id, actor, node, "auto_archive", {"url": url}, result,
+                duration_ms=int((time.monotonic() - t0) * 1000),
+                status="ok" if "已入库" in result else "error",
+            )
             if "已入库" in result:
                 n += 1
         return n
 
     for _round in range(max_rounds):
         _check_stop(config)
+        round_t0 = time.monotonic()
+        #心跳：invoke 期间（含服务端搜索）无任何事件，前端会数分钟无消息；
+        #每轮调用前先播报，让用户知道卡在"等模型响应"而不是没反应
+        _emit(config, actor, "progress",
+              title=f"正在调用模型（第 {_round + 1} 轮）",
+              speech="模型调用已发出，请稍候。",
+              details=[], metrics=[])
         if budget_exhausted:
             #搜索预算用尽：不带工具再问一次，强制输出总结并结束
             response = llm.invoke(messages, tools=None,
                                   max_output_tokens=TOOL_LOOP_MAX_OUTPUT,
-                                  reasoning="low")
+                                  reasoning="low", timeout=TOOL_LOOP_TIMEOUT)
             summary = content_to_text(response.content) if response.content else summary
+            logger.info("采集代理第 %d 轮结束（预算耗尽）耗时%.2fs", _round + 1,
+                        time.monotonic() - round_t0)
             break
         response = llm.invoke(messages, tools=tools,
                               max_output_tokens=TOOL_LOOP_MAX_OUTPUT,
-                              reasoning="low")
+                              reasoning="low", timeout=TOOL_LOOP_TIMEOUT)
         calls = getattr(response, "tool_calls", None) or []
         #Responses API 原生服务端搜索：web_search_call 输出块 -> 研究动态里的搜索卡片
         cards = extract_web_search_calls(response.content)
+        if len(cards) > 1:
+            #同一响应内多次 search 动作时，DeepSeek 的 open_page 只会挂在最后一个 search 上，
+            #前面的 search 会被误判成 0 来源并逐个触发补搜（补搜风暴是历史慢/多 token 的主因）。
+            #这里把本响应所有搜索卡片合并成一张：query 取第一个非空值，URL 全量去重合并
+            merged: dict = {"query": next((c["query"] for c in cards if c["query"]), ""),
+                            "urls": [], "status": "completed"}
+            for c in cards:
+                merged["urls"].extend(c["urls"])
+            seen_urls: set[str] = set()
+            merged["urls"] = [u for u in merged["urls"]
+                              if not (u in seen_urls or seen_urls.add(u))]
+            cards = [merged]
         searches += len(cards)
         for card in cards:
             query = card["query"] or "服务端联网检索"
             urls = card["urls"]
+            if not urls:
+                urls = _fallback_urls(query)
+                card["urls"] = urls
+                searches += 1  #补搜同样占用搜索预算
+                if urls:
+                    speech = f"服务端搜索未返回来源，已自动补搜到 {len(urls)} 个来源。"
+                else:
+                    speech = "服务端搜索与自动补搜均未返回来源，请换一个查询词或改用 fetch_and_archive 直接抓取已知链接。"
+            else:
+                speech = f"DeepSeek 服务端已完成搜索，打开 {len(urls)} 个来源页面，模型将据此采集材料。"
             _emit(config, "collector", "progress",
                   title=f"服务端联网检索：{query[:40]}",
-                  speech=f"DeepSeek 服务端已完成搜索，打开 {len(urls)} 个来源页面，模型将据此采集材料。",
+                  speech=speech,
                   details=[{"label": f"来源 {i + 1}", "text": u} for i, u in enumerate(urls[:5])],
                   metrics=[{"label": "来源数", "value": str(len(urls))}])
         auto_added = 0
@@ -609,31 +899,54 @@ def _run_collector_agent(state: ResearchState, config: RunnableConfig, tools: li
                     content=f"已自动归档 {auto_added} 份服务端搜索到的材料。"
                             "若材料已覆盖核查点，请直接输出简短的采集总结；"
                             "若仍有缺口，可继续调用工具补采（每轮最多 1 次联网检索）。"))
+                logger.info("采集代理第 %d 轮结束（自动归档后继续）耗时%.2fs", _round + 1,
+                            time.monotonic() - round_t0)
                 continue
+            logger.info("采集代理第 %d 轮结束（模型无工具调用）耗时%.2fs", _round + 1,
+                        time.monotonic() - round_t0)
             break
+        _emit(config, actor, "progress",
+              title=f"正在执行 {len(calls)} 个工具调用",
+              speech="模型已返回工具调用，正在执行并等待结果。",
+              details=[{"label": tc["name"], "text": str(tc.get("args") or {})[:80]}
+                       for tc in calls[:5]],
+              metrics=[])
+        tool_results: list[tuple[str, str]] = []
         for tc in calls:
             _check_stop(config)
             name, args = tc["name"], tc.get("args") or {}
             tool = by_name.get(name)
+            t0 = time.monotonic()
             try:
                 result = str(tool.invoke(args)) if tool else f"未知工具: {name}"
             except Exception as e:  # noqa: BLE001
                 result = f"工具执行失败: {e}"
-            store.append_tool_trace(task_id, actor, node, name, args, result)
+            store.append_tool_trace(
+                task_id, actor, node, name, args, result,
+                duration_ms=int((time.monotonic() - t0) * 1000),
+                status="ok" if not result.startswith("工具执行失败") else "error",
+            )
             messages.append(ToolMessage(content=result, tool_call_id=tc["id"], name=name))
+            tool_results.append((name, result[:100]))
+        _emit(config, actor, "progress", title="工具调用完成",
+              speech=f"已执行 {len(tool_results)} 个工具调用。",
+              details=[{"label": n, "text": r[:80]} for n, r in tool_results[:5]],
+              metrics=[])
         if searches >= max_searches:
             messages.append(HumanMessage(
                 content=f"本次联网搜索预算已用完（已执行 {searches} 次服务端检索）。"
                         "请基于已采集到的材料直接输出一段简短的采集总结，不要再调用任何工具。"))
             budget_exhausted = True
+        logger.info("采集代理第 %d 轮结束 耗时%.2fs calls=%d cards=%d searches=%d",
+                    _round + 1, time.monotonic() - round_t0, len(calls), len(cards), searches)
     else:
         summary = summary or content_to_text(messages[-1].content or "")
     return summary
 
 
 def collect_node(state: ResearchState, config: RunnableConfig) -> dict:
-    #信源采集：采集员子智能体带受限工具集自主取数（联网/财报/行情/自定义数据源），
-    #有价值材料经 archive_material 入库为素材（证据链底座），产出仍交回主控
+    #信源采集（混合式）：第 1 阶段确定性并行检索+抓取把材料一次收齐（不耗 LLM），
+    #第 2 阶段仅一次 LLM 覆盖检查，只补核查点缺口；不再有“0 素材→备用方案→整条重启”的空转
     _check_stop(config)
     task_id = state["task_id"]
     guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 25)
@@ -641,33 +954,36 @@ def collect_node(state: ResearchState, config: RunnableConfig) -> dict:
     materials: list[dict] = list(state.get("materials") or store.list_materials(task_id))
     initial_total = len(materials)
     new_count = {"n": 0}
-    prompt = COLLECTOR_PROMPT.format(
-        topic=state["topic"], company=state["company"] or "未指定",
-        checkpoints="、".join(state.get("checkpoints") or []) or "（未拆解）",
-        keywords="、".join(state["keywords"]),
-        material_count=len(materials),
-        max_materials_total=MAX_MATERIALS_TOTAL, max_materials=MAX_MATERIALS,
-        qa_context=_qa_context(task_id),
-    )
-    strategy = state.get("collect_strategy") or "agent"
-    if strategy == "fallback":
-        #自动修复后强制切换的确定性采集策略：不再走 LLM 自主采集
-        _fallback_collect(task_id, state["user_id"], state["keywords"], config,
-                          actor="collector", node="collect")
-    else:
+    #第 1 阶段：确定性并行采集（全部关键词一次收齐）
+    added_deterministic = _deterministic_collect(state, config,
+                                                 actor="collector", node="collect")
+    #第 2 阶段：LLM 覆盖检查（只补缺口；素材已满或无需补采时直接跳过）
+    materials = store.list_materials(task_id)
+    if (len(materials) < MAX_MATERIALS_TOTAL
+            and added_deterministic < 8):
+        prompt = COVERAGE_CHECK_PROMPT.format(
+            topic=state["topic"], company=state["company"] or "未指定",
+            checkpoints="、".join(state.get("checkpoints") or []) or "（未拆解）",
+            keywords="、".join(state["keywords"]),
+            material_count=len(materials),
+            max_materials_total=MAX_MATERIALS_TOTAL,
+            max_new=MAX_MATERIALS_TOTAL - len(materials),
+            qa_context=_qa_context(task_id),
+        )
         _run_collector_agent(state, config, _make_collector_tools(
             task_id, state["user_id"], new_count,
             config["configurable"]["stop_event"], actor="collector", node="collect"),
-                             prompt, actor="collector", node="collect", new_count=new_count)
+                             prompt, actor="collector", node="collect",
+                             max_rounds=2, max_searches=1, new_count=new_count)
+    elif len(materials) < MAX_MATERIALS_TOTAL:
+        _emit(config, "collector", "progress",
+              title="覆盖检查跳过",
+              speech=f"确定性采集已归档 {added_deterministic} 份材料，视为覆盖充分，跳过 LLM 覆盖检查。",
+              details=[], metrics=[], progress=None)
     materials = store.list_materials(task_id)  #重拉全量（采集员入库后，含首轮附件）
     if len(materials) == 0:
-        #模型没有产生任何材料：不能直接判完成，触发确定性备用采集方案
-        _fallback_collect(task_id, state["user_id"], state["keywords"], config,
-                          actor="collector", node="collect")
-        materials = store.list_materials(task_id)
-    if len(materials) == 0:
-        #备用方案也未产生材料：判定节点失败（重试耗尽后由 runner 自动修复，修复仍走备用策略）
-        raise RuntimeError("未能采集到任何公开信源材料（LLM 采集与确定性备用方案均未产生素材）")
+        #确定性采集与覆盖检查均未产生材料：判定节点失败（runner 保留现场，不整条清空重启）
+        raise RuntimeError("未能采集到任何公开信源材料（确定性检索与覆盖检查均未产生素材）")
     added_total = len(materials) - initial_total
     store.bump_progress(task_id, 25)
     _emit(config, "collector", "progress",
@@ -864,12 +1180,19 @@ def retrieve_node(state: ResearchState, config: RunnableConfig) -> dict:
             _check_stop(config)
             total += _match_evidence(task_id, claim, llm)
     else:
-        #并行化：每条主张独立检索+LLM 判定，4 个并发显著压缩串行耗时
+        #并行化：每条主张独立检索+LLM 判定，8 个并发显著压缩串行耗时
         #（向量库已改为进程内单例，SQLite 连接每次新建，线程安全）
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        workers = min(4, len(claims))
+        usage = config["configurable"].get("_node_usage")
+
+        def _match_with_usage(claim: dict) -> int:
+            if usage is not None:
+                with observe_llm_calls(lambda info: _add_llm_usage(usage, info)):
+                    return _match_evidence(task_id, claim, llm)
+            return _match_evidence(task_id, claim, llm)
+
+        workers = min(8, len(claims))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(_match_evidence, task_id, c, llm) for c in claims]
+            futures = [pool.submit(_match_with_usage, c) for c in claims]
             for fut in as_completed(futures):
                 _check_stop(config)
                 total += fut.result()
@@ -881,48 +1204,74 @@ def retrieve_node(state: ResearchState, config: RunnableConfig) -> dict:
 
 
 def deepen_node(state: ResearchState, config: RunnableConfig) -> dict:
-    #逐条定向深挖：对证据不足 2 条的薄弱主张，由定向深挖员带受限工具集逐条补采
-    #（财务主张查财报、行情主张查K线、事实主张搜网页），新素材入库后重新匹配证据
+    #确定性定向补证据：对证据不足 2 条的薄弱主张，并行做 1 次定向检索+抓取，
+    #新素材入库后只对该主张重新匹配证据；不再使用逐条 4 轮 LLM 深挖 Agent，
+    #也不会出现“素材到顶后深挖空转/跳过”的无效轮次
     _check_stop(config)
     task_id = state["task_id"]
     guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 62)
     llm = _llm(config)
     ce_map = store.claim_evidence_ids(task_id)
     weak = [c for c in state["claims"] if len(ce_map.get(c["id"], [])) < 2][:MAX_DEEPEN_CLAIMS]
-    materials_count = len(store.list_materials(task_id))
-    if not weak or materials_count >= MAX_MATERIALS_TOTAL:
-        _emit(config, "retriever", "progress", title="定向深挖跳过",
-              speech="各主张证据均已达标，无需定向深挖。" if not weak
-                    else f"素材已达 {MAX_MATERIALS_TOTAL} 篇上限，不再补采。",
+    if not weak:
+        _emit(config, "retriever", "progress", title="定向深挖补证据跳过",
+              speech="各主张证据均已达标，无需定向补证据。",
               details=[], metrics=[], progress=62)
         return {"guidance": guidance}
-    new_count = {"n": 0}
-    for claim in weak:
-        _check_stop(config)
-        if len(store.list_materials(task_id)) >= MAX_MATERIALS_TOTAL:
-            break
-        prompt = DEEPEN_PROMPT.format(
-            claim=claim["statement"][:300], topic=state["topic"],
-            company=state["company"] or "未指定",
-            material_count=len(store.list_materials(task_id)),
-            max_total=MAX_MATERIALS_TOTAL,
-            max_new=max(1, MAX_MATERIALS - new_count["n"]),
-            qa_context=_qa_context(task_id),
-        )
-        _run_collector_agent(state, config, _make_collector_tools(
-            task_id, state["user_id"], new_count,
-            config["configurable"]["stop_event"], actor="deepener", node="deepen"),
-                             prompt, actor="deepener", node="deepen",
-                             max_rounds=DEEPEN_MAX_ROUNDS,
-                             max_searches=DEEPEN_MAX_SEARCHES,
-                             new_count=new_count)
-        _match_evidence(task_id, claim, llm, num=3)  #新素材入库后立即重新匹配证据
-    new_sources = new_count["n"]
+    materials = store.list_materials(task_id)
+    if len(materials) >= MAX_MATERIALS_TOTAL:
+        _emit(config, "retriever", "progress", title="定向深挖补证据跳过",
+              speech=f"素材已达 {MAX_MATERIALS_TOTAL} 篇上限，跳过定向补证据（后续核验会如实标注证据不足）。",
+              details=[], metrics=[], progress=62)
+        return {"guidance": guidance}
+    existing = {m["url"] for m in materials}
+    lock = threading.Lock()
+    results: dict[str, dict] = {c["id"]: {"ingested": 0, "saved": 0} for c in weak}
+
+    def _fill(claim: dict) -> None:
+        #单条主张：1 次定向检索，最多补 2 篇新素材，然后重新匹配证据
+        query = claim["statement"][:200]
+        t0 = time.monotonic()
+        try:
+            items = _fast_web_search(query, state["user_id"], max_results=3)
+        except Exception as e:  # noqa: BLE001
+            store.append_tool_trace(
+                task_id, "deepener", "deepen", "gap_search",
+                {"query": query, "max_results": 3}, f"检索失败: {e}",
+                duration_ms=int((time.monotonic() - t0) * 1000), status="error")
+            return
+        urls = [str(i.get("url", "")).split("#")[0] for i in items if i.get("url")]
+        store.append_tool_trace(
+            task_id, "deepener", "deepen", "gap_search",
+            {"query": query, "max_results": 3}, "、".join(urls) or "无结果",
+            duration_ms=int((time.monotonic() - t0) * 1000),
+            status="ok" if urls else "empty")
+        ingested = 0
+        for item in items[:1]:
+            if len(store.list_materials(task_id)) >= MAX_MATERIALS_TOTAL:
+                break
+            if _extract_and_ingest(task_id, state["user_id"], item, existing, lock,
+                                   actor="deepener", node="deepen"):
+                ingested += 1
+        results[claim["id"]]["ingested"] = ingested
+        if ingested:
+            usage = config["configurable"].get("_node_usage")
+            if usage is not None:
+                with observe_llm_calls(lambda info: _add_llm_usage(usage, info)):
+                    results[claim["id"]]["saved"] = _match_evidence(task_id, claim, llm, num=3)
+            else:
+                results[claim["id"]]["saved"] = _match_evidence(task_id, claim, llm, num=3)
+
+    with ThreadPoolExecutor(max_workers=min(4, len(weak))) as pool:
+        list(pool.map(_fill, weak))
+    new_sources = sum(r["ingested"] for r in results.values())
+    saved = sum(r["saved"] for r in results.values())
     store.bump_progress(task_id, 62)
-    _emit(config, "retriever", "progress", title="定向深挖完成",
-          speech=f"对 {len(weak)} 条证据薄弱的主张做了定向深挖，补采 {new_sources} 篇信源，新增证据已重新匹配。",
+    _emit(config, "retriever", "progress", title="定向深挖补证据完成",
+          speech=f"对 {len(weak)} 条证据薄弱的主张做了定向补证据，补采 {new_sources} 篇信源，新增 {saved} 条证据。",
           details=[{"label": c["id"], "text": c["statement"][:60]} for c in weak],
-          metrics=[{"label": "新信源", "value": str(new_sources)}], progress=62)
+          metrics=[{"label": "新信源", "value": str(new_sources)},
+                   {"label": "新证据", "value": str(saved)}], progress=62)
     return {"guidance": guidance}
 
 
@@ -981,7 +1330,7 @@ def _claims_snapshot(task_id: str) -> list[dict]:
 #read_material 按编号读素材原文，search_materials 在任务素材库内按语义定位引文段落；
 #只读、无入库/无执行能力，审查结论仍以结构化 JSON 交回主控
 
-REVIEW_MAX_ROUNDS = 6  #审查员工具查阅轮次上限（引文核对完即可输出结论）
+REVIEW_MAX_ROUNDS = 2  #审查员工具查阅轮次上限（第 1 轮工具核对，第 2 轮必须输出 JSON）
 
 
 def _processing_trace(state: ResearchState) -> str:
@@ -1039,15 +1388,15 @@ def _make_review_tools(task_id: str, user_id: int, stop_event) -> list:
             blocks.append(f"【{gid} 第{h['chunk_index'] + 1}段】{h['content'][:600]}")
         return "\n\n".join(blocks)
 
-    return [read_material, search_materials,
-            make_task_ask_tool(task_id, user_id, "reviewer", "review",
-                               stop_event=stop_event)]
+    return [read_material, search_materials]
 
 
 def _run_review_agent(state: ResearchState, config: RunnableConfig, tools: list, prompt: str,
                       *, actor: str = "reviewer", node: str = "review") -> dict:
     #审查员 agent 循环：先用只读工具核对引文，输出结论后解析 JSON 审查结果；
-    #工具轮次达上限时以最后一次输出兜底解析；每次工具调用写入 agent_tool_traces
+    #工具轮次达上限或输出非 JSON 时，强制再做一次无工具 JSON 输出；
+    #仍失败抛 RuntimeError 由 review_node 走降级路径（绝不触发整条流水线重启）；
+    #每次工具调用写入 agent_tool_traces（含耗时与状态）
     llm = _llm(config)
     by_name = {t.name: t for t in tools}
     messages: list = [SystemMessage(content=prompt)]
@@ -1056,7 +1405,8 @@ def _run_review_agent(state: ResearchState, config: RunnableConfig, tools: list,
     for _round in range(REVIEW_MAX_ROUNDS):
         _check_stop(config)
         response = llm.invoke(messages, tools=tools,
-                              max_output_tokens=TOOL_LOOP_MAX_OUTPUT)
+                              max_output_tokens=TOOL_LOOP_MAX_OUTPUT,
+                              reasoning="low", timeout=LLM_INVOKE_TIMEOUT)
         calls = getattr(response, "tool_calls", None) or []
         last_text = content_to_text(response.content) if response.content else last_text
         if not calls:
@@ -1066,29 +1416,56 @@ def _run_review_agent(state: ResearchState, config: RunnableConfig, tools: list,
             _check_stop(config)
             name, args = tc["name"], tc.get("args") or {}
             tool = by_name.get(name)
+            t0 = time.monotonic()
             try:
                 result = str(tool.invoke(args)) if tool else f"未知工具: {name}"
             except Exception as e:  # noqa: BLE001
                 result = f"工具执行失败: {e}"
-            store.append_tool_trace(task_id, actor, node, name, args, result)
+            store.append_tool_trace(
+                task_id, actor, node, name, args, result,
+                duration_ms=int((time.monotonic() - t0) * 1000),
+                status="ok" if not result.startswith("工具执行失败") else "error",
+            )
             messages.append(ToolMessage(content=result, tool_call_id=tc["id"], name=name))
     start, end = last_text.find("{"), last_text.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return json.loads(last_text[start:end + 1])
+        except Exception:  # noqa: BLE001 落到下方强制重试
+            pass
+    #强制无工具输出 JSON：审查结论必须结构化，但失败也只影响本节点
+    _check_stop(config)
+    logger.warning("幻觉审查 agent 未输出合法 JSON，强制无工具重试一次（task=%s）", task_id)
+    messages.append(HumanMessage(
+        content="你刚才没有输出合法 JSON 结论。请不要再调用任何工具，"
+                "只输出一个 JSON 对象（{\"reviews\": [...]}），不要输出任何其他文字。"))
+    forced = llm.invoke(messages, tools=None,
+                        max_output_tokens=LLM_JSON_MAX_OUTPUT,
+                        reasoning="low", timeout=LLM_INVOKE_TIMEOUT)
+    forced_text = content_to_text(forced.content)
+    start, end = forced_text.find("{"), forced_text.rfind("}")
     if start == -1 or end <= start:
-        raise RuntimeError(f"幻觉审查未输出 JSON 结论: {last_text[:200]}")
-    return json.loads(last_text[start:end + 1])
+        raise RuntimeError(f"幻觉审查未输出 JSON 结论: {forced_text[:200]}")
+    return json.loads(forced_text[start:end + 1])
 
 
 def verify_node(state: ResearchState, config: RunnableConfig) -> dict:
-    #Supervisor 一级核验：判冲突/证据缺失，必要时决策二次取证；研究员介入指令在此统一生效
+    #Supervisor 一级核验（单轮）：只做冲突识别/口径检查/置信度判定，不请求二次取证；
+    #证据缺口已由前置 gap_fill 处理，无法判定的主张交给独立幻觉审查标黄
     _check_stop(config)
     task_id = state["task_id"]
     guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 80)
     guidance_text = ("研究员中途介入指令：\n" + "\n".join(f"- {g}" for g in guidance)) if guidance else ""
-    data = _ask_capable_json(state, config, prompts.VERIFY_PROMPT.format(
-        topic=state["topic"], guidance=guidance_text,
-        claims_with_evidence=json.dumps(_claims_snapshot(task_id), ensure_ascii=False)[:8000],
-        qa_context=_qa_context(task_id),
-    ), actor="supervisor", node="verify")
+    data = _llm_json(
+        _llm(config),
+        prompts.VERIFY_PROMPT.format(
+            topic=state["topic"], guidance=guidance_text,
+            claims_with_evidence=json.dumps(_claims_snapshot(task_id),
+                                            ensure_ascii=False)[:8000],
+            qa_context=_qa_context(task_id),
+        ),
+        retries=1, reasoning="low", timeout=LLM_INVOKE_TIMEOUT,
+    )
     for v in data.get("verdicts", []):
         cid = str(v.get("claim_id", ""))
         if store.get_claim(task_id, cid) is None:
@@ -1099,47 +1476,60 @@ def verify_node(state: ResearchState, config: RunnableConfig) -> dict:
             confidence = 0.5
         store.update_claim(task_id, cid, supervisor_verdict=str(v.get("verdict", "")),
                            issue_type=str(v.get("issue_type") or "无"), confidence=confidence)
-    retry_count = state.get("retry_count", 0)
-    need_retry = bool(data.get("need_retry")) and retry_count < MAX_RETRY
-    retry_keywords = [str(k) for k in data.get("retry_keywords", [])][:MAX_KEYWORDS]
     store.bump_progress(task_id, 85)
-    if need_retry and retry_keywords:
-        _emit(config, "supervisor", "warning",
-              title="发现疑点，启动二次取证", speech="一级核验发现证据不足或数据冲突，重新调度采集子智能体复核。",
-              details=[{"label": "新关键词", "text": "、".join(retry_keywords)}],
-              metrics=[{"label": "重试轮次", "value": f"{retry_count + 1}/{MAX_RETRY}"}],
-              tone="warning", progress=80)
-        return {"need_retry": True, "keywords": retry_keywords, "retry_count": retry_count + 1,
-                "guidance": guidance}
     _emit(config, "supervisor", "progress",
           title="一级核验完成", speech="已完成冲突识别与证据充分性检查，移送独立幻觉审查单元复核。",
           details=[], metrics=[], progress=85)
-    return {"need_retry": False, "retry_count": retry_count, "guidance": guidance}
-
-
-def route_after_verify(state: ResearchState) -> str:
-    #一级核验后的条件边：需二次取证回 collect，否则进独立审查
-    return "collect" if state.get("need_retry") else "review"
+    return {"guidance": guidance}
 
 
 def review_node(state: ResearchState, config: RunnableConfig) -> dict:
     #独立幻觉审查：审查员带只读工具（读原文核对引文/库内定位）复核二级闸门，
-    #并拿到前序子智能体的处理轨迹做交叉核对，输出绿/黄/红可信度分级
+    #并拿到前序子智能体的处理轨迹做交叉核对，输出绿/黄/红可信度分级；
+    #审查 JSON 两次都失败时降级为“待复核”，保留全部结果与依据，正常进入底稿组装
     _check_stop(config)
     task_id = state["task_id"]
     guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 95)
-    data = _run_review_agent(
-        state, config,
-        _make_review_tools(task_id, state["user_id"],
-                           config["configurable"]["stop_event"]),
-        REVIEW_AGENT_PROMPT.format(
-            topic=state["topic"], company=state["company"] or "未指定",
-            trace=_processing_trace(state),
-            claims_with_verdicts=json.dumps(_claims_snapshot(task_id), ensure_ascii=False)[:8000],
-            material_count=len(store.list_materials(task_id)),
-            qa_context=_qa_context(task_id),
-        ),
+    llm = _llm(config)
+    review_prompt = REVIEW_AGENT_PROMPT.format(
+        topic=state["topic"], company=state["company"] or "未指定",
+        trace=_processing_trace(state),
+        claims_with_verdicts=json.dumps(_claims_snapshot(task_id), ensure_ascii=False)[:8000],
+        material_count=len(store.list_materials(task_id)),
+        qa_context=_qa_context(task_id),
     )
+    try:
+        data = _run_review_agent(
+            state, config,
+            _make_review_tools(task_id, state["user_id"],
+                               config["configurable"]["stop_event"]),
+            review_prompt,
+        )
+    except Exception as e:  # noqa: BLE001 审查失败绝不能整条重启
+        logger.warning("幻觉审查 agent 失败，降级无工具版审查重试: %s", e)
+        try:
+            data = _llm_json(
+                llm,
+                prompts.REVIEW_PROMPT.format(
+                    claims_with_verdicts=json.dumps(_claims_snapshot(task_id),
+                                                    ensure_ascii=False)[:8000],
+                ),
+                retries=1, reasoning="low", timeout=LLM_INVOKE_TIMEOUT,
+            )
+        except Exception as e2:  # noqa: BLE001 两次都失败：确定性标黄，保留结果
+            logger.error("幻觉审查两次均未输出 JSON，按待复核降级: %s", e2)
+            for c in store.list_claims(task_id):
+                store.update_claim(
+                    task_id, c["id"], status="review",
+                    reviewer_verdict="幻觉审查未输出结构化结论，保留一级核验结果",
+                    conflict_reason="幻觉审查未输出结构化结论（已保留全部材料、主张与证据）",
+                )
+            _emit(config, "reviewer", "warning",
+                  title="幻觉审查降级完成",
+                  speech="幻觉审查两次均未输出结构化结论，已按“待复核”保留全部一级核验结果，不再重启流水线。",
+                  details=[], metrics=[], tone="warning", progress=95)
+            store.bump_progress(task_id, 95)
+            return {"guidance": guidance}
     level_map = {"green": "verified", "yellow": "review", "red": "conflict"}
     red = 0
     for r in data.get("reviews", []):
@@ -1175,7 +1565,7 @@ def _generate_report_structure(llm: ChatClient, task: dict, claims: list[dict]) 
     try:
         data = _llm_json(llm, prompts.REPORT_STRUCTURE_PROMPT.format(
             topic=task["topic"], claims="\n".join(lines)[:3000]),
-            max_output_tokens=JSON_NODE_MAX_OUTPUT, reasoning="high")
+            max_output_tokens=JSON_NODE_MAX_OUTPUT, reasoning="low")
     except Exception:
         return None
     return {
@@ -1521,7 +1911,7 @@ def build_research_graph():
     g.add_edge("retrieve", "deepen")
     g.add_edge("deepen", "score")
     g.add_edge("score", "verify")
-    g.add_conditional_edges("verify", route_after_verify, {"collect": "collect", "review": "review"})
+    g.add_edge("verify", "review")
     g.add_edge("review", "assemble")
     g.add_edge("assemble", END)
     return g.compile()  #不挂 checkpointer：任务级 stop 用标志位在节点边界终止

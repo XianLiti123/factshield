@@ -25,6 +25,7 @@ STATUS_REPAIRED = "repaired"
 STATUS_REPAIR_FAILED = "repair_failed"
 
 MAX_TRACEBACK_LEN = 4000  #堆栈列长度上限，防日志撑爆
+AUTO_REPAIR_MAX_ERRORS_PER_HOUR = 2  #同一流程 1 小时内自动修复熔断阈值（含本次失败记录）
 
 
 def _cut(text: str, limit: int) -> str:
@@ -168,10 +169,13 @@ def _repair_worker(error_id: int, user_id: int) -> None:
             restart_task(error["flow_id"], user_id, repair_error_id=error_id)
         elif flow_type == "research_retry":
             from .research.runner import start_retry
-            start_retry(error["flow_id"], error["node"], user_id, repair_error_id=error_id)
+            #修复运行必须禁止再次自动修复，否则修复失败会登记新的 auto_repair=1 错误并再次触发修复（无限循环）
+            start_retry(error["flow_id"], error["node"], user_id, repair_error_id=error_id,
+                        allow_auto_repair=False)
         elif flow_type == "history_analysis":
             from .research.runner import start_history_analysis
-            start_history_analysis(error["flow_id"], user_id, repair_error_id=error_id)
+            start_history_analysis(error["flow_id"], user_id, repair_error_id=error_id,
+                                   allow_auto_repair=False)
         elif flow_type == "subagent":
             _invoke_subagent(error["prompt"], user_id, error["flow_id"] or None)
             mark_repaired(error_id, user_id, "子代理已重启并成功执行")
@@ -204,6 +208,23 @@ def repair_error(error_id: int, user_id: int) -> dict:
 
 def trigger_auto_repair(error_id: int, user_id: int) -> bool:
     #自动修复：记录落库后立即重启对应流程；重启失败时返回 False（已回写 repair_failed）
+    #熔断：同一流程 1 小时内已登记 >=阈值 条错误（含本次）时不再自动重启，
+    #防连环重启烧 token（即使某条调用路径漏传 allow_auto_repair=False 也能止住）
+    error = get_error(error_id, user_id)
+    if error is not None:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM flow_errors"
+                " WHERE user_id=? AND flow_type=? AND flow_id=?"
+                " AND created_at >= datetime('now','localtime','-1 hour')",
+                (user_id, error["flow_type"], error["flow_id"])
+            ).fetchone()
+        if row["n"] >= AUTO_REPAIR_MAX_ERRORS_PER_HOUR:
+            logger.warning("错误 %s 触发自动修复熔断：%s/%s 1 小时内已失败 %s 次",
+                           error_id, error["flow_type"], error["flow_id"], row["n"])
+            mark_repair_failed(error_id, user_id,
+                               "同一流程 1 小时内反复失败，已停止自动修复，请人工排查")
+            return False
     try:
         repair_error(error_id, user_id)
         return True

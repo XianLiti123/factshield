@@ -211,6 +211,24 @@ CREATE TABLE IF NOT EXISTS agent_tool_traces (
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 CREATE INDEX IF NOT EXISTS idx_agent_tool_traces_task ON agent_tool_traces(task_id, actor);
+CREATE TABLE IF NOT EXISTS research_step_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    node TEXT NOT NULL DEFAULT '',
+    step TEXT NOT NULL DEFAULT 'node',
+    attempt INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'running',   -- running | ok | error | stopped
+    started_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    finished_at TEXT,
+    duration_ms INTEGER,
+    llm_calls INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    params TEXT NOT NULL DEFAULT '{}',
+    result_summary TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_research_step_logs_task ON research_step_logs(task_id, node, id);
 CREATE TABLE IF NOT EXISTS agent_questions (
     id TEXT PRIMARY KEY,
     scope TEXT NOT NULL,               -- task（研究流水线）| session（对话小盾）
@@ -319,6 +337,13 @@ def init_db() -> None:
         _add_column_if_missing(conn, "evidence", "credibility_level", "credibility_level TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "user_search_settings", "api_key_enc", "api_key_enc TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "evidence", "relevance", "relevance REAL NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "agent_tool_traces", "duration_ms", "duration_ms INTEGER")
+        _add_column_if_missing(conn, "agent_tool_traces", "status", "status TEXT NOT NULL DEFAULT 'ok'")
+        _add_column_if_missing(conn, "task_node_runs", "attempt", "attempt INTEGER NOT NULL DEFAULT 1")
+        _add_column_if_missing(conn, "task_node_runs", "status", "status TEXT NOT NULL DEFAULT 'ok'")
+        _add_column_if_missing(conn, "task_node_runs", "llm_calls", "llm_calls INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "task_node_runs", "prompt_tokens", "prompt_tokens INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "task_node_runs", "completion_tokens", "completion_tokens INTEGER NOT NULL DEFAULT 0")
         #存量用户显示名为空时回填邮箱前缀
         conn.execute("UPDATE users SET display_name=substr(email,1,instr(email,'@')-1) WHERE display_name=''")
         _init_fts(conn)

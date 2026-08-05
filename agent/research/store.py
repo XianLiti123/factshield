@@ -156,21 +156,25 @@ def reset_task_data(task_id: str) -> None:
 
 # ---------------- 节点真实耗时（Agent 运行时间统计） ----------------
 
-def start_node_run(task_id: str, node: str) -> int:
-    #记录一个流水线节点的开始时刻，返回 run_id（节点完成时回写耗时）
+def start_node_run(task_id: str, node: str, attempt: int = 1) -> int:
+    #记录一个流水线节点的开始时刻，返回 run_id（节点完成时回写耗时/状态/token 用量）
     with get_connection() as conn:
         cur = conn.execute(
-            "INSERT INTO task_node_runs (task_id, node) VALUES (?,?)", (task_id, node)
+            "INSERT INTO task_node_runs (task_id, node, attempt) VALUES (?,?,?)",
+            (task_id, node, attempt)
         )
         return cur.lastrowid  # type: ignore[return-value]
 
 
-def finish_node_run(run_id: int, duration: float) -> None:
-    #回写节点耗时与完成时刻（duration 为实际执行的秒数）
+def finish_node_run(run_id: int, duration: float, *, status: str = "ok",
+                    llm_calls: int = 0, prompt_tokens: int = 0,
+                    completion_tokens: int = 0) -> None:
+    #回写节点耗时/状态/token 用量（duration 为实际执行的秒数）
     with get_connection() as conn:
         conn.execute(
-            "UPDATE task_node_runs SET finished_at=datetime('now','localtime'), duration=? WHERE id=?",
-            (round(duration, 3), run_id)
+            "UPDATE task_node_runs SET finished_at=datetime('now','localtime'), duration=?,"
+            " status=?, llm_calls=?, prompt_tokens=?, completion_tokens=? WHERE id=?",
+            (round(duration, 3), status, llm_calls, prompt_tokens, completion_tokens, run_id)
         )
 
 
@@ -180,6 +184,45 @@ def list_node_runs(task_id: str) -> list[dict]:
         rows = conn.execute(
             "SELECT id, node, started_at, finished_at, duration"
             " FROM task_node_runs WHERE task_id=? ORDER BY id", (task_id,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------- 全步骤日志（节点/步骤级，含 LLM 调用与 token 用量） ----------------
+
+def start_step_log(task_id: str, node: str, step: str = "node", attempt: int = 1,
+                   params: dict | None = None) -> int:
+    #记录一个步骤的开始，返回 log_id（步骤完成时回写状态/耗时/token 用量）
+    with get_connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO research_step_logs (task_id, node, step, attempt, params)"
+            " VALUES (?,?,?,?,?)",
+            (task_id, node, step, attempt,
+             json.dumps(params or {}, ensure_ascii=False)[:2000])
+        )
+        return cur.lastrowid  # type: ignore[return-value]
+
+
+def finish_step_log(log_id: int, *, status: str = "ok", duration_ms: int = 0,
+                    llm_calls: int = 0, prompt_tokens: int = 0,
+                    completion_tokens: int = 0, result_summary: str = "",
+                    error: str = "") -> None:
+    #回写步骤结果；错误文本截断入库防止撑爆
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE research_step_logs SET status=?, finished_at=datetime('now','localtime'),"
+            " duration_ms=?, llm_calls=?, prompt_tokens=?, completion_tokens=?,"
+            " result_summary=?, error=? WHERE id=?",
+            (status, duration_ms, llm_calls, prompt_tokens, completion_tokens,
+             str(result_summary)[:2000], str(error)[:3000], log_id)
+        )
+
+
+def list_step_logs(task_id: str) -> list[dict]:
+    #按时间顺序返回任务的全部步骤日志（供 /tasks/{id}/step-logs 查询）
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM research_step_logs WHERE task_id=? ORDER BY id", (task_id,)
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -391,7 +434,8 @@ def list_events(task_id: str, after_seq: int = 0) -> list[dict]:
 # ---------------- 子智能体工具调用轨迹（采集员/深挖员/审查员） ----------------
 
 def append_tool_trace(task_id: str, actor: str, node: str, tool: str,
-                      args: dict | None = None, result: str = "") -> None:
+                      args: dict | None = None, result: str = "",
+                      duration_ms: int | None = None, status: str = "ok") -> None:
     #记录子智能体的一次工具调用，供 /tasks/{task_id}/agents/{agent} 还原完整执行过程；
     #seq 按 (task_id, actor) 自动递增，保证跨节点/跨轮次的总顺序
     with get_connection() as conn:
@@ -401,10 +445,11 @@ def append_tool_trace(task_id: str, actor: str, node: str, tool: str,
         ).fetchone()
         seq = row["m"] + 1
         conn.execute(
-            "INSERT INTO agent_tool_traces (task_id, actor, node, seq, tool, args, result)"
-            " VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO agent_tool_traces (task_id, actor, node, seq, tool, args, result,"
+            " duration_ms, status) VALUES (?,?,?,?,?,?,?,?,?)",
             (task_id, actor, node, seq, tool,
-             json.dumps(args or {}, ensure_ascii=False)[:2000], str(result)[:3000])
+             json.dumps(args or {}, ensure_ascii=False)[:2000], str(result)[:3000],
+             duration_ms, status)
         )
 
 

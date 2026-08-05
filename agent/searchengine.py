@@ -10,12 +10,14 @@ search 按用户选择的引擎路由；extract 优先使用 Tavily 正文提取
 """
 
 import logging
+import time
 
 import requests
 
 from . import config
 
 logger = logging.getLogger(__name__)
+se_logger = logging.getLogger("research.searchengine")
 
 ENGINES = ("tavily", "python", "response_api")
 
@@ -94,17 +96,29 @@ def _html_text(html: str) -> str:
 
 def search(query: str, engine: str, max_results: int = 5, user_id: int | None = None) -> list[dict]:
     #统一搜索入口，返回 [{"title","url","content"}]；失败抛异常由调用方处理
-    if engine == "tavily":
-        tavily, _ = _get_tavily(_resolve_api_key(user_id))
-        result = tavily.invoke({"query": query})
-        items = result.get("results", []) if isinstance(result, dict) else []
-        return [{"title": i.get("title", ""), "url": i.get("url", ""),
-                 "content": str(i.get("content", ""))} for i in items[:max_results]]
-    if engine == "python":
-        return _bing_search(query, max_results)
-    if engine == "response_api":
-        return _response_api_search(query, max_results, user_id)
-    raise ValueError(f"无效的搜索引擎: {engine}，可选: {', '.join(ENGINES)}")
+    t0 = time.monotonic()
+    se_logger.info("search start engine=%s query=%r max_results=%d user=%s",
+                   engine, query, max_results, user_id)
+    try:
+        if engine == "tavily":
+            tavily, _ = _get_tavily(_resolve_api_key(user_id))
+            result = tavily.invoke({"query": query})
+            items = result.get("results", []) if isinstance(result, dict) else []
+            out = [{"title": i.get("title", ""), "url": i.get("url", ""),
+                    "content": str(i.get("content", ""))} for i in items[:max_results]]
+        elif engine == "python":
+            out = _bing_search(query, max_results)
+        elif engine == "response_api":
+            out = _response_api_search(query, max_results, user_id)
+        else:
+            raise ValueError(f"无效的搜索引擎: {engine}，可选: {', '.join(ENGINES)}")
+    except Exception as e:  # noqa: BLE001 失败同样留痕
+        se_logger.warning("search FAIL engine=%s query=%r 耗时%.2fs err=%s",
+                          engine, query, time.monotonic() - t0, e)
+        raise
+    se_logger.info("search done engine=%s query=%r n=%d 耗时%.2fs",
+                   engine, query, len(out), time.monotonic() - t0)
+    return out
 
 
 def extract(url: str, engine: str, user_id: int | None = None) -> str:
@@ -114,6 +128,8 @@ def extract(url: str, engine: str, user_id: int | None = None) -> str:
     本地 Python 爬虫（python/response_api 引擎也走本地爬虫）；未配置 key 时
     直接本地爬虫。失败抛异常由调用方处理（调用方一般退化为搜索摘要）。
     """
+    t0 = time.monotonic()
+    se_logger.info("extract start url=%s engine=%s", url, engine)
     api_key = _resolve_api_key(user_id)
     if api_key:
         try:
@@ -122,12 +138,22 @@ def extract(url: str, engine: str, user_id: int | None = None) -> str:
             pages = result.get("results", []) if isinstance(result, dict) else []
             content = str(pages[0].get("raw_content", "")) if pages else ""
             if content.strip():
+                se_logger.info("extract done via=tavily url=%s chars=%d 耗时%.2fs",
+                               url, len(content), time.monotonic() - t0)
                 return content
             logger.warning("Tavily 正文提取返回空内容，降级本地抓取: %s", url)
         except Exception as e:  # noqa: BLE001
             logger.warning("Tavily 正文提取失败，降级本地抓取: %s", e)
-    resp = requests.get(url, headers=_HEADERS, timeout=15)
-    resp.raise_for_status()
-    if "charset" not in resp.headers.get("Content-Type", "").lower():
-        resp.encoding = resp.apparent_encoding  #响应头未声明编码时按内容探测，避免中文乱码
-    return _html_text(resp.text)
+    try:
+        resp = requests.get(url, headers=_HEADERS, timeout=15)
+        resp.raise_for_status()
+        if "charset" not in resp.headers.get("Content-Type", "").lower():
+            resp.encoding = resp.apparent_encoding  #响应头未声明编码时按内容探测，避免中文乱码
+        text = _html_text(resp.text)
+    except Exception as e:  # noqa: BLE001
+        se_logger.warning("extract FAIL url=%s via=local 耗时%.2fs err=%s",
+                          url, time.monotonic() - t0, e)
+        raise
+    se_logger.info("extract done via=local url=%s chars=%d 耗时%.2fs",
+                   url, len(text), time.monotonic() - t0)
+    return text

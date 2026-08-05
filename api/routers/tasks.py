@@ -112,7 +112,7 @@ def create_task(request: CreateTaskRequest, user_id: int = Depends(get_current_u
         except Exception as e:
             store.delete_task(task["task_id"], user_id)  #附件入库失败不留半成品任务
             raise HTTPException(status_code=503, detail=f"附件入库失败（可能未配置 Embedding 模型）: {e}")
-    runner.start_task(task["task_id"], user_id)
+    runner.start_task(task["task_id"], user_id, allow_auto_repair=False)
     return _summary(task)
 
 
@@ -225,6 +225,14 @@ def task_events(task_id: str, user_id: int = Depends(get_current_user)) -> Strea
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache, no-transform",
                                       "X-Accel-Buffering": "no"})
+
+
+@router.get("/{task_id}/step-logs")
+def task_step_logs(task_id: str, user_id: int = Depends(get_current_user)) -> dict:
+    #全步骤日志：每个节点的每次尝试都记录起止时间/耗时/状态/LLM 调用次数/token 用量/错误，
+    #供前端“执行详情”与运维排查使用（research_step_logs 表）
+    _get_task_or_404(task_id, user_id)
+    return {"task_id": task_id, "steps": store.list_step_logs(task_id)}
 
 
 @router.post("/{task_id}/stop")

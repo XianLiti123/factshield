@@ -73,10 +73,11 @@ def _split_node_error(e: Exception) -> tuple[str, str, int]:
 
 
 def start_task(task_id: str, user_id: int, *,
-               repair_error_id: int | None = None, allow_auto_repair: bool = True) -> None:
+               repair_error_id: int | None = None, allow_auto_repair: bool = False) -> None:
     #后台线程启动研究流水线；重复启动直接忽略。
     #repair_error_id：本次运行为修复某条错误记录，结束时回写该记录状态；
-    #allow_auto_repair：失败后是否自动重启流水线（自动修复只发生在首次运行，修复运行不再嵌套）
+    #allow_auto_repair：研究流水线默认 False——失败只保留现场，绝不整条清空重启
+    #（清空式重启会删掉已采集的素材/主张/证据，是 FS-2026-022 反复空转的根因之一）
     with _registry_lock:
         if task_id in _running:
             return
@@ -118,7 +119,11 @@ def start_task(task_id: str, user_id: int, *,
                       "metrics": [{"label": "尝试次数", "value": str(attempts)}]})
             else:
                 store.update_task(task_id, status="failed")
-                emit("system", "error", {"title": "任务失败", "speech": message})
+                emit("system", "error",
+                     {"title": "任务失败",
+                      "speech": f"{message}。已保留全部素材、主张与证据，可在错误记录中人工修复续跑。",
+                      "details": [{"label": "失败环节", "text": node or "整条流水线"}],
+                      "metrics": []})
         finally:
             with _registry_lock:
                 _running.pop(task_id, None)
@@ -137,16 +142,15 @@ def start_task(task_id: str, user_id: int, *,
 def _run_pipeline(task_id: str, user_id: int, stop: threading.Event,
                   emit, *, repair_error_id: int | None = None) -> None:
     #执行整条研究流水线；节点级重试已在图内（_node_with_retry），失败异常上抛由 run() 收尾。
-    #自动修复（repair_error_id 非空）时强制切换采集策略为确定性备用方案，
-    #避免“原样重跑→同样的 0 素材/解析失败”循环
+    #人工修复（repair_error_id 非空）时保留已有素材/主张/证据，在此基础上重跑；
+    #采集节点内部已改为“确定性并行采集 + LLM 覆盖检查”，不再有备用方案分支
     task = store.get_task(task_id, user_id)
     initial = {
         "task_id": task_id, "user_id": user_id,
         "topic": task["topic"], "company": task["company"],
         "research_type": task["research_type"],
         "preferred_sources": task["preferred_sources"],
-        "materials": [], "retry_count": 0, "need_retry": False,
-        "collect_strategy": "fallback" if repair_error_id is not None else "agent",
+        "materials": store.list_materials(task_id),  #续跑时保留已入库素材（入库按 URL 幂等）
     }
     config = {"configurable": {"emit": emit, "stop_event": stop, "user_id": user_id}}
     research_graph.invoke(initial, config=config)
@@ -166,16 +170,17 @@ def reset_task(task_id: str) -> None:
 
 
 def restart_task(task_id: str, user_id: int, *, repair_error_id: int | None = None) -> None:
-    #重启任务（自动修复/人工修复共用）：清空失败产生的半成品后重新启动流水线；
+    #重启任务（人工修复）：保留失败时已产生的素材/主张/证据/事件/节点记录，
+    #在此基础上重新启动流水线（不再 reset_task_data，不再删除可回查痕迹）；
     #任务正在运行时不重启，抛异常由调用方在错误记录上回写修复失败
     if store.get_task(task_id, user_id) is None:
         raise ValueError(f"任务不存在: {task_id}")
     if is_running(task_id):
         raise RuntimeError(f"任务 {task_id} 正在运行中，无法重启")
-    reset_task(task_id)
     store.update_task(task_id, status="running", progress=0)
     publish_event(task_id, "system", "progress",
-                  {"title": "流水线已重启", "speech": "已清空失败产生的半成品数据，研究流水线从头重新执行。",
+                  {"title": "流水线重新执行",
+                   "speech": "已保留现有素材、主张与证据，在此基础上从头重新执行研究流水线。",
                    "details": [], "metrics": [], "progress": 0})
     start_task(task_id, user_id, repair_error_id=repair_error_id, allow_auto_repair=False)
 

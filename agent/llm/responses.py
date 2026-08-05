@@ -6,7 +6,11 @@
   记录归一为「查询词 + 来源 URL 列表」，供搜索卡片渲染与结果提取使用。
 """
 
+import json
 import logging
+import time
+
+from .client import _emit_llm_call
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +30,8 @@ def web_search(query: str, max_results: int = 5, user_id: int | None = None) -> 
             "请先在设置页配置模型（建议 deepseek-v4-flash）"
         )
     from openai import OpenAI
-    client = OpenAI(base_url=cfg["base_url"], api_key=cfg["api_key"], timeout=60, max_retries=1)
+    #max_retries=0：SDK 隐藏重试会掩盖真实耗时与失败，重试语义统一交给上层节点级重试
+    client = OpenAI(base_url=cfg["base_url"], api_key=cfg["api_key"], timeout=60, max_retries=0)
     payload = {
         "model": cfg["model_name"],
         "input": [{"role": "user", "content": query}],
@@ -36,9 +41,31 @@ def web_search(query: str, max_results: int = 5, user_id: int | None = None) -> 
         "max_output_tokens": 4000,
     }
     #严格按配置调用：端点拒绝 reasoning 等参数时直接抛错，不降级重试
-    response = client.responses.create(**payload)
-    results = _extract_search_results(response)
+    t0 = time.monotonic()
+    base_info = {
+        "model": cfg["model_name"], "base_url": cfg["base_url"],
+        "use_response_api": True, "thinking": False, "reasoning": "none",
+        "max_output_tokens": 4000, "timeout": 60,
+        "prompt_chars": len(query), "tool_count": 1, "tool": "response_api_web_search",
+    }
+    logger.info("response_api web_search start query=%r model=%s", query, cfg["model_name"])
+    try:
+        response = client.responses.create(**payload)
+        results = _extract_search_results(response)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("response_api web_search FAIL query=%r 耗时%.2fs err=%s",
+                       query, time.monotonic() - t0, e)
+        _emit_llm_call({**base_info, "duration_ms": round((time.monotonic() - t0) * 1000),
+                        "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+                        "status": "error", "error": str(e)[:500]})
+        raise
+    logger.info("response_api web_search done query=%r n=%d 耗时%.2fs",
+                query, len(results), time.monotonic() - t0)
+    _emit_llm_call({**base_info, "duration_ms": round((time.monotonic() - t0) * 1000),
+                    "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+                    "status": "ok", "error": "", "result_count": len(results)})
     if not results:
+        logger.warning("Response API 服务端搜索未返回任何 open_page 结果：query=%r", query)
         raise RuntimeError(
             "Response API 服务端搜索未返回结果：请确认当前模型支持 web_search 工具"
             "（Responses API 目前仅 deepseek-v4-flash 支持）"
@@ -73,6 +100,11 @@ def extract_web_search_calls(content: object) -> list[dict]:
     open_page 并入最近一组，方便渲染成"一次搜索 -> 若干来源"的搜索卡片。
     """
     blocks = content if isinstance(content, (list, tuple)) else []
+    if logger.isEnabledFor(logging.DEBUG):
+        raw = [b for b in blocks if isinstance(b, dict) and b.get("type") == "web_search_call"]
+        if raw:
+            #诊断用：核对 DeepSeek 实际返回的 search/open_page 动作结构（0 来源排查）
+            logger.debug("web_search_call 原始块: %s", json.dumps(raw, ensure_ascii=False)[:4000])
     records: list[dict] = []
     current: dict | None = None
     for block in blocks:
@@ -93,6 +125,14 @@ def extract_web_search_calls(content: object) -> list[dict]:
     for record in records:
         seen: set[str] = set()
         record["urls"] = [u for u in record["urls"] if not (u in seen or seen.add(u))]
+    if records and not any(r["urls"] for r in records):
+        #整个响应确实没有任何来源时才打 WARN（单条 search 无来源但同响应有 open_page 属正常分组）
+        raw = [b for b in blocks if isinstance(b, dict) and b.get("type") == "web_search_call"]
+        logger.warning(
+            "服务端搜索整响应无来源（queries=%r）。原始块: %s",
+            [r.get("query") for r in records],
+            json.dumps(raw, ensure_ascii=False)[:4000],
+        )
     return records
 
 
