@@ -976,8 +976,9 @@ def review_node(state: ResearchState, config: RunnableConfig) -> dict:
     return {"guidance": guidance}
 
 
-def _generate_abstract(llm: ChatClient, task: dict, claims: list[dict]) -> str:
-    #调一次 LLM 基于核查结果撰写底稿摘要；失败返回空串，底稿退化为统计行
+def _generate_report_structure(llm: ChatClient, task: dict, claims: list[dict]) -> dict | None:
+    #调一次 LLM 基于核查结果生成底稿结构化内容（摘要/分模块小结/关键数据/综合研判）；
+    #失败返回 None，底稿回退到旧模板
     from .models import STATUS_LABEL
     lines = []
     for c in claims:
@@ -985,43 +986,43 @@ def _generate_abstract(llm: ChatClient, task: dict, claims: list[dict]) -> str:
         extra = f"；存疑原因：{c['conflict_reason']}" if c["conflict_reason"] else ""
         lines.append(f"- [{STATUS_LABEL.get(c['status'], c['status'])}] {c['statement']}（{verdict or '无结论'}{extra}）")
     try:
-        text = str(llm.chat([HumanMessage(content=prompts.REPORT_ABSTRACT_PROMPT.format(
-            topic=task["topic"], claims="\n".join(lines)[:3000]))]))
-        return _strip_abstract(text)
+        data = _llm_json(llm, prompts.REPORT_STRUCTURE_PROMPT.format(
+            topic=task["topic"], claims="\n".join(lines)[:3000]))
     except Exception:
-        return ""
+        return None
+    return {
+        "summary": str(data.get("summary") or "").strip(),
+        "modules": [m for m in (data.get("modules") or [])
+                    if isinstance(m, dict) and str(m.get("category") or "").strip()],
+        "data_points": [d for d in (data.get("data_points") or []) if isinstance(d, dict)],
+        "analysis": str(data.get("analysis") or "").strip(),
+    }
 
 
-def _strip_abstract(text: str) -> str:
-    #模型习惯性把摘要包进 JSON/代码块（{"summary": "..."}），这里剥壳取纯文本
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-    if text.startswith("{"):
-        try:
-            obj = json.loads(text[text.find("{"):text.rfind("}") + 1])
-            if isinstance(obj, dict):
-                for key in ("summary", "摘要", "abstract"):
-                    if isinstance(obj.get(key), str):
-                        return obj[key].strip()
-                for v in obj.values():  #无惯用键时取第一个字符串值
-                    if isinstance(v, str):
-                        return v.strip()
-        except Exception:
-            pass
-    return text
+def _parse_report_json(raw: object) -> dict | None:
+    #解析 research_tasks.report_json；缺省/损坏时返回 None，底稿走旧模板
+    if not raw:
+        return None
+    try:
+        obj = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return None
+    return obj if isinstance(obj, dict) else None
 
 
 def assemble_node(state: ResearchState, config: RunnableConfig) -> dict:
-    #底稿组装：先由 LLM 撰写摘要落库，再按模板拼装已核验素材（摘要之外不新增任何分析文字）
+    #底稿组装：一次 LLM 调用生成结构化内容（摘要/模块小结/数据表/综合研判）落库，
+    #再由 _build_report 按模板渲染；LLM 失败时回退旧摘要模板
     _check_stop(config)
     task_id = state["task_id"]
     guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 100)
     task = store.get_task(task_id, state["user_id"]) or {}
-    summary = _generate_abstract(_llm(config), task, store.list_claims(task_id))
-    if summary:
-        store.update_task(task_id, summary_md=summary)
-        task["summary_md"] = summary
+    structure = _generate_report_structure(_llm(config), task, store.list_claims(task_id))
+    if structure:
+        report_json = json.dumps(structure, ensure_ascii=False)
+        store.update_task(task_id, summary_md=structure["summary"], report_json=report_json)
+        task["summary_md"] = structure["summary"]
+        task["report_json"] = report_json
     store.update_task(task_id, report_md=_build_report(task), status="review", progress=100)
     _emit(config, "assembler", "progress",
           title="研究底稿已生成", speech="带完整证据索引的研究底稿已组装完成，请研究员审阅并做最终研判。",
@@ -1043,6 +1044,9 @@ def _build_report(task: dict) -> str:
     claims = store.list_claims(task_id)
     evidence = {e["id"]: e for e in store.list_evidence(task_id)}
     ce_map = store.claim_evidence_ids(task_id)
+    structure = _parse_report_json(task.get("report_json"))
+    module_summaries = {str(m.get("category") or "").strip(): str(m.get("summary") or "").strip()
+                        for m in (structure.get("modules") or [])} if structure else {}
     counts = {"verified": 0, "review": 0, "conflict": 0}
     for c in claims:
         counts[c["status"]] = counts.get(c["status"], 0) + 1
@@ -1076,8 +1080,9 @@ def _build_report(task: dict) -> str:
         "## 摘要",
         "",
     ]
-    if (task.get("summary_md") or "").strip():
-        lines += [task["summary_md"].strip(), ""]
+    summary = (structure.get("summary") if structure else None) or task.get("summary_md") or ""
+    if summary.strip():
+        lines += [summary.strip(), ""]
     lines += [
         f"共核查主张 {len(claims)} 条：核验通过 {counts['verified']} 条，"
         f"待复核 {counts['review']} 条，高度存疑 {counts['conflict']} 条。",
@@ -1105,9 +1110,12 @@ def _build_report(task: dict) -> str:
         lines.append(f"- 未覆盖模块：{'、'.join(missed_modules)}")
     lines.append("- 数据颗粒度提示：主张中的数值应自带口径、时间范围与单位，请结合证据核对。")
 
-    lines += ["", "## 主张与证据链"]
+    lines += ["", "## 分模块正文" if structure else "## 主张与证据链"]
     for title, group in grouped:
         lines += ["", f"### {title}"]
+        module_summary = module_summaries.get(title, "")
+        if module_summary:
+            lines += [module_summary, ""]
         for c in group:
             lines += [
                 "",
@@ -1132,6 +1140,22 @@ def _build_report(task: dict) -> str:
                         + (f"，{e['url']}" if e["url"] else ""))
             else:
                 lines.append("- 证据：（未检索到，需人工补充取证）")
+    if structure:
+        data_points = [d for d in (structure.get("data_points") or []) if isinstance(d, dict)]
+        if data_points:
+            lines += ["", "## 关键数据与颗粒度", "",
+                      "| 指标 | 数值 | 口径/时间 | 单位 | 来源类型 | 可信度 |",
+                      "| --- | --- | --- | --- | --- | --- |"]
+            for d in data_points:
+                lines.append(
+                    f"| {_clean(d.get('indicator'))} | {_clean(d.get('value'))} | "
+                    f"{_clean(d.get('scope'))} | {_clean(d.get('unit'))} | "
+                    f"{_clean(d.get('source_type'))} | {_clean(d.get('credibility'))} |")
+            lines.append("")
+        analysis = str((structure.get("analysis") or "")).strip()
+        if analysis:
+            lines += ["", "## 综合研判", "", analysis, "",
+                      "> 本段为基于公开信息的分析性观察，不构成投资建议、不预测涨跌。", ""]
     materials = store.list_materials(task_id)
     if materials:
         lines += ["", "## 参考信源", ""]

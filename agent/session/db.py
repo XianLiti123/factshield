@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS research_tasks (
     progress REAL NOT NULL DEFAULT 0,
     report_md TEXT,
     summary_md TEXT NOT NULL DEFAULT '',
+    report_json TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
@@ -311,6 +312,7 @@ def init_db() -> None:
         _add_column_if_missing(conn, "users", "avatar_mime", "avatar_mime TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "evidence", "url", "url TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "research_tasks", "summary_md", "summary_md TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "research_tasks", "report_json", "report_json TEXT")
         _add_column_if_missing(conn, "task_materials", "credibility_level", "credibility_level TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "task_materials", "content", "content TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "task_materials", "published_at", "published_at TEXT NOT NULL DEFAULT ''")
