@@ -5,11 +5,15 @@
 - python       - 必应中国版网页爬虫，无需 key。
 - response_api - DeepSeek Responses API 服务端 web_search（无需搜索 key）。
 
-search/extract 为统一入口，按用户选择的引擎路由；选了 tavily 但未配置 key 时
-直接报错，不静默降级。
+search 按用户选择的引擎路由；extract 优先使用 Tavily 正文提取（配置了 key 时），
+失败或未配置 key 时自动降级为本地 Python 爬虫。
 """
 
 import logging
+
+import requests
+
+from . import config
 
 logger = logging.getLogger(__name__)
 
@@ -104,17 +108,26 @@ def search(query: str, engine: str, max_results: int = 5, user_id: int | None = 
 
 
 def extract(url: str, engine: str, user_id: int | None = None) -> str:
-    #统一网页正文提取入口，失败抛异常由调用方处理（调用方一般退化为搜索摘要）
-    if engine == "tavily":
-        _, tavily_ext = _get_tavily(_resolve_api_key(user_id))
-        result = tavily_ext.invoke({"urls": [url]})
-        pages = result.get("results", []) if isinstance(result, dict) else []
-        return str(pages[0].get("raw_content", "")) if pages else ""
-    if engine in ("python", "response_api"):
-        #response_api 引擎的服务端 web_search 只提供搜索、不提供正文提取，退化为本地抓取（与 python 引擎一致）
-        resp = requests.get(url, headers=_HEADERS, timeout=15)
-        resp.raise_for_status()
-        if "charset" not in resp.headers.get("Content-Type", "").lower():
-            resp.encoding = resp.apparent_encoding  #响应头未声明编码时按内容探测，避免中文乱码
-        return _html_text(resp.text)
-    raise ValueError(f"无效的搜索引擎: {engine}，可选: {', '.join(ENGINES)}")
+    """统一网页正文提取入口。
+
+    优先级：配置了 Tavily API key 时先走 TavilyExtract，失败/返回空则降级
+    本地 Python 爬虫（python/response_api 引擎也走本地爬虫）；未配置 key 时
+    直接本地爬虫。失败抛异常由调用方处理（调用方一般退化为搜索摘要）。
+    """
+    api_key = _resolve_api_key(user_id)
+    if api_key:
+        try:
+            _, tavily_ext = _get_tavily(api_key)
+            result = tavily_ext.invoke({"urls": [url]})
+            pages = result.get("results", []) if isinstance(result, dict) else []
+            content = str(pages[0].get("raw_content", "")) if pages else ""
+            if content.strip():
+                return content
+            logger.warning("Tavily 正文提取返回空内容，降级本地抓取: %s", url)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Tavily 正文提取失败，降级本地抓取: %s", e)
+    resp = requests.get(url, headers=_HEADERS, timeout=15)
+    resp.raise_for_status()
+    if "charset" not in resp.headers.get("Content-Type", "").lower():
+        resp.encoding = resp.apparent_encoding  #响应头未声明编码时按内容探测，避免中文乱码
+    return _html_text(resp.text)
