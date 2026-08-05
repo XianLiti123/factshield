@@ -2,9 +2,36 @@ import type { Claim } from '../types'
 
 export type ReviewAction = 'reject' | 'keep' | 'remove' | 'rewrite'
 export type ReviewResolution = { action: ReviewAction; note: string }
+export type ReviewWorkspaceState = { inspectionOpen: boolean; visibility: 'issues' | 'all' }
 
 const REVIEW_DRAFTS_STORAGE_PREFIX = 'factshield.review-drafts.'
 const REOPENED_REVIEWS_STORAGE_PREFIX = 'factshield.reopened-reviews.'
+const REVIEW_WORKSPACE_STORAGE_PREFIX = 'factshield.review-workspace.'
+
+const DEFAULT_REVIEW_WORKSPACE_STATE: ReviewWorkspaceState = {
+  inspectionOpen: false,
+  visibility: 'issues',
+}
+
+export function readReviewWorkspaceState(taskId: string): ReviewWorkspaceState {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(`${REVIEW_WORKSPACE_STORAGE_PREFIX}${taskId}`) ?? '{}') as Partial<ReviewWorkspaceState>
+    return {
+      inspectionOpen: parsed.inspectionOpen === true,
+      visibility: parsed.visibility === 'all' ? 'all' : 'issues',
+    }
+  } catch {
+    return DEFAULT_REVIEW_WORKSPACE_STATE
+  }
+}
+
+export function persistReviewWorkspaceState(taskId: string, state: ReviewWorkspaceState) {
+  try {
+    window.localStorage.setItem(`${REVIEW_WORKSPACE_STORAGE_PREFIX}${taskId}`, JSON.stringify(state))
+  } catch {
+    // Storage may be unavailable; the current workspace state still survives until unmount.
+  }
+}
 
 export function readReviewDrafts(taskId: string): Record<string, ReviewResolution> {
   try {
@@ -48,6 +75,8 @@ export function persistReopenedReviewIds(taskId: string, claimIds: string[]) {
   }
 }
 
-export function getStatusBeforeHumanReview(action: string | null | undefined): Claim['status'] {
-  return action === 'remove' || action === 'rewrite' ? 'review' : 'conflict'
+export function getStatusBeforeHumanReview(action: string | null | undefined, note?: string | null): Claim['status'] {
+  return action === 'remove' || action === 'rewrite' || (action === 'keep' && note?.startsWith('确认按原表述'))
+    ? 'review'
+    : 'conflict'
 }

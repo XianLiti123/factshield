@@ -19,6 +19,7 @@ import {
   UserOutlined,
   WarningFilled,
 } from '@ant-design/icons'
+import { getEvidenceDisplayName } from '../utils/evidence'
 import { Avatar, Button, Dropdown, Empty, Input, Modal, Popover, Slider, Spin, Tag, message } from 'antd'
 import type { MenuProps } from 'antd'
 import { useWorkspaceStore } from '../store'
@@ -259,7 +260,7 @@ export function AppShell({ children, user, onLogout, onUserUpdated }: { children
             <header><span>原始证据</span><em>{searchResult.evidence.length}</em></header>
             {searchResult.evidence.map((evidence) => <button key={`evidence-${evidence.task_id}-${evidence.id}`} onClick={() => chooseSearchResult(evidence.task_id, undefined, evidence.id)}>
               <i className="search-result-icon evidence"><FileTextOutlined /></i>
-              <span><strong>{evidence.title}</strong><small>{evidence.task_title} · {evidence.publisher || '发布机构未注明'}</small></span>
+              <span><strong>{getEvidenceDisplayName(evidence)}</strong><small>{evidence.task_title} · {evidence.publisher || '发布机构未注明'}</small></span>
               <Tag>{evidence.id}</Tag>
             </button>)}
           </section>}

@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import {
   BookOutlined,
+  BulbOutlined,
   CheckOutlined,
   ClockCircleOutlined,
   CloudDownloadOutlined,
@@ -29,6 +30,7 @@ import {
   getAgentExecution,
   guideTask,
   resolveClaim as resolvePersistedClaim,
+  replyTaskSuggestion,
   retryClaim as retryPersistedClaim,
   streamTaskEvents,
   uploadDocument,
@@ -38,12 +40,15 @@ import { ATTACHMENT_ACCEPT, mergeAttachmentFiles } from '../utils/attachments'
 import { StatusBadge } from './StatusBadge'
 import { getClaimDisplayStatement, getRewrittenClaimStatement, isClaimRemoved } from '../utils/claims'
 import { getConfidenceLevel, getConfidenceLevelClass } from '../utils/confidence'
+import { getEvidenceDisplayName } from '../utils/evidence'
 import {
   getStatusBeforeHumanReview,
   persistReopenedReviewIds,
   persistReviewDrafts,
+  persistReviewWorkspaceState,
   readReopenedReviewIds,
   readReviewDrafts,
+  readReviewWorkspaceState,
   type ReviewAction,
   type ReviewResolution,
 } from '../utils/reviewDrafts'
@@ -68,6 +73,66 @@ type ClaimRetryProgress = {
   detail: string
   afterSeq: number
   evidenceCountBefore: number
+}
+
+function AgentClarificationCard({ event, resolved, onResolved }: {
+  event: ResearchEvent
+  resolved: boolean
+  onResolved: (suggestionId: string) => void
+}) {
+  const suggestionId = event.payload.suggestion_id?.trim() ?? ''
+  const options = event.payload.options ?? []
+  const [selectedOptionId, setSelectedOptionId] = useState('')
+  const [customReply, setCustomReply] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  const submitReply = async (continueWithoutChange = false) => {
+    if (!suggestionId) {
+      message.error('后端没有返回 suggestion_id，暂时无法提交这条建议')
+      return
+    }
+    if (!continueWithoutChange && !selectedOptionId && !customReply.trim()) {
+      message.warning('请选择一个建议，或写下你的具体要求')
+      return
+    }
+    setSubmitting(true)
+    try {
+      await replyTaskSuggestion(event.task_id, suggestionId, {
+        option_id: selectedOptionId || null,
+        content: customReply.trim(),
+        continue_without_change: continueWithoutChange,
+      })
+      onResolved(suggestionId)
+      message.success(continueWithoutChange ? '已按当前信息继续研究' : '小盾已收到你的选择，会据此继续研究')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '建议回复提交失败')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className={`agent-clarification-card${resolved ? ' resolved' : ''}`}>
+      <div className="agent-clarification-heading">
+        <span><BulbOutlined /></span>
+        <div><strong>{event.payload.question || event.payload.title || '小盾需要你明确一个方向'}</strong><p>{event.payload.reason || event.payload.speech || '补充这一点后，我能把研究范围收得更准。'}</p></div>
+      </div>
+      {resolved ? (
+        <div className="agent-clarification-resolved"><CheckOutlined /> 已回复，小盾正在按你的选择继续</div>
+      ) : (
+        <>
+          {options.length > 0 && <div className="agent-clarification-options">{options.map((option) => (
+            <button type="button" className={selectedOptionId === option.id ? 'selected' : ''} key={option.id} onClick={() => setSelectedOptionId(option.id)}>{option.label}</button>
+          ))}</div>}
+          {event.payload.allow_custom !== false && <Input.TextArea value={customReply} onChange={(changeEvent) => setCustomReply(changeEvent.target.value)} autoSize={{ minRows: 2, maxRows: 4 }} placeholder="也可以直接写下你更关心的对象、范围或判断标准" />}
+          <div className="agent-clarification-actions">
+            <Button size="small" disabled={submitting} onClick={() => void submitReply(true)}>按当前信息继续</Button>
+            <Button size="small" type="primary" loading={submitting} onClick={() => void submitReply(false)}>提交选择并继续</Button>
+          </div>
+        </>
+      )}
+    </div>
+  )
 }
 
 function backendActorIcon(actor: string) {
@@ -284,6 +349,7 @@ function ClaimList({
 }
 
 function EvidenceCard({ evidence, active, onClick }: { evidence: Evidence; active: boolean; onClick: () => void }) {
+  const displayName = getEvidenceDisplayName(evidence)
   const credibilityLevel = ['高', '中', '低'].includes(evidence.credibilityLevel) ? evidence.credibilityLevel : '未标注'
   const credibilityClass = credibilityLevel === '高' ? 'high' : credibilityLevel === '中' ? 'medium' : credibilityLevel === '低' ? 'low' : 'unknown'
   return (
@@ -291,7 +357,7 @@ function EvidenceCard({ evidence, active, onClick }: { evidence: Evidence; activ
       <div className="evidence-source-icon"><FilePdfOutlined /></div>
       <div className="evidence-card-copy">
         <div className="evidence-card-title">
-          <strong>{evidence.title}</strong>
+          <strong title={displayName}>{displayName}</strong>
           <span className={`relation-tag ${evidence.relation}`}>{evidence.relation === 'support' ? '支持' : '质疑'}</span>
         </div>
         <span>{evidence.publisher} · {evidence.locator}</span>
@@ -331,6 +397,7 @@ function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: E
   const evidenceDragRef = useRef({ pointerId: -1, startX: 0, startScrollLeft: 0, moved: false })
   const suppressEvidenceClickRef = useRef(false)
   const selectedEvidence = evidenceList.find((item) => item.id === selectedEvidenceId) ?? evidenceList[0]
+  const selectedEvidenceName = selectedEvidence ? getEvidenceDisplayName(selectedEvidence) : ''
   const selectedSourceUrl = selectedEvidence ? getEvidenceSourceUrl(selectedEvidence) : null
   const selectedCredibilityLevel = selectedEvidence && ['高', '中', '低'].includes(selectedEvidence.credibilityLevel)
     ? selectedEvidence.credibilityLevel
@@ -413,7 +480,7 @@ function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: E
         <div className="document-toolbar">
           <div className="document-file">
             <FilePdfOutlined />
-            <div><strong>{selectedEvidence.title}</strong><span>原始文件 · 已完成哈希校验</span></div>
+            <div><strong>{selectedEvidenceName}</strong><span>原始文件 · 已完成哈希校验</span></div>
           </div>
           <button
             className="source-link-button"
@@ -424,7 +491,7 @@ function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: E
         </div>
         <div className="document-page">
           <div className="document-brand">{selectedEvidence.publisher}</div>
-          <h3>{selectedEvidence.title}</h3>
+          <h3>{selectedEvidenceName}</h3>
           <div className="document-meta">
             <span>披露日期：{selectedEvidence.publishedAt}</span>
             <span>证据定位：{selectedEvidence.locator}</span>
@@ -455,7 +522,7 @@ function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: E
             <div className="source-identity-icon"><FileSearchOutlined /></div>
             <div className="source-identity-copy">
               <span>当前材料</span>
-              <h3>{selectedEvidence.title}</h3>
+              <h3>{selectedEvidenceName}</h3>
               <p>{selectedEvidence.publisher}</p>
             </div>
             <span className={`source-relation ${selectedEvidence.relation}`}>
@@ -564,7 +631,7 @@ function VerdictPanel({ claim, evidenceList, onResolve, onUndo, draftResolution,
     relation: Evidence['relation']
     duplicateCount: number
   }>>((summaries, evidence) => {
-    const source = evidence.publisher || evidence.title || '来源未标注'
+    const source = evidence.publisher || getEvidenceDisplayName(evidence) || '来源未标注'
     const quote = evidence.quote?.trim() || '未返回可展示的原文片段'
     const basis = [evidence.sourceType, evidence.locator].filter(Boolean).join(' · ') || '未返回原文定位'
     const duplicate = summaries.find((item) => (
@@ -644,6 +711,7 @@ function VerdictPanel({ claim, evidenceList, onResolve, onUndo, draftResolution,
           </div>
           {claim.status === 'review' ? (
             <>
+              <button onClick={() => void onResolve('keep', '确认按原表述纳入最终结论')}><CheckOutlined />确认该表述</button>
               <button onClick={() => setRemoveOpen(true)}>删除该表述</button>
               <button onClick={openRewriteEditor}>调整表述</button>
             </>
@@ -836,11 +904,12 @@ function VerdictPanel({ claim, evidenceList, onResolve, onUndo, draftResolution,
 
 export function Workbench({ run, preview = false }: { run: ResearchRun; preview?: boolean }) {
   const queryClient = useQueryClient()
-  const [claimVisibility, setClaimVisibility] = useState<ClaimVisibility>('issues')
+  const [reviewWorkspaceState, setReviewWorkspaceState] = useState(() => readReviewWorkspaceState(run.id))
+  const claimVisibility = reviewWorkspaceState.visibility
+  const completionReviewing = reviewWorkspaceState.inspectionOpen
   const [previewSelectedClaimId, setPreviewSelectedClaimId] = useState('claim-3')
   const [localClaimResolutions, setLocalClaimResolutions] = useState<Record<string, ReviewResolution>>(() => readReviewDrafts(run.id))
   const [reopenedReviewIds, setReopenedReviewIds] = useState<string[]>(() => readReopenedReviewIds(run.id))
-  const [completionReviewing, setCompletionReviewing] = useState(false)
   const [completeResearchOpen, setCompleteResearchOpen] = useState(false)
   const [completingResearch, setCompletingResearch] = useState(false)
   const [guidance, setGuidance] = useState('')
@@ -854,11 +923,23 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   const [realGuidanceOpen, setRealGuidanceOpen] = useState(false)
   const [realGuidanceSubmitting, setRealGuidanceSubmitting] = useState(false)
   const [selectedBackendEventSeqs, setSelectedBackendEventSeqs] = useState<number[]>([])
+  const [resolvedSuggestionIds, setResolvedSuggestionIds] = useState<string[]>([])
   const [restartingResearch, setRestartingResearch] = useState(false)
   const processListRef = useRef<HTMLDivElement>(null)
   const guidanceAttachmentInputRef = useRef<HTMLInputElement>(null)
   const activeTask = useWorkspaceStore(getActiveTask)
   const searchFocus = useWorkspaceStore((state) => state.searchFocus)
+
+  const updateReviewWorkspaceState = (patch: Partial<typeof reviewWorkspaceState>) => {
+    setReviewWorkspaceState((current) => {
+      const next = { ...current, ...patch }
+      if (!preview) persistReviewWorkspaceState(run.id, next)
+      return next
+    })
+  }
+
+  const setClaimVisibility = (visibility: ClaimVisibility) => updateReviewWorkspaceState({ visibility })
+  const setCompletionReviewing = (inspectionOpen: boolean) => updateReviewWorkspaceState({ inspectionOpen })
 
   const addGuidanceAttachments = (files: FileList | File[] | null) => {
     if (!files) return
@@ -873,10 +954,11 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   useEffect(() => {
     setLocalClaimResolutions(readReviewDrafts(run.id))
     setReopenedReviewIds(readReopenedReviewIds(run.id))
-    setCompletionReviewing(false)
+    setReviewWorkspaceState(preview ? { inspectionOpen: false, visibility: 'issues' } : readReviewWorkspaceState(run.id))
     setCompleteResearchOpen(false)
     setCompletingResearch(false)
-  }, [run.id])
+    setResolvedSuggestionIds([])
+  }, [preview, run.id])
   // 持久化任务在详情页以 ResearchRun 完整快照为准，避免任务列表摘要先一步
   // 切到 review，和上一轮仍在 running 的空主张明细拼成短暂空页。
   const persistedRunPhase = getResearchRunPhase(run)
@@ -927,7 +1009,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
           ...claim,
           humanAction: null,
           humanNote: null,
-          status: getStatusBeforeHumanReview(claim.humanAction),
+          status: getStatusBeforeHumanReview(claim.humanAction, claim.humanNote),
         }
         return claim
       })
@@ -1358,6 +1440,17 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
                           {metrics.map((metric, index) => <span key={`${metric.label}-${index}`}>{metric.label} {metric.value}</span>)}
                         </div>
                       )}
+                      {event.kind === 'clarification_required' && (
+                        <AgentClarificationCard
+                          event={event}
+                          resolved={Boolean(event.payload.suggestion_id && (
+                            resolvedSuggestionIds.includes(event.payload.suggestion_id)
+                            || backendEvents.some((candidate) => candidate.kind === 'clarification_resolved'
+                              && candidate.payload.suggestion_id === event.payload.suggestion_id)
+                          ))}
+                          onResolved={(suggestionId) => setResolvedSuggestionIds((current) => current.includes(suggestionId) ? current : [...current, suggestionId])}
+                        />
+                      )}
                     </div>
                     <div className="process-item-controls"><small>{status}</small></div>
                   </div>
@@ -1521,7 +1614,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
         title: '逐份打开材料并读取原文',
         speech: '检索结果已经筛完，我正在逐份打开保留下来的材料。年报中的数字要同时核对单位和上期口径；管理层回答要连同上下文阅读，不能只摘一句。我会把每个可用结论绑定到文件名、页码或问答序号。',
         details: [
-          ...run.evidence.slice(0, 4).map((evidence, index) => ({ label: `已浏览 ${String(index + 1).padStart(2, '0')}`, text: `《${evidence.title}》${evidence.locator}——已提取对应原文并保留定位。` })),
+          ...run.evidence.slice(0, 4).map((evidence, index) => ({ label: `已浏览 ${String(index + 1).padStart(2, '0')}`, text: `《${getEvidenceDisplayName(evidence)}》${evidence.locator}——已提取对应原文并保留定位。` })),
           { label: '字段检查', text: '统一金额单位为亿元、比例保留两位小数；8 处摘录均已绑定原始页码或问题序号。' },
         ],
         metrics: ['浏览 8 份原文', '提取 18 个字段', '绑定 8 处坐标'],

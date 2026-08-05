@@ -86,6 +86,11 @@ export type ResearchEvent = {
     metrics?: Array<{ label: string; value: string }>
     tone?: 'warning' | 'danger' | string | null
     progress?: number | null
+    suggestion_id?: string
+    question?: string
+    reason?: string
+    options?: Array<{ id: string; label: string }>
+    allow_custom?: boolean
   }
   ts: string
 }
@@ -616,6 +621,16 @@ export const guideTask = (taskId: string, instruction: string) => request<{ stat
   `/api/tasks/${taskId}/guidance`, {
     method: 'POST',
     body: JSON.stringify({ instruction }),
+  },
+)
+export const replyTaskSuggestion = (
+  taskId: string,
+  suggestionId: string,
+  reply: { option_id?: string | null; content?: string; continue_without_change: boolean },
+) => request<{ status: string; task_id: string; suggestion_id: string }>(
+  `/api/tasks/${encodeURIComponent(taskId)}/suggestions/${encodeURIComponent(suggestionId)}/reply`, {
+    method: 'POST',
+    body: JSON.stringify(reply),
   },
 )
 export const resolveClaim = (taskId: string, claimId: string, action: 'reject' | 'keep' | 'remove' | 'rewrite', comment?: string) => (

@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   ApiOutlined,
   ArrowUpOutlined,
@@ -22,6 +22,19 @@ type DatabaseQueryRecord = {
   answer: string
   tools: string[]
   createdAt: string
+}
+
+type DatabaseSearchStatus = 'idle' | 'running' | 'complete' | 'interrupted' | 'error'
+
+type DatabaseSearchSnapshot = {
+  query: string
+  submittedQuery: string
+  answer: string
+  thinking: string
+  tools: string[]
+  status: DatabaseSearchStatus
+  error: string
+  updatedAt: string
 }
 
 type ChannelMeta = {
@@ -54,12 +67,45 @@ const CHANNEL_META: Record<ChannelKey, ChannelMeta> = {
 
 const CHANNEL_KEYS: ChannelKey[] = ['web', 'source', 'database']
 const HISTORY_KEY_PREFIX = 'factshield.database-search.'
+const ACTIVE_SEARCH_KEY_PREFIX = 'factshield.database-search.active.'
 
 const EXAMPLES = [
   '梳理宁德时代近三年的海外扩张和盈利变化',
   '比较新能源车行业今年的销量与价格趋势',
-  '查找过去类似政策落地后的市场表现',
+  '查找房地产融资政策落地后的地产股表现',
 ]
+
+function loadActiveSearch(userId: number): DatabaseSearchSnapshot | null {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(`${ACTIVE_SEARCH_KEY_PREFIX}${userId}`) ?? 'null') as Partial<DatabaseSearchSnapshot> | null
+    if (!parsed || typeof parsed.query !== 'string') return null
+    const restoredRunning = parsed.status === 'running'
+    return {
+      query: parsed.query,
+      submittedQuery: typeof parsed.submittedQuery === 'string' ? parsed.submittedQuery : '',
+      answer: typeof parsed.answer === 'string' ? parsed.answer : '',
+      thinking: typeof parsed.thinking === 'string' ? parsed.thinking : '',
+      tools: Array.isArray(parsed.tools) ? parsed.tools.filter((tool): tool is string => typeof tool === 'string') : [],
+      status: restoredRunning ? 'interrupted' : ['idle', 'complete', 'interrupted', 'error'].includes(parsed.status ?? '')
+        ? parsed.status as DatabaseSearchStatus
+        : 'idle',
+      error: restoredRunning
+        ? '页面刷新使实时连接中断，问题和已返回内容已保留；点击下方按钮可重新检索。'
+        : typeof parsed.error === 'string' ? parsed.error : '',
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
+    }
+  } catch {
+    return null
+  }
+}
+
+function saveActiveSearch(userId: number, snapshot: DatabaseSearchSnapshot) {
+  try {
+    window.localStorage.setItem(`${ACTIVE_SEARCH_KEY_PREFIX}${userId}`, JSON.stringify(snapshot))
+  } catch {
+    // Search remains available in memory if browser storage is unavailable.
+  }
+}
 
 function loadHistory(userId: number): DatabaseQueryRecord[] {
   try {
@@ -137,14 +183,16 @@ function formatTime(value: string) {
 }
 
 export function DatabaseView({ userId }: { userId: number }) {
-  const [query, setQuery] = useState('')
-  const [submittedQuery, setSubmittedQuery] = useState('')
-  const [answer, setAnswer] = useState('')
-  const [thinking, setThinking] = useState('')
-  const [tools, setTools] = useState<string[]>([])
+  const [initialSnapshot] = useState(() => loadActiveSearch(userId))
+  const [query, setQuery] = useState(initialSnapshot?.query ?? '')
+  const [submittedQuery, setSubmittedQuery] = useState(initialSnapshot?.submittedQuery ?? '')
+  const [answer, setAnswer] = useState(initialSnapshot?.answer ?? '')
+  const [thinking, setThinking] = useState(initialSnapshot?.thinking ?? '')
+  const [tools, setTools] = useState<string[]>(initialSnapshot?.tools ?? [])
   const [history, setHistory] = useState<DatabaseQueryRecord[]>(() => loadHistory(userId))
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const [searchStatus, setSearchStatus] = useState<DatabaseSearchStatus>(initialSnapshot?.status ?? 'idle')
+  const [error, setError] = useState(initialSnapshot?.error ?? '')
   const [expandedTools, setExpandedTools] = useState<ChannelKey | null>(null)
 
   const sections = useMemo(() => splitAnswer(answer), [answer])
@@ -153,6 +201,19 @@ export function DatabaseView({ userId }: { userId: number }) {
     return result
   }, { web: [], source: [], database: [] }), [tools])
 
+  useEffect(() => {
+    saveActiveSearch(userId, {
+      query,
+      submittedQuery,
+      answer,
+      thinking,
+      tools,
+      status: loading ? 'running' : searchStatus,
+      error,
+      updatedAt: new Date().toISOString(),
+    })
+  }, [answer, error, loading, query, searchStatus, submittedQuery, thinking, tools, userId])
+
   const restoreRecord = (record: DatabaseQueryRecord) => {
     setQuery(record.query)
     setSubmittedQuery(record.query)
@@ -160,6 +221,7 @@ export function DatabaseView({ userId }: { userId: number }) {
     setTools(record.tools)
     setThinking('')
     setError('')
+    setSearchStatus('complete')
   }
 
   const runSearch = async () => {
@@ -172,6 +234,7 @@ export function DatabaseView({ userId }: { userId: number }) {
     setExpandedTools(null)
     setError('')
     setLoading(true)
+    setSearchStatus('running')
     let streamedAnswer = ''
     const streamedTools: string[] = []
 
@@ -208,9 +271,11 @@ export function DatabaseView({ userId }: { userId: number }) {
       const usedChannels = new Set(streamedTools.map(channelForTool).filter(Boolean))
       if (usedChannels.size === CHANNEL_KEYS.length) message.success('三路检索已完成')
       else message.warning(`Agent 已返回结果，实际调用了 ${usedChannels.size}/3 类检索工具`)
+      setSearchStatus('complete')
     } catch (requestError) {
       const detail = requestError instanceof Error ? requestError.message : '检索失败，请稍后重试'
       setError(detail)
+      setSearchStatus('error')
       message.error(detail)
     } finally {
       setLoading(false)
@@ -255,7 +320,7 @@ export function DatabaseView({ userId }: { userId: number }) {
         </div>
       </section>
 
-      {error && <div className="database-error"><ReloadOutlined /><span>{error}</span><Button size="small" onClick={() => void runSearch()}>重试</Button></div>}
+      {error && <div className={`database-error${searchStatus === 'interrupted' ? ' interrupted' : ''}`}><ReloadOutlined /><span>{error}</span><Button size="small" onClick={() => void runSearch()}>{searchStatus === 'interrupted' ? '重新连接并检索' : '重试'}</Button></div>}
 
       <section className="database-results-section">
         <div className="database-section-heading">

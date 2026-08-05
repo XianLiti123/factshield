@@ -4,6 +4,7 @@ export type AgentStatus = 'done' | 'running' | 'waiting' | 'warning'
 export interface Evidence {
   id: string
   title: string
+  filename?: string
   publisher: string
   publishedAt: string
   url?: string

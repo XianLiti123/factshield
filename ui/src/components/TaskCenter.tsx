@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import {
   CheckCircleFilled,
+  BulbOutlined,
   ClockCircleOutlined,
   CloudUploadOutlined,
   DeleteOutlined,
@@ -51,7 +52,7 @@ const researchTemplates = [
     description: '核验增长、利润含金量、现金流与关键风险',
     meta: '企业研究 · 监管披露优先',
     icon: <FileSearchOutlined />,
-    topic: '核验目标公司最近一个完整年度的经营质量、利润含金量、现金流与关键风险',
+    topic: '核验某公司最近一个完整年度的经营质量、利润含金量、现金流与关键风险',
     type: 'company',
     sources: ['official', 'company'],
   },
@@ -361,6 +362,7 @@ export function TaskCenter() {
               <Form.Item name="topic" label="研究问题" rules={[{ required: true, message: '请输入研究问题' }]}>
                 <Input.TextArea autoFocus rows={4} placeholder="例如：核验某公司 2025 年经营质量、海外增长与关键风险" />
               </Form.Item>
+              <div className="research-clarification-hint"><BulbOutlined /><span><strong>问题不必一次写到完美</strong>如果研究范围过宽或缺少关键信息，小盾会在执行过程中主动向你提出具体选项，等你确认后继续。</span></div>
               {demoQuestionMatched && (
                 <div className="demo-question-match"><PlayCircleOutlined /><span><strong>已识别演示问题</strong>提交后会直接播放完整处理流程，不访问外部数据。</span></div>
               )}
