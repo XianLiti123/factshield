@@ -69,24 +69,37 @@ class ChatClient:
     """
 
     def __init__(self,model = DEEPSEEK_MODEL,base_url = DEEPSEEK_BASE_URL,api_key = DEEPSEEK_API_KEY,
-                 thinking = True,use_response_api = False):
+                 thinking = True,use_response_api = False,max_output_tokens: int | None = None):
         #thinking=True 开启思考模式（chat completions 用 DeepSeek 私有参数 thinking，
         #responses 模式用 reasoning.effort），思考内容统一在 additional_kwargs["reasoning_content"] 中；
         #use_response_api=True 时走 DeepSeek Responses API（/responses），否则走 OpenAI chat completions
+        #max_output_tokens：单次 LLM 调用的输出 token 上限，用于把工具循环里超长输出（几万字）截断，
+        #避免单轮 30~100 秒的长生成；None 表示不限制
         self.model, self.base_url, self.api_key = model, base_url, api_key
         self._thinking = thinking
         self._use_response_api = use_response_api
+        self._max_output_tokens = max_output_tokens
         self.llm = self._build(thinking)
 
-    def _build(self, thinking: bool):
-        #按模式重新装配客户端；thinking/response-api 都是请求体层面参数，切换需重建
+    def _build(self, thinking: bool, max_output_tokens: int | None = None,
+               reasoning: str | None = None):
+        #按模式重新装配客户端；thinking/response-api/max_output_tokens 都是请求体层面参数，切换需重建。
+        #reasoning 显式传 "low"/"none" 时覆盖 thinking（机械取数轮用低思考提速，质量关键节点保持 high）
         kwargs = {}
+        effort = reasoning or ("high" if thinking else "none")
         if self._use_response_api:
             #Responses API：reasoning.effort 控制思考强度（none=关闭，high=开启）
             kwargs["use_responses_api"] = True
-            kwargs["reasoning"] = {"effort": "high" if thinking else "none"}
+            kwargs["reasoning"] = {"effort": effort}
+            if max_output_tokens:
+                kwargs["model_kwargs"] = {"max_output_tokens": max_output_tokens}
         elif thinking:
-            kwargs["extra_body"] = {"thinking":{"type":"enabled"}}
+            extra_body = {"thinking": {"type": "enabled"}}
+            if max_output_tokens:
+                extra_body["max_tokens"] = max_output_tokens
+            kwargs["extra_body"] = extra_body
+        elif max_output_tokens:
+            kwargs["extra_body"] = {"max_tokens": max_output_tokens}
         return ReasoningChatOpenAI(
             model=self.model,
             base_url=self.base_url,
@@ -96,13 +109,18 @@ class ChatClient:
             **kwargs
         )
 
-    def invoke(self, messages: list, tools: list | None = None):
+    def invoke(self, messages: list, tools: list | None = None,
+               *, max_output_tokens: int | None = None,
+               reasoning: str | None = None):
         #统一调用入口：严格按用户配置的协议与思考模式调用，不做任何自动降级；
         #端点拒绝参数时直接抛错，由上层记录错误并提示用户调整配置
-        return self._invoke(messages, tools=tools, thinking=self._thinking)
+        return self._invoke(messages, tools=tools, thinking=self._thinking,
+                            max_output_tokens=max_output_tokens or self._max_output_tokens,
+                            reasoning=reasoning)
 
-    def _invoke(self, messages: list, tools: list | None = None, thinking: bool = True):
-        llm = self._build(thinking)
+    def _invoke(self, messages: list, tools: list | None = None, thinking: bool = True,
+                max_output_tokens: int | None = None, reasoning: str | None = None):
+        llm = self._build(thinking, max_output_tokens=max_output_tokens, reasoning=reasoning)
         messages = _sanitize_messages(messages)
         if not tools:
             return llm.invoke(messages)
@@ -112,8 +130,9 @@ class ChatClient:
             return llm.bind_tools(_native_web_search_tools(tools)).invoke(messages)
         return llm.bind_tools(tools).invoke(messages)
 
-    def chat(self,message:list):
-        response = self.invoke(message)
+    def chat(self,message:list, *, max_output_tokens: int | None = None,
+             reasoning: str | None = None):
+        response = self.invoke(message, max_output_tokens=max_output_tokens, reasoning=reasoning)
         #Responses API 模式下 content 是输出块列表，归一为纯文本（chat completions 原样返回）
         return content_to_text(response.content)
 

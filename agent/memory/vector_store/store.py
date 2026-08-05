@@ -30,19 +30,26 @@ _embeddings = OpenAIEmbeddings(
     chunk_size=20
 ) if EMBEDDING_API_KEY and EMBEDDING_BASE_URL and EMBEDDING_MODEL else None
 
+#Chroma 单例：_get_store 每次新建实例会反复打开持久化目录，且并发检索时多个实例
+#指向同一 sqlite 会互相锁；改为进程内复用同一个客户端（内部自带读写锁，线程安全）
+_store_singleton: Chroma | None = None
+
 #文本切分器，按固定长度+重叠切分
 _splitter = RecursiveCharacterTextSplitter(chunk_size=1000,chunk_overlap=200)
 
 
 def _get_store() -> Chroma:
-    #获取向量库实例，未配置 embedding 时给出指引
+    #获取向量库实例（进程内单例），未配置 embedding 时给出指引
+    global _store_singleton
     if _embeddings is None:
         raise RuntimeError("未配置 Embedding 模型，请在 .env 中设置 EMBEDDING_API_KEY、EMBEDDING_BASE_URL、EMBEDDING_MODEL")
-    return Chroma(
-        collection_name="documents",
-        embedding_function=_embeddings,
-        persist_directory=PERSIST_DIR
-    )
+    if _store_singleton is None:
+        _store_singleton = Chroma(
+            collection_name="documents",
+            embedding_function=_embeddings,
+            persist_directory=PERSIST_DIR
+        )
+    return _store_singleton
 
 
 def add_document(content:str,group_id:str|None=None)->tuple[str,int]:

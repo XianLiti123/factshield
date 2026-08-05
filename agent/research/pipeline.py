@@ -46,6 +46,12 @@ MAX_MATERIALS = 8       #单轮采集素材上限
 MAX_MATERIALS_TOTAL = 20  #含二次取证轮次的素材总量上限
 ASK_MAX_ROUNDS = 3      #主控 JSON 节点最多 LLM 轮次（可提问 1~2 次后必须输出 JSON）
 
+#单次 LLM 调用输出上限（token）：工具循环里模型一次生成几万字是单轮 30~100 秒的主因，
+#限制后超长输出被截断，配合 fetch_and_archive 服务端抓正文，模型不再生成正文参数
+TOOL_LOOP_MAX_OUTPUT = 6000
+JSON_NODE_MAX_OUTPUT = 8192
+LLM_JSON_MAX_OUTPUT = 4096
+
 #金融研究框架：用于选择企业/政策分析框架并组织底稿模块
 _COMPANY_HINTS = ("company", "enterprise", "经营质量", "企业", "公司", "基本面", "尽调", "财务")
 _POLICY_HINTS = ("policy", "政策", "监管", "规定", "制度", "规则", "法规")
@@ -178,12 +184,17 @@ def _consume_guidance(config: RunnableConfig, task_id: str, progress: float) -> 
     return guidance
 
 
-def _llm_json(llm: ChatClient, prompt: str, retries: int = 1) -> dict:
-    #调 LLM 并解析 JSON 输出；容忍 markdown 代码块包裹与首尾多余文字，失败重试
+def _llm_json(llm: ChatClient, prompt: str, retries: int = 1,
+              *, max_output_tokens: int = LLM_JSON_MAX_OUTPUT,
+              reasoning: str = "low") -> dict:
+    #调 LLM 并解析 JSON 输出；容忍 markdown 代码块包裹与首尾多余文字，失败重试。
+    #机械节点（主张提取/打分/证据判定）默认低思考 + 输出上限；质量关键节点由调用方传 high
     last_err: Exception | None = None
     for _ in range(retries + 1):
         try:
-            text = str(llm.chat([HumanMessage(content=prompt)]))
+            text = str(llm.chat([HumanMessage(content=prompt)],
+                                max_output_tokens=max_output_tokens,
+                                reasoning=reasoning))
             return _parse_json_loose(text)
         except Exception as e:
             last_err = e
@@ -259,7 +270,8 @@ def _ask_capable_json(state: ResearchState, config: RunnableConfig, prompt: str,
     for _ in range(retries + 1):
         for _round in range(ASK_MAX_ROUNDS):
             _check_stop(config)
-            response = llm.invoke(messages, tools=[ask_tool, use_skill])
+            response = llm.invoke(messages, tools=[ask_tool, use_skill],
+                                  max_output_tokens=JSON_NODE_MAX_OUTPUT)
             calls = getattr(response, "tool_calls", None) or []
             text = content_to_text(response.content) if response.content else ""
             if text:
@@ -351,18 +363,33 @@ def _make_collector_tools(task_id: str, user_id: int, new_count: dict,
     #采集员工具集：全部以闭包绑定 task_id/user_id，避免 InjectedState 依赖
     from langchain_core.tools import tool as _mk_tool
 
-    @_mk_tool
-    def archive_material(title: str, publisher: str, url: str, content: str,
-                         published_at: str = "") -> str:
-        """把一份采集到的材料（网页文章/财报数据/行情序列等）存入任务素材库，
-        供后续主张提取与证据检索引用。published_at 为材料的披露/发布日期（格式 YYYY-MM-DD），
-        无法确定时填空串。采集到有价值内容时必须调用本工具入库。"""
+    extract_cache: dict[str, str] = {}  #url -> 最近一次抓取的正文（限 5000 字），入库时服务端直接取用
+
+    def _fetch_text(url: str) -> str:
+        #优先最近一次 web_extract 的缓存，其次现场抓取（Tavily 优先、失败降级本地爬虫）
+        cached = extract_cache.get(url)
+        if cached:
+            return cached
+        text = _web_extract(url, user_id)[:5000]
+        extract_cache[url] = text
+        return text
+
+    def _do_archive(title: str, publisher: str, url: str, content: str,
+                    published_at: str) -> str:
         if len(store.list_materials(task_id)) >= MAX_MATERIALS_TOTAL:
             return f"素材已达总量上限 {MAX_MATERIALS_TOTAL} 份，无法继续入库"
         if new_count["n"] >= MAX_MATERIALS:
             return f"本轮新增已达上限 {MAX_MATERIALS} 份，停止入库（可下一轮任务再补）"
         if any(m["url"] and m["url"] == url for m in store.list_materials(task_id)):
             return f"该链接已入库（{url}），跳过重复"
+        if not (content or "").strip():
+            try:
+                content = _fetch_text(url)
+            except Exception as e:  # noqa: BLE001
+                return (f"服务端自动抓取正文失败（{e}）。请先用 web_extract 阅读该页，"
+                        "确认有内容后再用 archive_material 传入 content，或换一个可访问的链接")
+        if not (content or "").strip():
+            return "抓取到的正文为空，请换一个可访问的链接"
         seq = len(store.list_materials(task_id)) + 1
         _ingest_material(task_id, seq, (title or url or "未命名材料")[:200],
                          publisher or "", url or "", (content or "")[:5000],
@@ -371,8 +398,28 @@ def _make_collector_tools(task_id: str, user_id: int, new_count: dict,
         return f"已入库，材料编号 {seq}（素材库现有 {len(store.list_materials(task_id))} 份）"
 
     @_mk_tool
+    def fetch_and_archive(url: str, title: str = "", publisher: str = "",
+                          published_at: str = "") -> str:
+        """抓取指定网页正文并直接存入任务素材库（推荐优先使用，一步完成）。
+        url 必填；title/publisher/published_at 可选。正文由服务端自动抓取
+        （Tavily 优先，失败降级本地爬虫），你不需要也不应该自己编写或粘贴正文。
+        published_at 为披露/发布日期（格式 YYYY-MM-DD），无法确定时填空串。"""
+        return _do_archive(title, publisher, url, "", published_at)
+
+    @_mk_tool
+    def archive_material(title: str = "", publisher: str = "", url: str = "",
+                         content: str = "", published_at: str = "") -> str:
+        """把一份材料存入任务素材库。url 必填；content 通常留空，服务端会自动抓取正文。
+        仅当服务端抓取失败且你已通过 web_extract 读到正文时，才把 content 传入（最多 5000 字）。
+        published_at 为披露/发布日期（格式 YYYY-MM-DD），无法确定时填空串。"""
+        if not url:
+            return "url 不能为空"
+        return _do_archive(title, publisher, url, content, published_at)
+
+    @_mk_tool
     def web_search(query: str, max_results: int = 3) -> str:
-        """联网搜索，返回结果列表（标题/链接/摘要）。query 为搜索词。"""
+        """联网搜索，返回结果列表（标题/链接/摘要）。query 为搜索词。
+        每个响应最多调用一次本工具，一次只搜一个主题（把多个核查点拆成多次独立搜索会浪费预算）。"""
         max_results = max(1, min(int(max_results), 5))
         items = _web_search(query, user_id, max_results=max_results)
         return "\n\n".join(
@@ -382,11 +429,14 @@ def _make_collector_tools(task_id: str, user_id: int, new_count: dict,
 
     @_mk_tool
     def web_extract(url: str) -> str:
-        """读取指定网页的正文内容（前 5000 字）。当搜索结果摘要不够详细时使用。"""
+        """读取指定网页的正文内容（前 5000 字），供你阅读核对；不会自动入库。
+        需要入库时请用 fetch_and_archive（一步抓取+入库），不要先读再重复粘贴。"""
         try:
-            return _web_extract(url, user_id)[:5000]
+            text = _web_extract(url, user_id)[:5000]
         except Exception as e:  # noqa: BLE001
             return f"网页读取失败: {e}"
+        extract_cache[url] = text
+        return text
 
     @_mk_tool
     def query_financials(stock_code: str, report_date: str = "") -> str:
@@ -409,7 +459,7 @@ def _make_collector_tools(task_id: str, user_id: int, new_count: dict,
         from ..tools.datasource import list_data_sources as _lds  #延迟导入，保持加载顺序
         return _lds.func(user_id=user_id)
 
-    return [archive_material, web_search, web_extract, query_financials,
+    return [fetch_and_archive, archive_material, web_search, web_extract, query_financials,
             query_kline, list_data_sources,
             make_task_ask_tool(task_id, user_id, actor, node, stop_event=stop_event),
             use_skill]
@@ -434,10 +484,14 @@ def _run_collector_agent(state: ResearchState, config: RunnableConfig, tools: li
         _check_stop(config)
         if budget_exhausted:
             #搜索预算用尽：不带工具再问一次，强制输出总结并结束
-            response = llm.invoke(messages, tools=None)
+            response = llm.invoke(messages, tools=None,
+                                  max_output_tokens=TOOL_LOOP_MAX_OUTPUT,
+                                  reasoning="low")
             summary = content_to_text(response.content) if response.content else summary
             break
-        response = llm.invoke(messages, tools=tools)
+        response = llm.invoke(messages, tools=tools,
+                              max_output_tokens=TOOL_LOOP_MAX_OUTPUT,
+                              reasoning="low")
         calls = getattr(response, "tool_calls", None) or []
         #Responses API 原生服务端搜索：web_search_call 输出块 -> 研究动态里的搜索卡片
         cards = extract_web_search_calls(response.content)
@@ -450,6 +504,11 @@ def _run_collector_agent(state: ResearchState, config: RunnableConfig, tools: li
                   speech=f"DeepSeek 服务端已完成搜索，打开 {len(urls)} 个来源页面，模型将据此采集材料。",
                   details=[{"label": f"来源 {i + 1}", "text": u} for i, u in enumerate(urls[:5])],
                   metrics=[{"label": "来源数", "value": str(len(urls))}])
+        if len(cards) >= 2 and not budget_exhausted:
+            #连环搜索约束：同一响应里已发起多次服务端检索，提示下一轮收敛，避免反复搜索拖时间
+            messages.append(HumanMessage(
+                content="你刚在一个响应里发起了多次联网检索。为节省时间，后续每轮最多执行 1 次联网检索；"
+                        "优先用 fetch_and_archive 把已获得的链接直接抓取入库。"))
         if not calls:
             summary = content_to_text(response.content) if response.content else summary
             break
@@ -685,9 +744,21 @@ def retrieve_node(state: ResearchState, config: RunnableConfig) -> dict:
     guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 55)
     llm = _llm(config)
     total = 0
-    for claim in state["claims"]:
-        _check_stop(config)
-        total += _match_evidence(task_id, claim, llm)
+    claims = list(state["claims"])
+    if len(claims) <= 1:
+        for claim in claims:
+            _check_stop(config)
+            total += _match_evidence(task_id, claim, llm)
+    else:
+        #并行化：每条主张独立检索+LLM 判定，4 个并发显著压缩串行耗时
+        #（向量库已改为进程内单例，SQLite 连接每次新建，线程安全）
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        workers = min(4, len(claims))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_match_evidence, task_id, c, llm) for c in claims]
+            for fut in as_completed(futures):
+                _check_stop(config)
+                total += fut.result()
     store.bump_progress(task_id, 55)
     _emit(config, "retriever", "progress",
           title="证据检索完成", speech=f"已为各主张匹配到 {total} 条原文证据。",
@@ -869,7 +940,8 @@ def _run_review_agent(state: ResearchState, config: RunnableConfig, tools: list,
     task_id = state["task_id"]
     for _round in range(REVIEW_MAX_ROUNDS):
         _check_stop(config)
-        response = llm.invoke(messages, tools=tools)
+        response = llm.invoke(messages, tools=tools,
+                              max_output_tokens=TOOL_LOOP_MAX_OUTPUT)
         calls = getattr(response, "tool_calls", None) or []
         last_text = content_to_text(response.content) if response.content else last_text
         if not calls:
@@ -987,7 +1059,8 @@ def _generate_report_structure(llm: ChatClient, task: dict, claims: list[dict]) 
         lines.append(f"- [{STATUS_LABEL.get(c['status'], c['status'])}] {c['statement']}（{verdict or '无结论'}{extra}）")
     try:
         data = _llm_json(llm, prompts.REPORT_STRUCTURE_PROMPT.format(
-            topic=task["topic"], claims="\n".join(lines)[:3000]))
+            topic=task["topic"], claims="\n".join(lines)[:3000]),
+            max_output_tokens=JSON_NODE_MAX_OUTPUT, reasoning="high")
     except Exception:
         return None
     return {
