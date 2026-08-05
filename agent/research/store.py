@@ -7,13 +7,37 @@ init_db()
 
 
 def _next_task_id(conn) -> str:
-    #任务编号 FS-年份-序号（年内递增，3 位起步）
+    #任务编号 FS-年份-序号（年内递增，3 位起步）。
+    #用独立序号表 research_task_seq 持久化历史最大值，并回扫 research_tasks /
+    #flow_errors / task_node_runs 里的遗留编号（删除任务不会清后两张表）。
+    #这样已用过的编号永不复用，避免旧错误记录串进新任务
     from datetime import datetime
     year = datetime.now().year
-    row = conn.execute(
-        "SELECT COUNT(*) AS n FROM research_tasks WHERE task_id LIKE ?", (f"FS-{year}-%",)
-    ).fetchone()
-    return f"FS-{year}-{row['n'] + 1:03d}"
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS research_task_seq"
+        " (year INTEGER PRIMARY KEY, last_seq INTEGER NOT NULL DEFAULT 0)"
+    )
+    seen = 0
+    for table, col in (("research_tasks", "task_id"), ("flow_errors", "flow_id"),
+                       ("task_node_runs", "task_id")):
+        try:
+            rows = conn.execute(
+                f"SELECT {col} AS tid FROM {table} WHERE {col} LIKE ?", (f"FS-{year}-%",)
+            ).fetchall()
+        except Exception:  # noqa: BLE001 表尚未创建（如旧库迁移中）
+            continue
+        for row in rows:
+            parts = str(row["tid"]).split("-")
+            if len(parts) == 3 and parts[1] == str(year) and parts[2].isdigit():
+                seen = max(seen, int(parts[2]))
+    row = conn.execute("SELECT last_seq FROM research_task_seq WHERE year=?", (year,)).fetchone()
+    seq = max(seen, row["last_seq"] if row else 0) + 1
+    conn.execute(
+        "INSERT INTO research_task_seq (year, last_seq) VALUES (?,?)"
+        " ON CONFLICT(year) DO UPDATE SET last_seq=excluded.last_seq",
+        (year, seq)
+    )
+    return f"FS-{year}-{seq:03d}"
 
 
 def create_task(user_id: int, title: str, topic: str, company: str = "",

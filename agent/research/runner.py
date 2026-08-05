@@ -90,7 +90,8 @@ def start_task(task_id: str, user_id: int, *,
         error_id: int | None = None
         message = ""
         try:
-            _run_pipeline(task_id, user_id, entry["stop"], emit)
+            _run_pipeline(task_id, user_id, entry["stop"], emit,
+                          repair_error_id=repair_error_id)
             if repair_error_id:
                 mark_repaired(repair_error_id, user_id, "研究流水线重启后已成功完成")
         except TaskStopped:
@@ -134,8 +135,10 @@ def start_task(task_id: str, user_id: int, *,
 
 
 def _run_pipeline(task_id: str, user_id: int, stop: threading.Event,
-                  emit) -> None:
-    #执行整条研究流水线；节点级重试已在图内（_node_with_retry），失败异常上抛由 run() 收尾
+                  emit, *, repair_error_id: int | None = None) -> None:
+    #执行整条研究流水线；节点级重试已在图内（_node_with_retry），失败异常上抛由 run() 收尾。
+    #自动修复（repair_error_id 非空）时强制切换采集策略为确定性备用方案，
+    #避免“原样重跑→同样的 0 素材/解析失败”循环
     task = store.get_task(task_id, user_id)
     initial = {
         "task_id": task_id, "user_id": user_id,
@@ -143,6 +146,7 @@ def _run_pipeline(task_id: str, user_id: int, stop: threading.Event,
         "research_type": task["research_type"],
         "preferred_sources": task["preferred_sources"],
         "materials": [], "retry_count": 0, "need_retry": False,
+        "collect_strategy": "fallback" if repair_error_id is not None else "agent",
     }
     config = {"configurable": {"emit": emit, "stop_event": stop, "user_id": user_id}}
     research_graph.invoke(initial, config=config)

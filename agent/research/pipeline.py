@@ -52,6 +52,11 @@ TOOL_LOOP_MAX_OUTPUT = 6000
 JSON_NODE_MAX_OUTPUT = 8192
 LLM_JSON_MAX_OUTPUT = 4096
 
+#服务端原生联网搜索结果的自动归档上限：每个 LLM 响应最多自动抓取 2 个来源
+AUTO_ARCHIVE_PER_RESPONSE = 2
+#确定性备用采集方案的最大来源数（0 素材时不依赖 LLM，直接检索抓取）
+FALLBACK_MAX_SOURCES = 6
+
 #金融研究框架：用于选择企业/政策分析框架并组织底稿模块
 _COMPANY_HINTS = ("company", "enterprise", "经营质量", "企业", "公司", "基本面", "尽调", "财务")
 _POLICY_HINTS = ("policy", "政策", "监管", "规定", "制度", "规则", "法规")
@@ -114,6 +119,7 @@ class ResearchState(TypedDict, total=False):
     retry_count: int
     need_retry: bool
     guidance: list[str]       #研究员中途介入指令（各节点边界消费并累计，verify 统一拼入提示词）
+    collect_strategy: str     #采集策略：agent（LLM 自主采集）/ fallback（确定性检索兜底）
 
 
 #节点（子智能体）重试机制：单节点失败按固定退避重启该节点（子智能体），重试耗尽后抛出
@@ -358,6 +364,58 @@ COLLECTOR_MAX_SEARCHES = 12  #采集员单任务服务端联网搜索次数预�
 DEEPEN_MAX_SEARCHES = 4      #深挖员单条主张服务端联网搜索次数预算
 
 
+def _fallback_collect(task_id: str, user_id: int, keywords: list[str],
+                      config: RunnableConfig, actor: str = "collector",
+                      node: str = "collect") -> int:
+    #确定性备用采集：不走 LLM，按关键词直接联网检索并抓取正文入库。
+    #用于（1）采集员未产生任何材料的兜底；（2）自动修复后强制切换的采集策略
+    _emit(config, actor, "progress", title="启用备用采集方案",
+          speech="采集员未产生任何材料，切换为确定性检索：按关键词直接联网检索并抓取正文入库。",
+          details=[{"label": "检索词", "text": k} for k in keywords],
+          metrics=[], progress=None)
+    added = 0
+    existing = {m["url"] for m in store.list_materials(task_id)}
+    fetched = 0
+    for kw in keywords[:MAX_KEYWORDS]:
+        if len(store.list_materials(task_id)) >= MAX_MATERIALS_TOTAL:
+            break
+        try:
+            items = _web_search(kw, user_id, max_results=3)
+        except Exception as e:  # noqa: BLE001
+            _emit(config, actor, "warning", title="备用检索失败",
+                  speech=f"关键词「{kw}」检索失败：{e}", details=[], metrics=[], progress=None)
+            continue
+        store.append_tool_trace(
+            task_id, actor, node, "fallback_search", {"query": kw, "max_results": 3},
+            "、".join(i.get("url", "") for i in items) or "无结果")
+        for item in items:
+            if fetched >= FALLBACK_MAX_SOURCES or len(store.list_materials(task_id)) >= MAX_MATERIALS_TOTAL:
+                break
+            url = str(item.get("url", "")).split("#")[0]
+            if not url or url in existing:
+                continue
+            title = str(item.get("title", ""))
+            try:
+                content = _web_extract(url, user_id)[:5000]
+            except Exception:  # noqa: BLE001
+                content = str(item.get("content", ""))[:5000]  #正文抓取失败时退化为搜索摘要
+            if not content.strip():
+                continue
+            publisher = url.split("/")[2] if "://" in url else url
+            seq = len(store.list_materials(task_id)) + 1
+            _ingest_material(task_id, seq, (title or url)[:200], publisher, url, content)
+            existing.add(url)
+            added += 1
+            fetched += 1
+            store.append_tool_trace(task_id, actor, node, "fallback_extract",
+                                    {"url": url}, f"已入库，材料编号 {seq}")
+    if added:
+        _emit(config, actor, "progress", title="备用采集完成",
+              speech=f"已通过确定性检索归档 {added} 份材料。",
+              details=[], metrics=[{"label": "新增素材", "value": str(added)}], progress=None)
+    return added
+
+
 def _make_collector_tools(task_id: str, user_id: int, new_count: dict,
                           stop_event, actor: str = "collector", node: str = "collect") -> list:
     #采集员工具集：全部以闭包绑定 task_id/user_id，避免 InjectedState 依赖
@@ -468,11 +526,15 @@ def _make_collector_tools(task_id: str, user_id: int, new_count: dict,
 def _run_collector_agent(state: ResearchState, config: RunnableConfig, tools: list, prompt: str,
                          *, actor: str = "collector", node: str = "collect",
                          max_rounds: int = COLLECTOR_MAX_ROUNDS,
-                         max_searches: int = COLLECTOR_MAX_SEARCHES) -> str:
+                         max_searches: int = COLLECTOR_MAX_SEARCHES,
+                         new_count: dict | None = None,
+                         auto_archive: bool = True) -> str:
     #受限工具集 agent 循环：LLM 自主选工具取数并入库；无工具调用视为完成；
     #每轮检查 stop_event，轮次硬上限 COLLECTOR_MAX_ROUNDS 防失控；
     #服务端联网搜索按 max_searches 做预算：用尽后强制不带工具总结，避免反复检索拖长时间；
-    #每次工具调用写入 agent_tool_traces，供 /tasks/{id}/agents/{agent} 还原完整执行过程
+    #每次工具调用写入 agent_tool_traces，供 /tasks/{id}/agents/{agent} 还原完整执行过程；
+    #服务端原生 web_search 的结果不再只展示卡片：auto_archive=True 时自动抓取并归档，
+    #避免“模型没调 archive 就判定采集完成”导致 0 素材推进
     llm = _llm(config)
     by_name = {t.name: t for t in tools}
     messages: list = [SystemMessage(content=prompt)]
@@ -480,6 +542,31 @@ def _run_collector_agent(state: ResearchState, config: RunnableConfig, tools: li
     task_id = state["task_id"]
     searches = 0
     budget_exhausted = False
+
+    def _auto_archive(urls: list[str]) -> int:
+        #把服务端原生搜索返回的来源 URL 自动抓取并入库（复用 fetch_and_archive 的上限/去重逻辑）
+        n = 0
+        for url in urls:
+            if n >= AUTO_ARCHIVE_PER_RESPONSE:
+                break
+            if len(store.list_materials(task_id)) >= MAX_MATERIALS_TOTAL:
+                break
+            if new_count is not None and new_count["n"] >= MAX_MATERIALS:
+                break
+            if any(m["url"] == url for m in store.list_materials(task_id)):
+                continue
+            tool = by_name.get("fetch_and_archive") or by_name.get("archive_material")
+            if tool is None:
+                break
+            try:
+                result = str(tool.invoke({"url": url}))
+            except Exception as e:  # noqa: BLE001
+                result = f"自动归档失败: {e}"
+            store.append_tool_trace(task_id, actor, node, "auto_archive", {"url": url}, result)
+            if "已入库" in result:
+                n += 1
+        return n
+
     for _round in range(max_rounds):
         _check_stop(config)
         if budget_exhausted:
@@ -504,15 +591,26 @@ def _run_collector_agent(state: ResearchState, config: RunnableConfig, tools: li
                   speech=f"DeepSeek 服务端已完成搜索，打开 {len(urls)} 个来源页面，模型将据此采集材料。",
                   details=[{"label": f"来源 {i + 1}", "text": u} for i, u in enumerate(urls[:5])],
                   metrics=[{"label": "来源数", "value": str(len(urls))}])
+        auto_added = 0
+        if auto_archive:
+            for card in cards:
+                auto_added += _auto_archive(card["urls"])
         if len(cards) >= 2 and not budget_exhausted:
             #连环搜索约束：同一响应里已发起多次服务端检索，提示下一轮收敛，避免反复搜索拖时间
             messages.append(HumanMessage(
                 content="你刚在一个响应里发起了多次联网检索。为节省时间，后续每轮最多执行 1 次联网检索；"
                         "优先用 fetch_and_archive 把已获得的链接直接抓取入库。"))
+        messages.append(response)
         if not calls:
             summary = content_to_text(response.content) if response.content else summary
+            if auto_added > 0 and _round < max_rounds - 1:
+                #模型没调工具但服务端搜索已自动归档：让模型基于材料收尾或继续补采，不再直接判完成
+                messages.append(HumanMessage(
+                    content=f"已自动归档 {auto_added} 份服务端搜索到的材料。"
+                            "若材料已覆盖核查点，请直接输出简短的采集总结；"
+                            "若仍有缺口，可继续调用工具补采（每轮最多 1 次联网检索）。"))
+                continue
             break
-        messages.append(response)
         for tc in calls:
             _check_stop(config)
             name, args = tc["name"], tc.get("args") or {}
@@ -541,6 +639,7 @@ def collect_node(state: ResearchState, config: RunnableConfig) -> dict:
     guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 25)
     #首轮取图状态；建任务时绑定的用户附件已在库中，从库里带出来（含正文，供主张提取）
     materials: list[dict] = list(state.get("materials") or store.list_materials(task_id))
+    initial_total = len(materials)
     new_count = {"n": 0}
     prompt = COLLECTOR_PROMPT.format(
         topic=state["topic"], company=state["company"] or "未指定",
@@ -550,17 +649,32 @@ def collect_node(state: ResearchState, config: RunnableConfig) -> dict:
         max_materials_total=MAX_MATERIALS_TOTAL, max_materials=MAX_MATERIALS,
         qa_context=_qa_context(task_id),
     )
-    _run_collector_agent(state, config, _make_collector_tools(
-        task_id, state["user_id"], new_count,
-        config["configurable"]["stop_event"], actor="collector", node="collect"),
-                         prompt, actor="collector", node="collect")
+    strategy = state.get("collect_strategy") or "agent"
+    if strategy == "fallback":
+        #自动修复后强制切换的确定性采集策略：不再走 LLM 自主采集
+        _fallback_collect(task_id, state["user_id"], state["keywords"], config,
+                          actor="collector", node="collect")
+    else:
+        _run_collector_agent(state, config, _make_collector_tools(
+            task_id, state["user_id"], new_count,
+            config["configurable"]["stop_event"], actor="collector", node="collect"),
+                             prompt, actor="collector", node="collect", new_count=new_count)
     materials = store.list_materials(task_id)  #重拉全量（采集员入库后，含首轮附件）
+    if len(materials) == 0:
+        #模型没有产生任何材料：不能直接判完成，触发确定性备用采集方案
+        _fallback_collect(task_id, state["user_id"], state["keywords"], config,
+                          actor="collector", node="collect")
+        materials = store.list_materials(task_id)
+    if len(materials) == 0:
+        #备用方案也未产生材料：判定节点失败（重试耗尽后由 runner 自动修复，修复仍走备用策略）
+        raise RuntimeError("未能采集到任何公开信源材料（LLM 采集与确定性备用方案均未产生素材）")
+    added_total = len(materials) - initial_total
     store.bump_progress(task_id, 25)
     _emit(config, "collector", "progress",
           title="公开信源与金融数据采集完成",
-          speech=f"已采集 {new_count['n']} 份新材料（累计 {len(materials)} 份）并存档至知识库。",
+          speech=f"已采集 {added_total} 份新材料（累计 {len(materials)} 份）并存档至知识库。",
           details=[{"label": m["title"] or m["url"], "text": m["url"]}
-                   for m in materials[len(materials) - min(new_count["n"], 5):]],
+                   for m in materials[len(materials) - min(added_total, 5):]],
           metrics=[{"label": "累计素材", "value": str(len(materials))}], progress=25)
     return {"materials": materials, "guidance": guidance}
 
@@ -800,7 +914,8 @@ def deepen_node(state: ResearchState, config: RunnableConfig) -> dict:
             config["configurable"]["stop_event"], actor="deepener", node="deepen"),
                              prompt, actor="deepener", node="deepen",
                              max_rounds=DEEPEN_MAX_ROUNDS,
-                             max_searches=DEEPEN_MAX_SEARCHES)
+                             max_searches=DEEPEN_MAX_SEARCHES,
+                             new_count=new_count)
         _match_evidence(task_id, claim, llm, num=3)  #新素材入库后立即重新匹配证据
     new_sources = new_count["n"]
     store.bump_progress(task_id, 62)
