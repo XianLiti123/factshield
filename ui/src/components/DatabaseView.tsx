@@ -5,6 +5,7 @@ import {
   CheckCircleFilled,
   ClockCircleOutlined,
   DatabaseOutlined,
+  LinkOutlined,
   ReloadOutlined,
   SearchOutlined,
   ToolOutlined,
@@ -42,6 +43,11 @@ type ChannelMeta = {
   description: string
   icon: ReactNode
   tone: string
+}
+
+type SourceLink = {
+  label: string
+  url: string
 }
 
 const CHANNEL_META: Record<ChannelKey, ChannelMeta> = {
@@ -158,6 +164,39 @@ function splitAnswer(answer: string): Record<ChannelKey, string> {
   return result
 }
 
+function cleanSourceUrl(value: string) {
+  return value.trim().replace(/[\]}>),.;，。；！？、]+$/g, '')
+}
+
+function sourceLabel(url: string, fallback?: string) {
+  const normalizedFallback = fallback?.trim()
+  if (normalizedFallback && normalizedFallback !== url) return normalizedFallback
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return '查看原始来源'
+  }
+}
+
+function extractSourceLinks(content: string, tools: string[]): SourceLink[] {
+  const links = new Map<string, SourceLink>()
+  const combined = [content, ...tools].filter(Boolean).join('\n')
+  const markdownLink = /\[([^\]]+)]\((https?:\/\/[^\s)]+)\)/g
+
+  for (const match of combined.matchAll(markdownLink)) {
+    const url = cleanSourceUrl(match[2])
+    if (url) links.set(url, { label: sourceLabel(url, match[1]), url })
+  }
+
+  const rawUrl = /https?:\/\/[^\s<>"'`]+/g
+  for (const match of combined.matchAll(rawUrl)) {
+    const url = cleanSourceUrl(match[0])
+    if (url && !links.has(url)) links.set(url, { label: sourceLabel(url), url })
+  }
+
+  return [...links.values()]
+}
+
 function buildSearchPrompt(query: string) {
   return `你是 FactShield 的三路资料检索助手。请围绕下面的问题进行真实检索，并把结果整理成可核对的事实：
 
@@ -175,7 +214,7 @@ function buildSearchPrompt(query: string) {
 ## 数据库检索
 检索历史研究、知识库或本地资料，列出匹配内容和可追溯线索；没有匹配时明确说明。
 
-每部分都要区分“查到的内容”和“限制”，不要编造数据。最后可补充一段简短的交叉核对结论。`
+每部分都要区分“查到的内容”和“限制”，不要编造数据。凡是检索工具实际返回了网页、公告、报告或数据页面 URL，必须在对应部分保留完整 URL，并写成 Markdown 链接；不得编造或补全工具未返回的链接。最后可补充一段简短的交叉核对结论。`
 }
 
 function formatTime(value: string) {
@@ -335,6 +374,7 @@ export function DatabaseView({ userId }: { userId: number }) {
               const meta = CHANNEL_META[key]
               const content = sections[key]
               const liveContent = content || (loading && key === 'web' ? answer : '')
+              const sourceLinks = extractSourceLinks(liveContent, channelTools[key])
               return (
                 <article className={`database-channel-card ${meta.tone}`} key={key}>
                   <header>
@@ -358,6 +398,18 @@ export function DatabaseView({ userId }: { userId: number }) {
                     {!loading && answer && channelTools[key].length === 0 && <div className="database-channel-notice">本次 Agent 没有调用这类检索工具，下方文字仅是模型返回的分段内容。</div>}
                     {liveContent ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{liveContent}</ReactMarkdown> : loading ? <div className="database-channel-placeholder"><Spin /><span>等待模型返回这一类资料…</span></div> : <p>模型没有返回明确的分段内容，请查看其他结果或重新提问。</p>}
                   </div>
+                  {!loading && liveContent && (
+                    <footer className="database-source-links">
+                      <div><LinkOutlined /><strong>来源链接</strong><span>{sourceLinks.length > 0 ? `${sourceLinks.length} 项` : '暂无'}</span></div>
+                      {sourceLinks.length > 0 ? (
+                        <nav>{sourceLinks.map((source, index) => (
+                          <a href={source.url} target="_blank" rel="noreferrer" key={source.url} title={source.url}>
+                            <span>{index + 1}</span><strong>{source.label}</strong><LinkOutlined />
+                          </a>
+                        ))}</nav>
+                      ) : <p>本次检索没有返回可跳转的原始 URL</p>}
+                    </footer>
+                  )}
                 </article>
               )
             })}

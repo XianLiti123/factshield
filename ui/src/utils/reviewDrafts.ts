@@ -65,6 +65,20 @@ export function readReopenedReviewIds(taskId: string) {
   }
 }
 
+export function getEffectiveReviewedClaimIds(
+  taskId: string,
+  reviewClaimIds: string[],
+  backendReviewedClaimIds: string[],
+) {
+  const draftClaimIds = new Set(Object.keys(readReviewDrafts(taskId)))
+  const reviewedClaimIds = new Set(backendReviewedClaimIds)
+  const reopenedClaimIds = new Set(readReopenedReviewIds(taskId))
+  return reviewClaimIds.filter((claimId) => (
+    !reopenedClaimIds.has(claimId)
+    && (reviewedClaimIds.has(claimId) || draftClaimIds.has(claimId))
+  ))
+}
+
 export function persistReopenedReviewIds(taskId: string, claimIds: string[]) {
   try {
     const key = `${REOPENED_REVIEWS_STORAGE_PREFIX}${taskId}`

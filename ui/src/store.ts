@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { ResearchRun } from './types'
-import { readReopenedReviewIds } from './utils/reviewDrafts'
+import { getEffectiveReviewedClaimIds, readReopenedReviewIds } from './utils/reviewDrafts'
 
 export type ViewName = 'tasks' | 'workbench' | 'topology' | 'analytics' | 'reports' | 'database' | 'settings'
 export type TaskPhase = 'draft' | 'running' | 'review' | 'ready' | 'stopped' | 'failed'
@@ -119,6 +119,7 @@ interface WorkspaceStore {
   selectClaim: (id: string) => void
   finishResearch: (firstPendingClaimId?: string) => void
   resolveClaim: (claimId: string, nextClaimId?: string) => void
+  setReviewClaimDrafted: (taskId: string, claimId: string, reviewed: boolean) => void
   openReviewQueue: (claimId?: string, taskId?: string) => void
   openSearchResult: (focus: SearchFocus) => void
   advanceRunningTasks: () => void
@@ -285,6 +286,18 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       }
     }),
   })),
+  setReviewClaimDrafted: (taskId, claimId, reviewed) => set((state) => ({
+    tasks: updateTask(state.tasks, taskId, (task) => ({
+      ...task,
+      reviewedClaimIds: reviewed
+        ? task.reviewedClaimIds.includes(claimId)
+          ? task.reviewedClaimIds
+          : [...task.reviewedClaimIds, claimId]
+        : task.reviewedClaimIds.filter((id) => id !== claimId),
+      phase: !reviewed && task.phase === 'ready' ? 'review' : task.phase,
+      updatedAt: '刚刚',
+    })),
+  })),
   openReviewQueue: (claimId, taskId) => set((state) => {
     const activeTaskId = taskId ?? state.activeTaskId
     return {
@@ -419,9 +432,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       const reviewClaimIds = run.claims
         .filter((claim) => claim.status !== 'verified' || Boolean(claim.humanAction))
         .map((claim) => claim.id)
-      const reviewedClaimIds = run.claims
+      const backendReviewedClaimIds = run.claims
         .filter((claim) => Boolean(claim.humanAction) && !reopenedReviewIds.includes(claim.id))
         .map((claim) => claim.id)
+      const reviewedClaimIds = getEffectiveReviewedClaimIds(run.id, reviewClaimIds, backendReviewedClaimIds)
       const phase = getResearchRunPhase(run)
       return {
         ...task,

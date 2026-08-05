@@ -1,6 +1,6 @@
 import { getResearchRunPhase, type ResearchTaskSession, type TaskPhase } from '../store'
 import type { AgentQuestion, ResearchRun } from '../types'
-import { readReopenedReviewIds } from '../utils/reviewDrafts'
+import { getEffectiveReviewedClaimIds, readReopenedReviewIds } from '../utils/reviewDrafts'
 
 const TOKEN_KEY = 'factshield.auth.token'
 const SESSION_KEY_PREFIX = 'factshield.chat.session.'
@@ -205,22 +205,34 @@ export function setToken(token: string | null) {
   else window.localStorage.removeItem(TOKEN_KEY)
 }
 
-function rememberResearchProgress(taskId: string, progress: number | null | undefined) {
-  const nextProgress = Math.min(100, Math.max(0, Number(progress) || 0))
+function getResearchProgressKey(taskId: string, createdAt: string) {
+  return `${RESEARCH_PROGRESS_KEY_PREFIX}${taskId}.${encodeURIComponent(createdAt)}`
+}
+
+function rememberResearchProgress(taskId: string, createdAt: string, progress: number | null | undefined) {
   try {
-    const key = `${RESEARCH_PROGRESS_KEY_PREFIX}${taskId}`
+    const legacyKey = `${RESEARCH_PROGRESS_KEY_PREFIX}${taskId}`
+    const key = getResearchProgressKey(taskId, createdAt)
     const storedProgress = Number(window.localStorage.getItem(key)) || 0
+    window.localStorage.removeItem(legacyKey)
+    if (progress == null || !Number.isFinite(Number(progress))) return storedProgress
+    const nextProgress = Math.min(100, Math.max(0, Number(progress)))
     const displayProgress = Math.max(storedProgress, nextProgress)
     window.localStorage.setItem(key, String(displayProgress))
     return displayProgress
   } catch {
-    return nextProgress
+    if (progress == null || !Number.isFinite(Number(progress))) return 0
+    return Math.min(100, Math.max(0, Number(progress)))
   }
 }
 
 function forgetResearchProgress(taskId: string) {
   try {
-    window.localStorage.removeItem(`${RESEARCH_PROGRESS_KEY_PREFIX}${taskId}`)
+    const legacyKey = `${RESEARCH_PROGRESS_KEY_PREFIX}${taskId}`
+    const scopedKeyPrefix = `${legacyKey}.`
+    Object.keys(window.localStorage).forEach((key) => {
+      if (key === legacyKey || key.startsWith(scopedKeyPrefix)) window.localStorage.removeItem(key)
+    })
   } catch {
     // Storage may be unavailable in private browsing; task deletion still succeeds.
   }
@@ -527,7 +539,7 @@ const taskTypeLabels: Record<string, string> = {
 }
 
 function toWorkspaceTask(task: ApiTask): ResearchTaskSession {
-  const displayProgress = rememberResearchProgress(task.id, task.progress)
+  const displayProgress = rememberResearchProgress(task.id, task.createdAt, task.progress)
   const supportedPhases: TaskPhase[] = ['running', 'review', 'ready', 'stopped', 'failed']
   const reportedPhase: TaskPhase = supportedPhases.includes(task.status as TaskPhase) ? task.status as TaskPhase : 'draft'
   const phase: TaskPhase = (reportedPhase === 'review' || reportedPhase === 'ready')
@@ -570,9 +582,10 @@ export async function listTasks() {
       const reviewClaimIds = run.claims
         .filter((claim) => claim.status !== 'verified' || Boolean(claim.humanAction))
         .map((claim) => claim.id)
-      const reviewedClaimIds = run.claims
+      const backendReviewedClaimIds = run.claims
         .filter((claim) => Boolean(claim.humanAction) && !reopenedReviewIds.includes(claim.id))
         .map((claim) => claim.id)
+      const reviewedClaimIds = getEffectiveReviewedClaimIds(task.id, reviewClaimIds, backendReviewedClaimIds)
       const phase = reopenedReviewIds.length > 0 ? 'review' : getResearchRunPhase(run)
       return {
         ...task,
@@ -626,7 +639,7 @@ export async function getTask(taskId: string) {
   if (run.id !== taskId) {
     throw new ApiError(`任务详情返回了错误的任务编号：请求 ${taskId}，实际收到 ${run.id}`, 409)
   }
-  return { ...run, progress: rememberResearchProgress(taskId, run.progress) }
+  return { ...run, progress: rememberResearchProgress(taskId, run.createdAt, run.progress) }
 }
 export const stopTask = (taskId: string) => request<{ status: string; task_id: string }>(`/api/tasks/${taskId}/stop`, { method: 'POST' })
 export const guideTask = (taskId: string, instruction: string) => request<{ status: string; task_id: string }>(
@@ -850,6 +863,7 @@ export const attachHistoryAnalysis = (taskId: string) => request<{ status: strin
 
 export async function streamTaskEvents(
   taskId: string,
+  createdAt: string,
   onEvent: (event: ResearchEvent) => void,
   signal?: AbortSignal,
 ) {
@@ -872,7 +886,9 @@ export async function streamTaskEvents(
       const data = block.split(/\r?\n/).find((line) => line.startsWith('data:'))?.slice(5).trim()
       if (data) {
         const event = JSON.parse(data) as ResearchEvent
-        rememberResearchProgress(taskId, event.payload.progress)
+        if (event.payload.progress != null) {
+          rememberResearchProgress(taskId, createdAt, event.payload.progress)
+        }
         onEvent(event)
       }
     }
@@ -887,14 +903,18 @@ export async function streamChat(
   onEvent: (event: StreamEvent) => void,
 ) {
   const { scopedKey: sessionKey, legacyKey, sessionId: savedSessionId } = getStoredChatSession(taskId, userId)
-  let storedSession = savedSessionId
+  // The backend identifies three-way data retrieval sessions by this prefix and
+  // removes ask_user from their toolset. Send the scoped id itself instead of a
+  // server-generated chat id, including on the first search.
+  const fixedSessionId = taskId.startsWith('database-') ? taskId : null
+  let storedSession = fixedSessionId ?? savedSessionId
   const send = (sessionId: string | null) => fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken() ?? ''}` },
       body: JSON.stringify({ message, session_id: sessionId }),
     })
   let response = await send(storedSession)
-  if (response.status === 404 && storedSession) {
+  if (response.status === 404 && storedSession && !fixedSessionId) {
     window.localStorage.removeItem(sessionKey)
     if (window.localStorage.getItem(legacyKey) === storedSession) window.localStorage.removeItem(legacyKey)
     storedSession = null

@@ -275,7 +275,7 @@ function ClaimList({
             </div>
             <p>{getClaimDisplayStatement(claim)}</p>
             <div className="claim-item-footer">
-              <span>{isClaimRemoved(claim) ? '不进入最终结论' : claim.issueType ?? claim.category}</span><span>{claim.evidenceIds.length} 条证据</span>
+              <span title={claim.conflictReason || undefined}>{isClaimRemoved(claim) ? '不进入最终结论' : getClaimIssueLabel(claim)}</span><span>{claim.evidenceIds.length} 条证据</span>
             </div>
           </button>
         ))}
@@ -286,6 +286,13 @@ function ClaimList({
       </div>
     </section>
   )
+}
+
+function getClaimIssueLabel(claim: Claim) {
+  const issueType = claim.issueType?.trim()
+  if (!issueType || issueType === '无') return claim.status === 'verified' ? claim.category : '需要复核'
+  if (claim.evidenceIds.length > 0 && issueType.includes('证据缺失')) return '直接证据不足'
+  return issueType
 }
 
 function EvidenceCard({ evidence, active, onClick }: { evidence: Evidence; active: boolean; onClick: () => void }) {
@@ -323,6 +330,31 @@ function getEvidenceSourceUrl(evidence: Evidence) {
   }
 }
 
+function getEvidenceDisclosureDate(evidence: Evidence) {
+  const publishedAt = evidence.publishedAt.trim()
+  if (publishedAt) return publishedAt.match(/(?:19|20)\d{2}-\d{2}-\d{2}/)?.[0] ?? publishedAt
+
+  const sourceUrl = evidence.url?.trim()
+  if (!sourceUrl) return '来源未提供'
+  const dateSources = [
+    sourceUrl.match(/(?:^|\D)((?:19|20)\d{2})[\/_-](\d{1,2})[\/_-](\d{1,2})(?:\D|$)/),
+    sourceUrl.match(/(?:^|\D)((?:19|20)\d{2})[\/_-](\d{2})(\d{2})(?:\D|$)/),
+    sourceUrl.match(/(?:^|\D)((?:19|20)\d{2})(\d{2})(\d{2})(?:\D|$)/),
+  ]
+
+  for (const matched of dateSources) {
+    if (!matched) continue
+    const year = Number(matched[1])
+    const month = Number(matched[2])
+    const day = Number(matched[3])
+    const date = new Date(Date.UTC(year, month - 1, day))
+    if (date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day) {
+      return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+    }
+  }
+  return '来源未提供'
+}
+
 function openEvidenceSource(sourceUrl: string) {
   const sourceWindow = window.open(sourceUrl, '_blank')
   if (sourceWindow) sourceWindow.opener = null
@@ -339,6 +371,8 @@ function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: E
   const selectedEvidence = evidenceList.find((item) => item.id === selectedEvidenceId) ?? evidenceList[0]
   const selectedEvidenceName = selectedEvidence ? getEvidenceDisplayName(selectedEvidence) : ''
   const selectedSourceUrl = selectedEvidence ? getEvidenceSourceUrl(selectedEvidence) : null
+  const selectedDisclosureDate = selectedEvidence ? getEvidenceDisclosureDate(selectedEvidence) : '来源未提供'
+  const selectedLocator = selectedEvidence?.locator?.trim() || '位置未标注'
   const selectedCredibilityLevel = selectedEvidence && ['高', '中', '低'].includes(selectedEvidence.credibilityLevel)
     ? selectedEvidence.credibilityLevel
     : '未标注'
@@ -433,8 +467,8 @@ function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: E
           <div className="document-brand">{selectedEvidence.publisher}</div>
           <h3>{selectedEvidenceName}</h3>
           <div className="document-meta">
-            <span>披露日期：{selectedEvidence.publishedAt}</span>
-            <span>证据定位：{selectedEvidence.locator}</span>
+            <span>披露日期：{selectedDisclosureDate}</span>
+            <span>证据定位：{selectedLocator}</span>
           </div>
           <p>公司坚持以技术创新推动经营质量提升，在复杂多变的全球市场环境中持续加强供应链管理，并根据客户需求动态优化产品和产能结构。</p>
           <div className={`highlight-quote ${selectedEvidence.relation}`}>
@@ -442,7 +476,7 @@ function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: E
             “{selectedEvidence.quote}”
           </div>
           <p>相关经营数据均按企业会计准则编制，本段所涉及业务口径与公司年度报告保持一致。部分前瞻性表述可能受到市场环境、原材料价格及项目进度影响。</p>
-          <div className="page-number">— {selectedEvidence.locator.split('·')[0]} —</div>
+          <div className="page-number">— {selectedLocator.split('·')[0]} —</div>
         </div>
       </article> : <article className="source-info-view">
         <div className="document-toolbar">
@@ -474,9 +508,9 @@ function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: E
             <div className="source-section-heading"><strong>来源详情</strong><span>随所选证据同步更新</span></div>
             <dl className="source-detail-grid">
               <div><dt>发布机构</dt><dd>{selectedEvidence.publisher}</dd></div>
-              <div><dt>披露日期</dt><dd>{selectedEvidence.publishedAt}</dd></div>
+              <div><dt>披露日期</dt><dd>{selectedDisclosureDate}</dd></div>
               <div><dt>材料类型</dt><dd>{selectedEvidence.sourceType}</dd></div>
-              <div><dt>证据定位</dt><dd>{selectedEvidence.locator}</dd></div>
+              <div><dt>证据定位</dt><dd>{selectedLocator}</dd></div>
               <div><dt>原始地址</dt><dd className="source-url-value" title={selectedEvidence.url || undefined}>{selectedEvidence.url || '后端未返回'}</dd></div>
             </dl>
           </section>
@@ -602,11 +636,13 @@ function VerdictPanel({ claim, evidenceList, onResolve, onUndo, draftResolution,
     || (evidenceList.length === 0
       ? '本轮没有找到能够直接支持或质疑这句话的原文，因此系统没有自动确认。'
       : '当前证据还不足以完整支持原句，需要你结合原文决定是否保留或调整。')
-  const decisionSummary = evidenceList.length === 0 || claim.issueType?.includes('缺失')
+  const decisionSummary = evidenceList.length === 0
     ? '当前没有原文证据可以核对'
-    : claim.status === 'conflict'
-      ? '现有证据之间存在矛盾'
-      : '现有证据还不足以确认原句'
+    : claim.issueType?.includes('缺失')
+      ? '现有原文还不能直接证明原句'
+      : claim.status === 'conflict'
+        ? '现有证据之间存在矛盾'
+        : '现有证据还不足以确认原句'
 
   return (
     <section className="panel verdict-panel">
@@ -707,7 +743,7 @@ function VerdictPanel({ claim, evidenceList, onResolve, onUndo, draftResolution,
 
       {claim.status !== 'verified' && (
         <div className="conflict-box">
-          <div className="conflict-title"><SafetyCertificateOutlined /><strong>{reviewHeading}</strong><span>{claim.issueType ?? (evidenceList.length === 0 ? '证据缺失' : '需要复核')}</span></div>
+          <div className="conflict-title"><SafetyCertificateOutlined /><strong>{reviewHeading}</strong><span>{getClaimIssueLabel(claim)}</span></div>
           <p>{reviewExplanation}</p>
           {evidenceSummaries.length > 0 ? (
             <div className="claim-evidence-summary">
@@ -831,7 +867,7 @@ function VerdictPanel({ claim, evidenceList, onResolve, onUndo, draftResolution,
           size="small"
           current={0}
           items={[
-            { title: '小盾收到复核疑点', description: `问题类型：${claim.issueType || '证据不足'}；只处理当前这条主张。` },
+            { title: '小盾收到复核疑点', description: `问题类型：${getClaimIssueLabel(claim)}；只处理当前这条主张。` },
             { title: '重新检索相关原文', description: '围绕当前主张重新匹配公开材料，并保留可以回查的原文片段。' },
             { title: '新旧证据并排比较', description: '保留第一轮证据，不覆盖历史记录。' },
             { title: '再次进入独立复核', description: '刷新证据、复核意见与可信度标签，再交给你判断。' },
@@ -937,6 +973,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   const selectedClaimId = focusedClaimId ?? (preview ? previewSelectedClaimId : activeTask.selectedClaimId)
   const selectClaim = useWorkspaceStore((state) => state.selectClaim)
   const resolveClaim = useWorkspaceStore((state) => state.resolveClaim)
+  const setReviewClaimDrafted = useWorkspaceStore((state) => state.setReviewClaimDrafted)
   const finishResearch = useWorkspaceStore((state) => state.finishResearch)
   const stopDemo = useWorkspaceStore((state) => state.stopDemo)
   const resumeDemo = useWorkspaceStore((state) => state.resumeDemo)
@@ -993,7 +1030,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
     setBackendEvents([])
     setEventStreamStatus('connecting')
 
-    streamTaskEvents(run.id, (event) => {
+    streamTaskEvents(run.id, run.createdAt, (event) => {
       if (disposed) return
       setEventStreamStatus('live')
       setBackendEvents((current) => {
@@ -1088,7 +1125,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
       disposed = true
       controller.abort()
     }
-  }, [activeTask.persisted, preview, queryClient, run.id, taskPhase])
+  }, [activeTask.persisted, preview, queryClient, run.createdAt, run.id, taskPhase])
 
   const updateReviewDrafts = (updater: (current: Record<string, ReviewResolution>) => Record<string, ReviewResolution>) => {
     setLocalClaimResolutions((current) => {
@@ -1110,6 +1147,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
     if (!selectedClaim) return false
     const nextClaim = pendingClaims.find((claim) => claim.id !== selectedClaim.id)
     updateReviewDrafts((current) => ({ ...current, [selectedClaim.id]: { action, note: decision } }))
+    if (!preview) setReviewClaimDrafted(run.id, selectedClaim.id, true)
     if (nextClaim) {
       if (preview) setPreviewSelectedClaimId(nextClaim.id)
       else selectClaim(nextClaim.id)
@@ -1133,6 +1171,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
       if (!submittedClaim?.humanAction) return
       updateReopenedReviewIds((current) => current.includes(claimId) ? current : [...current, claimId])
     }
+    if (!preview) setReviewClaimDrafted(run.id, claimId, false)
     setCompletionReviewing(true)
     void queryClient.invalidateQueries({ queryKey: ['workspace-tasks'] })
     message.success('已撤回这条复核判断，可以重新处理')
