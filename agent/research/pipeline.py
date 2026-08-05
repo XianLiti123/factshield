@@ -11,6 +11,7 @@
 """
 
 import json
+import re
 import threading
 import time
 from typing import Any, Callable, TypedDict
@@ -471,6 +472,104 @@ def _search_with_meta(query: str, num: int = 2) -> list[dict]:
     return hybrid_search(query, num=num)
 
 
+_SENT_SPLIT_RE = re.compile(r"(?<=[。！？；;!?])\s*|\n+")
+
+
+def _norm_no_ws(text: str) -> str:
+    #去掉全部空白用于匹配（中文比对不需要空格，规避换行/缩进差异）
+    return "".join(text.split())
+
+
+def _norm_span_map(text: str) -> tuple[str, list[int]]:
+    #返回 (去空白文本, 每个字符对应的原文下标)，用于把匹配区间映射回原文
+    chars: list[str] = []
+    idxs: list[int] = []
+    for i, ch in enumerate(text):
+        if not ch.isspace():
+            chars.append(ch)
+            idxs.append(i)
+    return "".join(chars), idxs
+
+
+def _lcs_span(source: str, target: str) -> tuple[int, int] | None:
+    #source/target 均为去空白文本；返回 target 在 source 中的最长公共子串 (start, length)
+    n, m = len(source), len(target)
+    if n == 0 or m == 0:
+        return None
+    dp = [0] * (m + 1)
+    best_len = 0
+    best_end = 0
+    for i in range(1, n + 1):
+        prev = 0
+        for j in range(1, m + 1):
+            cur = dp[j]
+            if source[i - 1] == target[j - 1]:
+                dp[j] = prev + 1
+                if dp[j] > best_len:
+                    best_len = dp[j]
+                    best_end = i
+            else:
+                dp[j] = 0
+            prev = cur
+    if best_len == 0:
+        return None
+    return (best_end - best_len, best_len)
+
+
+def _split_sentences(text: str) -> list[tuple[int, int]]:
+    #按句末标点/换行切分，返回 [start, end) 区间
+    spans: list[tuple[int, int]] = []
+    start = 0
+    for m in _SENT_SPLIT_RE.finditer(text):
+        end = m.start()
+        if end > start:
+            spans.append((start, end))
+        start = m.end()
+    if start < len(text):
+        spans.append((start, len(text)))
+    return spans
+
+
+def _verbatim_quote(quote: str, source_text: str) -> str | None:
+    """只接受能在原文中逐字命中的引用。
+
+    优先整句命中，其次原文最长公共子串；命中不足或无法定位时返回 None
+    （宁可丢弃这条证据，也不把 LLM 概括/改写后的文本当作原文入库）。
+    """
+    quote = (quote or "").strip()
+    source_text = (source_text or "").strip()
+    if not quote or not source_text:
+        return None
+    if quote in source_text:
+        return quote[:300]
+    qn = _norm_no_ws(quote)
+    if len(qn) < 4:
+        return None
+    need = max(4, int(len(qn) * 0.5))
+    #1) 整句级：找与 quote 重叠最多的原文句子，命中达标则返回该句原文
+    best_sentence: str | None = None
+    best_lcs = 0
+    for start, end in _split_sentences(source_text):
+        seg = source_text[start:end].strip()
+        seg_n = _norm_no_ws(seg)
+        if len(seg_n) < 4:
+            continue
+        span = _lcs_span(seg_n, qn)
+        if span is not None and span[1] > best_lcs:
+            best_lcs = span[1]
+            best_sentence = seg
+    if best_sentence is not None and best_lcs >= need:
+        return best_sentence[:300]
+    #2) 全局最长公共子串：把匹配区间映射回原文
+    sn, idxs = _norm_span_map(source_text)
+    span = _lcs_span(sn, qn)
+    if span is not None and span[1] >= need:
+        s0 = idxs[span[0]]
+        s1 = idxs[span[0] + span[1] - 1] + 1
+        return source_text[s0:s1][:300]
+    return None
+
+
 def _match_evidence(task_id: str, claim: dict, llm: ChatClient, num: int = 2) -> int:
     #对单条主张做 向量粗筛+精排+LLM 判定，摘录证据入库，返回新增证据条数
     candidates = _search_with_meta(claim["statement"], num=num)
@@ -490,7 +589,8 @@ def _match_evidence(task_id: str, claim: dict, llm: ChatClient, num: int = 2) ->
             continue
         cand = candidates[idx]
         src = materials_by_group.get(cand["group_id"], {})
-        quote = str(e.get("quote", ""))[:300]
+        quote = _verbatim_quote(e.get("quote", ""),
+                                (src.get("content") or "") or (cand.get("content") or ""))
         if not quote:
             continue
         items.append({
@@ -1034,7 +1134,8 @@ def retry_single_claim(task_id: str, claim_id: str, emit: Callable, llm: ChatCli
                 continue
             cand = candidates[idx]
             src = materials_by_group.get(cand["group_id"], {})
-            quote = str(e.get("quote", ""))[:300]
+            quote = _verbatim_quote(e.get("quote", ""),
+                                    (src.get("content") or "") or (cand.get("content") or ""))
             if not quote:
                 continue
             items.append({"title": src.get("title", ""), "publisher": src.get("publisher", ""),
