@@ -31,6 +31,7 @@ from .. import prompts
 from ..prompts import COLLECTOR_PROMPT, DEEPEN_PROMPT, REVIEW_AGENT_PROMPT
 from ..questions import QuestionCancelled
 from ..tools.ask_user import make_task_ask_tool
+from ..tools.skill import use_skill
 from . import store
 
 #事实核查流水线（固定骨架 + LLM 判定）：
@@ -44,6 +45,22 @@ MAX_KEYWORDS = 4        #每次采集的关键词上限
 MAX_MATERIALS = 8       #单轮采集素材上限
 MAX_MATERIALS_TOTAL = 20  #含二次取证轮次的素材总量上限
 ASK_MAX_ROUNDS = 3      #主控 JSON 节点最多 LLM 轮次（可提问 1~2 次后必须输出 JSON）
+
+#金融研究框架：用于选择企业/政策分析框架并组织底稿模块
+_COMPANY_HINTS = ("company", "enterprise", "经营质量", "企业", "公司", "基本面", "尽调", "财务")
+_POLICY_HINTS = ("policy", "政策", "监管", "规定", "制度", "规则", "法规")
+_COMPANY_MODULES = ["行业与产业链", "政策环境", "公司治理与团队", "技术核心能力",
+                    "产品与市场", "财务表现", "风险与不确定性"]
+_POLICY_MODULES = ["政策定位与主管部门", "核心条款与规则变化", "影响传导", "各方解读", "不确定性"]
+_CATEGORY_TITLES = {
+    "行业与产业链": "行业与产业链",
+    "政策环境": "政策环境",
+    "公司治理与团队": "公司治理与团队",
+    "技术核心能力": "技术核心能力",
+    "产品与市场": "产品与市场",
+    "财务表现": "财务表现",
+    "风险与不确定性": "风险与不确定性",
+}
 
 #来源可信度三档 -> 兼容数值（数值仅供排序与旧字段兼容，展示一律以等级为准）
 _LEVEL_SCORE = {"高": 0.9, "中": 0.6, "低": 0.25}
@@ -204,6 +221,29 @@ def _qa_context(task_id: str) -> str:
     return "\n".join(lines)
 
 
+def _framework_kind_of(*, research_type: str, topic: str, company: str) -> str | None:
+    #按研究类型与主题关键词选择金融研究框架（企业/政策/通用）
+    rt = str(research_type or "").lower()
+    text = f"{topic} {company}".lower()
+    if rt in ("company", "enterprise") or any(k in text for k in _COMPANY_HINTS):
+        return "company"
+    if rt in ("policy",) or any(k in text for k in _POLICY_HINTS):
+        return "policy"
+    return None
+
+
+def _research_framework_guide(state: ResearchState) -> str:
+    #把框架说明注入主控拆解提示词；不匹配时返回空串
+    kind = _framework_kind_of(research_type=state.get("research_type", ""),
+                              topic=state.get("topic", ""),
+                              company=state.get("company", ""))
+    if kind == "company":
+        return prompts.COMPANY_ANALYSIS_FRAMEWORK
+    if kind == "policy":
+        return prompts.POLICY_ANALYSIS_FRAMEWORK
+    return ""
+
+
 def _ask_capable_json(state: ResearchState, config: RunnableConfig, prompt: str,
                       actor: str, node: str, retries: int = 1) -> dict:
     #主控 JSON 节点带 ask_user 的 LLM 调用：LLM 可先向研究员提问（阻塞等待答案），
@@ -219,7 +259,7 @@ def _ask_capable_json(state: ResearchState, config: RunnableConfig, prompt: str,
     for _ in range(retries + 1):
         for _round in range(ASK_MAX_ROUNDS):
             _check_stop(config)
-            response = llm.invoke(messages, tools=[ask_tool])
+            response = llm.invoke(messages, tools=[ask_tool, use_skill])
             calls = getattr(response, "tool_calls", None) or []
             text = content_to_text(response.content) if response.content else ""
             if text:
@@ -236,15 +276,17 @@ def _ask_capable_json(state: ResearchState, config: RunnableConfig, prompt: str,
             for tc in calls:
                 _check_stop(config)
                 name, args = tc["name"], tc.get("args") or {}
-                if name != "ask_user":
-                    messages.append(ToolMessage(
-                        content=f"未知工具: {name}", tool_call_id=tc["id"], name=name))
-                    continue
-                try:
-                    result = str(ask_tool.invoke(args))
-                except QuestionCancelled as e:
-                    raise TaskStopped() from e
-                #工具轨迹已由 make_task_ask_tool 内部写入，这里不重复记录
+                if name == "ask_user":
+                    try:
+                        result = str(ask_tool.invoke(args))
+                    except QuestionCancelled as e:
+                        raise TaskStopped() from e
+                    #工具轨迹已由 make_task_ask_tool 内部写入，这里不重复记录
+                elif name == "use_skill":
+                    result = str(use_skill.invoke(args))
+                    store.append_tool_trace(state["task_id"], actor, node, name, args, result)
+                else:
+                    result = f"未知工具: {name}"
                 messages.append(ToolMessage(content=result, tool_call_id=tc["id"], name=name))
     raise RuntimeError(f"LLM JSON 解析失败: {last_err}")
 
@@ -265,6 +307,7 @@ def plan_node(state: ResearchState, config: RunnableConfig) -> dict:
         research_type=state["research_type"],
         sources="、".join(state["preferred_sources"]) or "无偏好",
         qa_context=_qa_context(state["task_id"]),
+        framework=_research_framework_guide(state),
     ), actor="supervisor", node="plan")
     title = data.get("title") or state["topic"]
     keywords = [str(k) for k in data.get("keywords", [])][:MAX_KEYWORDS] or [state["topic"]]
@@ -360,7 +403,8 @@ def _make_collector_tools(task_id: str, user_id: int, new_count: dict,
 
     return [archive_material, web_search, web_extract, query_financials,
             query_kline, list_data_sources,
-            make_task_ask_tool(task_id, user_id, actor, node, stop_event=stop_event)]
+            make_task_ask_tool(task_id, user_id, actor, node, stop_event=stop_event),
+            use_skill]
 
 
 def _run_collector_agent(state: ResearchState, config: RunnableConfig, tools: list, prompt: str,
@@ -974,6 +1018,25 @@ def _build_report(task: dict) -> str:
     counts = {"verified": 0, "review": 0, "conflict": 0}
     for c in claims:
         counts[c["status"]] = counts.get(c["status"], 0) + 1
+
+    #主张按框架模块分组：保持框架顺序，未知/旧类别归入“其他主张”
+    by_title: dict[str, list[dict]] = {}
+    for c in claims:
+        title = _CATEGORY_TITLES.get(str(c.get("category") or "").strip(), "其他主张")
+        by_title.setdefault(title, []).append(c)
+    kind = _framework_kind_of(research_type=task.get("research_type", ""),
+                              topic=task.get("topic", ""),
+                              company=task.get("company", ""))
+    if kind == "company":
+        order = list(_COMPANY_MODULES)
+    elif kind == "policy":
+        order = ["政策环境", "行业与产业链", "风险与不确定性"]
+    else:
+        order = []
+    order = order + [t for t in _CATEGORY_TITLES.values() if t not in order]
+    order.append("其他主张")
+    grouped = [(t, by_title[t]) for t in order if by_title.get(t)]
+
     lines = [
         f"# 研究底稿：{task.get('title', task['topic'])}",
         "",
@@ -991,32 +1054,56 @@ def _build_report(task: dict) -> str:
         f"共核查主张 {len(claims)} 条：核验通过 {counts['verified']} 条，"
         f"待复核 {counts['review']} 条，高度存疑 {counts['conflict']} 条。",
         "",
-        "## 主张与证据链",
     ]
-    for c in claims:
-        lines += [
-            "",
-            f"### [{c['id']}] {_clean(c['statement'])}",
-            "",
-            f"- 可信度标签：**{STATUS_LABEL.get(c['status'], c['status'])}**（置信度 {c['confidence']:.2f}）",
-            f"- 类别：{_clean(c['category'])}",
-            f"- 主控一级核验：{_clean(c['supervisor_verdict']) or '（无）'}",
-            f"- 幻觉审查复核：{_clean(c['reviewer_verdict']) or '（无）'}",
-        ]
-        if c["conflict_reason"]:
-            lines.append(f"- 存疑原因：{_clean(c['conflict_reason'])}")
-        eids = ce_map.get(c["id"], [])
-        if eids:
-            lines.append("- 证据：")
-            for eid in eids:
-                e = evidence[eid]
-                relation = "支持" if e["relation"] == "support" else "质疑"
-                lines.append(
-                    f"  - [{eid}]（{relation}，来源可信度：{e['credibility_level'] or '中'}）「{_clean(e['quote'])}」"
-                    f" —— {_clean(e['publisher'])}，{_clean(e['locator'])}"
-                    + (f"，{e['url']}" if e["url"] else ""))
-        else:
-            lines.append("- 证据：（未检索到，需人工补充取证）")
+
+    #研究框架与覆盖范围：让底稿按模块呈现，不再一条条平铺
+    covered = {_CATEGORY_TITLES.get(str(c.get("category") or "").strip(), "其他主张") for c in claims}
+    lines += ["", "## 研究框架与覆盖范围"]
+    if kind == "company":
+        lines.append(f"- 研究框架：企业研究框架（{' → '.join(_COMPANY_MODULES)}）")
+        covered_modules = [m for m in _COMPANY_MODULES if _CATEGORY_TITLES.get(m) in covered]
+        missed_modules = [m for m in _COMPANY_MODULES if _CATEGORY_TITLES.get(m) not in covered]
+    elif kind == "policy":
+        lines.append(f"- 研究框架：政策影响分析框架（{' → '.join(_POLICY_MODULES)}）")
+        policy_cats = ["政策环境", "行业与产业链", "风险与不确定性"]
+        covered_modules = [m for m in policy_cats if m in covered]
+        missed_modules = [m for m in policy_cats if m not in covered]
+    else:
+        lines.append("- 研究框架：通用事实核查框架（按主张类别分模块呈现）")
+        covered_modules = [m for m in _CATEGORY_TITLES.values() if m in covered]
+        missed_modules = []
+    lines.append(f"- 本次覆盖模块：{('、'.join(covered_modules)) if covered_modules else '（暂无分类主张）'}")
+    if missed_modules:
+        lines.append(f"- 未覆盖模块：{'、'.join(missed_modules)}")
+    lines.append("- 数据颗粒度提示：主张中的数值应自带口径、时间范围与单位，请结合证据核对。")
+
+    lines += ["", "## 主张与证据链"]
+    for title, group in grouped:
+        lines += ["", f"### {title}"]
+        for c in group:
+            lines += [
+                "",
+                f"#### [{c['id']}] {_clean(c['statement'])}",
+                "",
+                f"- 可信度标签：**{STATUS_LABEL.get(c['status'], c['status'])}**（置信度 {c['confidence']:.2f}）",
+                f"- 类别：{_clean(c['category'])}",
+                f"- 主控一级核验：{_clean(c['supervisor_verdict']) or '（无）'}",
+                f"- 幻觉审查复核：{_clean(c['reviewer_verdict']) or '（无）'}",
+            ]
+            if c["conflict_reason"]:
+                lines.append(f"- 存疑原因：{_clean(c['conflict_reason'])}")
+            eids = ce_map.get(c["id"], [])
+            if eids:
+                lines.append("- 证据：")
+                for eid in eids:
+                    e = evidence[eid]
+                    relation = "支持" if e["relation"] == "support" else "质疑"
+                    lines.append(
+                        f"  - [{eid}]（{relation}，来源可信度：{e['credibility_level'] or '中'}）「{_clean(e['quote'])}」"
+                        f" —— {_clean(e['publisher'])}，{_clean(e['locator'])}"
+                        + (f"，{e['url']}" if e["url"] else ""))
+            else:
+                lines.append("- 证据：（未检索到，需人工补充取证）")
     materials = store.list_materials(task_id)
     if materials:
         lines += ["", "## 参考信源", ""]
@@ -1028,7 +1115,7 @@ def _build_report(task: dict) -> str:
         lines += ["", attachment]
     lines += ["", "---",
               "",
-              "> 免责声明：本底稿仅为金融研究辅助素材，不构成任何投资建议，最终结论由研究员人工研判。"]
+              f"> 免责声明：{prompts.RESEARCH_DISCLAIMER}"]
     return "\n".join(lines)
 
 
