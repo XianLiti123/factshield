@@ -1,5 +1,3 @@
-from typing import Iterator
-
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -8,8 +6,8 @@ from agent.session.model_config import get_config
 from agent.session.store import load_session
 
 from ..core.security import get_current_user
-from ..core.session import get_or_create_session, mark_running, unmark_running
-from ..utils.sse import sse_event
+from ..core.session import get_or_create_session
+from ..utils.agent_stream import agent_event_stream
 
 router = APIRouter()
 
@@ -21,7 +19,8 @@ class ChatRequest(BaseModel):
 
 @router.post("/chat/stream")
 def chat_stream(request: ChatRequest, user_id: int = Depends(get_current_user)) -> StreamingResponse:
-    #流式对话接口，SSE 返回 JSON 事件：token(正文)/think(思考)/tool(工具状态)/done/error
+    #流式对话接口，SSE 返回 JSON 事件：token(正文)/think(思考)/tool(工具状态)/
+    #question(提问)/answer(回答)/done/error；后台线程运行，提问等待期间连接保持打开
     if get_config(user_id, "llm") is None:
         raise HTTPException(status_code=400, detail="未配置 LLM 模型，请先在 /settings 配置")  #未配置 key 拒绝服务
     existing = load_session(request.session_id) if request.session_id else None
@@ -29,24 +28,12 @@ def chat_stream(request: ChatRequest, user_id: int = Depends(get_current_user)) 
         raise HTTPException(status_code=404, detail="会话不存在")  #他人会话不暴露存在性
     session_id, agent, lock = get_or_create_session(request.session_id, user_id)
 
-    def event_stream() -> Iterator[str]:
-        with lock:  #同一会话串行执行，防止并发写乱消息历史
-            mark_running(session_id)
-            try:
-                for kind, text in agent.run_stream(request.message):
-                    yield sse_event(kind, text)
-                yield sse_event("done")
-            except Exception as e:
-                #执行失败登记到错误库（可经 /errors 查看，或触发修复重跑该轮）
-                from agent.failures import format_traceback, record_error
-                record_error(user_id, "chat", session_id, error=str(e), node="chat",
-                             prompt=request.message, traceback=format_traceback(), auto_repair=False)
-                yield sse_event("error", str(e))
-            finally:
-                unmark_running(session_id)
-
     return StreamingResponse(
-        event_stream(),
+        agent_event_stream(
+            lambda: agent.run_stream(request.message),
+            session_id=session_id, user_id=user_id, lock=lock,
+            error_node="chat", prompt=request.message,
+        ),
         media_type="text/event-stream",
         headers={
             "X-Session-Id": session_id,

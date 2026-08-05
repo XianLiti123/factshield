@@ -115,7 +115,7 @@ def delete_task(task_id: str, user_id: int) -> bool:
     with get_connection() as conn:
         for table in ("task_materials", "claims", "evidence", "claim_evidence",
                       "task_events", "task_guidance", "history_analyses",
-                      "agent_tool_traces"):
+                      "agent_tool_traces", "agent_questions"):
             conn.execute(f"DELETE FROM {table} WHERE task_id=?", (task_id,))
         conn.execute("DELETE FROM research_tasks WHERE task_id=?", (task_id,))
     return True

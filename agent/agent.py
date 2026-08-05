@@ -120,6 +120,7 @@ class Agent:
             raise RuntimeError("未配置 LLM 模型，请先在设置中配置 base_url、api_key 和模型名")
         if session_store.get_paused(self.session_id):
             raise RuntimeError("有暂停中的轮次，请先 resume 或 abort")
+        session_store.current_session_id.set(self.session_id)#供图内 ask_user 等工具定位会话
         self._maybe_compact()
         self.messages.append(HumanMessage(content=user_input))
         result = retry_call(
@@ -210,6 +211,7 @@ class Agent:
             return
         if self._maybe_compact():
             yield "context","上下文已压缩"
+        session_store.current_session_id.set(self.session_id)#供图内 ask_user 等工具定位会话
         self.messages.append(HumanMessage(content=user_input))
         collected:dict[str,BaseMessage] = {}
         order:list[str] = []
@@ -241,6 +243,7 @@ class Agent:
         if not paused:
             yield "error","没有暂停中的轮次"
             return
+        session_store.current_session_id.set(self.session_id)#供图内 ask_user 等工具定位会话
         thread_id,user_input = paused
         collected:dict[str,BaseMessage] = {}
         order:list[str] = []

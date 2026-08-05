@@ -1,5 +1,5 @@
+import asyncio
 import logging
-import queue
 import threading
 
 from ..core.loop import get_llm_client
@@ -14,9 +14,10 @@ logger = logging.getLogger(__name__)
 _running: dict[str, dict] = {}
 _registry_lock = threading.Lock()
 
-#事件订阅：task_id -> 订阅队列集合。主流水线/重新取证/历史统计三路事件统一经
-#publish_event 落库（task_events 表，审计/回放）并广播给全部订阅者（SSE 实时推送）
-_subscribers: dict[str, set["queue.Queue"]] = {}
+#事件订阅：task_id -> {订阅队列: 所属事件循环}。主流水线/重新取证/历史统计三路事件统一经
+#publish_event 落库（task_events 表，审计/回放）并广播给全部订阅者（SSE 实时推送）；
+#订阅方为 SSE 协程里的 asyncio.Queue，发布方多为研究守护线程，经 call_soon_threadsafe 跨循环投递
+_subscribers: dict[str, dict["asyncio.Queue", asyncio.AbstractEventLoop]] = {}
 
 #流程级重试次数（重新取证/历史统计整段重试；研究流水线节点的重试见 pipeline.NODE_MAX_ATTEMPTS）
 RETRY_MAX_ATTEMPTS = 3
@@ -25,25 +26,36 @@ RETRY_MAX_ATTEMPTS = 3
 def publish_event(task_id: str, actor: str, kind: str, payload: dict) -> dict:
     event = store.append_event(task_id, actor, kind, payload)
     with _registry_lock:
-        subs = list(_subscribers.get(task_id, ()))
-    for q in subs:
-        q.put(event)
+        subs = list(_subscribers.get(task_id, {}).items())
+    dead: list["asyncio.Queue"] = []
+    for q, loop in subs:
+        try:
+            loop.call_soon_threadsafe(q.put_nowait, event)
+        except RuntimeError:
+            dead.append(q)  #订阅方事件循环已关闭：摘除，避免反复投递失败
+    if dead:
+        with _registry_lock:
+            for q in dead:
+                _subscribers.get(task_id, {}).pop(q, None)
+            if not _subscribers.get(task_id):
+                _subscribers.pop(task_id, None)
     return event
 
 
-def subscribe(task_id: str) -> "queue.Queue":
-    #注册一个事件订阅队列；调用方负责在结束时 unsubscribe（先订阅再回放可无缺口衔接）
-    q: "queue.Queue" = queue.Queue()
+def subscribe(task_id: str) -> "asyncio.Queue":
+    #注册一个事件订阅队列并绑定当前事件循环（须在协程里调用）；调用方负责在结束时
+    #unsubscribe（先订阅再回放可无缺口衔接）
+    q: "asyncio.Queue" = asyncio.Queue()
     with _registry_lock:
-        _subscribers.setdefault(task_id, set()).add(q)
+        _subscribers.setdefault(task_id, {})[q] = asyncio.get_running_loop()
     return q
 
 
-def unsubscribe(task_id: str, q: "queue.Queue") -> None:
+def unsubscribe(task_id: str, q: "asyncio.Queue") -> None:
     with _registry_lock:
         subs = _subscribers.get(task_id)
         if subs is not None:
-            subs.discard(q)
+            subs.pop(q, None)
             if not subs:
                 _subscribers.pop(task_id, None)
 
@@ -171,6 +183,8 @@ def stop_task(task_id: str) -> bool:
     if entry is None:
         return False
     entry["stop"].set()
+    from .. import questions  #延迟导入，避免模块加载顺序问题
+    questions.wake_all_for_task(task_id, reason="任务已终止")
     return True
 
 

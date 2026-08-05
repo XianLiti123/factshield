@@ -1,13 +1,14 @@
+import asyncio
 import json
-import queue
 import uuid
 from pathlib import Path
-from typing import Iterator, Literal
+from typing import AsyncIterator, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from agent import questions as question_store
 from agent.research import runner, store
 from agent.research.export import report_to_docx, report_to_pdf
 from agent.research.models import run_to_dto
@@ -17,9 +18,9 @@ from agent.session.model_config import get_config
 from agent.tools.convert import convert_document
 
 from ..core.security import get_current_user
-from ..core.session import get_or_create_session, mark_running, unmark_running
+from ..core.session import get_or_create_session
 from ..schemas.research import ResearchRun, TaskSummary
-from ..utils.sse import sse_event
+from ..utils.agent_stream import agent_event_stream
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -47,6 +48,10 @@ class ResolveClaimRequest(BaseModel):
 class SupervisorChatRequest(BaseModel):
     message: str
     claim_id: str | None = None  #可选：针对某条主张提问
+
+
+class AnswerQuestionRequest(BaseModel):
+    answer: str
 
 
 class HistoryAnalysisRequest(BaseModel):
@@ -187,12 +192,13 @@ def delete_task(task_id: str, user_id: int = Depends(get_current_user)) -> dict[
 
 @router.get("/{task_id}/events")
 def task_events(task_id: str, user_id: int = Depends(get_current_user)) -> StreamingResponse:
-    #研究过程播报流：先回放已持久化事件，再经订阅队列实时推送（含重取证/历史统计事件）。
+    #研究过程播报流（异步生成器，不占 anyio 线程池，yield 即写 socket）：先回放已持久化事件，
+    #再经订阅队列实时推送（含重取证/历史统计事件）。
     #连接时任务在运行中：收到主流水线终态事件后关闭；已结束的任务：回放后保持连接，
     #客户端可继续收到后续的重新取证/统计事件，自行决定何时断开
     _get_task_or_404(task_id, user_id)
 
-    def stream() -> Iterator[str]:
+    async def stream() -> AsyncIterator[str]:
         q = runner.subscribe(task_id)  #先订阅再回放，衔接处事件经 seq 去重，无缺口
         try:
             was_running = runner.is_running(task_id)
@@ -202,8 +208,8 @@ def task_events(task_id: str, user_id: int = Depends(get_current_user)) -> Strea
                 yield _sse(event)
             while True:
                 try:
-                    event = q.get(timeout=15)
-                except queue.Empty:
+                    event = await asyncio.wait_for(q.get(), timeout=15)
+                except asyncio.TimeoutError:
                     yield ": ping\n\n"  #保活注释行，防止代理断连
                     continue
                 if event["seq"] <= last_seq:
@@ -217,7 +223,8 @@ def task_events(task_id: str, user_id: int = Depends(get_current_user)) -> Strea
             runner.unsubscribe(task_id, q)
 
     return StreamingResponse(stream(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+                             headers={"Cache-Control": "no-cache, no-transform",
+                                      "X-Accel-Buffering": "no"})
 
 
 @router.post("/{task_id}/stop")
@@ -242,6 +249,47 @@ def guide_task(task_id: str, request: GuidanceRequest,
         raise HTTPException(status_code=409, detail="任务不在运行中，介入指令不会被消费")
     store.add_guidance(task_id, request.instruction)
     return {"status": "queued", "task_id": task_id}
+
+
+# ---------------- 提问工具：问题查询与回答 ----------------
+
+@router.get("/{task_id}/questions")
+def list_task_questions(task_id: str, user_id: int = Depends(get_current_user)) -> dict:
+    #列出该任务的提问记录（pending 在前，按创建时间升序），供前端刷新后恢复卡片
+    _get_task_or_404(task_id, user_id)
+    rows = question_store.list_questions(task_id=task_id, user_id=user_id)
+    return {"task_id": task_id,
+            "questions": [question_store.question_to_dto(q) for q in rows]}
+
+
+@router.post("/{task_id}/questions/{question_id}/answer")
+def answer_task_question(task_id: str, question_id: str, request: AnswerQuestionRequest,
+                         user_id: int = Depends(get_current_user)) -> dict[str, str]:
+    #研究员回答提问：写入答案 -> 发布 answer 事件 -> 唤醒等待中的流水线线程
+    _get_task_or_404(task_id, user_id)
+    q = question_store.get_question(question_id, user_id)
+    if q is None or q.get("task_id") != task_id:
+        raise HTTPException(status_code=404, detail="问题不存在")
+    if q["status"] != "pending":
+        raise HTTPException(status_code=409, detail="该问题已作答或已取消")
+    if not runner.is_running(task_id) or not question_store.is_waiting(question_id):
+        raise HTTPException(status_code=409, detail="任务已不在等待中，无法作答")
+    answer = request.answer.strip()
+    if not answer:
+        raise HTTPException(status_code=400, detail="答案不能为空")
+    question_store.answer_question(question_id, user_id, answer)
+    runner.publish_event(task_id, "researcher", "answer", {
+        "title": "研究员已回答",
+        "speech": answer,
+        "question_id": question_id,
+        "question": q["question"],
+        "answer": answer,
+        "details": [],
+        "metrics": [],
+        "progress": None,
+    })
+    question_store.wake(question_id)
+    return {"status": "answered", "question_id": question_id, "answer": answer}
 
 
 @router.post("/{task_id}/claims/{claim_id}/resolve")
@@ -405,22 +453,11 @@ def supervisor_chat(task_id: str, request: SupervisorChatRequest,
     context = _build_chat_context(task, request.claim_id)
     session_id, agent, lock = get_or_create_session(f"task-{task_id}", user_id)  #任务专属会话，独立持久化
 
-    def event_stream() -> Iterator[str]:
-        with lock:
-            mark_running(session_id)
-            try:
-                for kind, text in agent.run_stream(f"{context}\n\n研究员的问题：{request.message}"):
-                    yield sse_event(kind, text)
-                yield sse_event("done")
-            except Exception as e:
-                from agent.failures import format_traceback, record_error
-                record_error(user_id, "chat", session_id, error=str(e), node="task_chat",
-                             prompt=request.message, traceback=format_traceback(), auto_repair=False)
-                yield sse_event("error", str(e))
-            finally:
-                unmark_running(session_id)
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream",
+    return StreamingResponse(agent_event_stream(
+        lambda: agent.run_stream(f"{context}\n\n研究员的问题：{request.message}"),
+        session_id=session_id, user_id=user_id, lock=lock,
+        error_node="task_chat", prompt=request.message,
+    ), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 

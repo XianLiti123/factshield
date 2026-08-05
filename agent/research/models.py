@@ -182,6 +182,8 @@ def run_to_dto(task: dict, claims: list[dict], evidence: list[dict],
                ce_map: dict[str, list[str]], events: list[dict],
                node_runs: list[dict] | None = None) -> dict:
     #聚合 ResearchRun：任务 + 主张 + 证据 + 智能体状态
+    from ..questions import list_questions, question_to_dto  #延迟导入，避免加载顺序问题
+    pending = list_questions(task_id=task["task_id"], status="pending")
     return {
         "id": task["task_id"],
         "title": task["title"],
@@ -192,4 +194,5 @@ def run_to_dto(task: dict, claims: list[dict], evidence: list[dict],
         "claims": [claim_to_dto(c, ce_map.get(c["id"], [])) for c in claims],
         "evidence": [evidence_to_dto(e) for e in evidence],
         "agents": agents_status(task, events, node_runs),
+        "waitingQuestion": question_to_dto(pending[0]) if pending else None,
     }

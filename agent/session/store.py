@@ -12,6 +12,8 @@ init_db()  #确保各表存在
 
 #当前请求/会话的用户上下文：LLM 工具在图内执行时拿不到 user_id，靠它在 Agent 调图前注入
 current_user_id: ContextVar[int] = ContextVar("current_user_id", default=ensure_admin())
+#当前请求/会话的会话上下文：ask_user 工具在图内执行时靠它定位对话会话与事件总线
+current_session_id: ContextVar[str | None] = ContextVar("current_session_id", default=None)
 
 
 def create_session(session_id: str | None = None, user_id: int | None = None) -> str:
@@ -131,10 +133,13 @@ def delete_session(session_id: str) -> bool:
     existed = load_session(session_id) is not None
     if not existed:
         return False
+    from .. import questions  #延迟导入，避免模块加载顺序问题
+    questions.wake_all_for_session(session_id, reason="会话已删除")
     turns_store.delete_turns(session_id)
     delete_threads(session_id)
     with get_connection() as conn:
         conn.execute("DELETE FROM turns WHERE session_id=?", (session_id,))
+        conn.execute("DELETE FROM agent_questions WHERE session_id=?", (session_id,))
         conn.execute("DELETE FROM sessions WHERE session_id=?", (session_id,))
     return True
 

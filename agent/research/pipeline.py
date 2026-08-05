@@ -28,6 +28,8 @@ from ..searchengine import extract, search
 from ..session.search_config import get_engine
 from .. import prompts
 from ..prompts import COLLECTOR_PROMPT, DEEPEN_PROMPT, REVIEW_AGENT_PROMPT
+from ..questions import QuestionCancelled
+from ..tools.ask_user import make_task_ask_tool
 from . import store
 
 #事实核查流水线（固定骨架 + LLM 判定）：
@@ -40,6 +42,7 @@ MAX_CLAIMS = 8          #单任务主张上限，控制 LLM 调用规模
 MAX_KEYWORDS = 4        #每次采集的关键词上限
 MAX_MATERIALS = 8       #单轮采集素材上限
 MAX_MATERIALS_TOTAL = 20  #含二次取证轮次的素材总量上限
+ASK_MAX_ROUNDS = 3      #主控 JSON 节点最多 LLM 轮次（可提问 1~2 次后必须输出 JSON）
 
 #来源可信度三档 -> 兼容数值（数值仅供排序与旧字段兼容，展示一律以等级为准）
 _LEVEL_SCORE = {"高": 0.9, "中": 0.6, "低": 0.25}
@@ -187,6 +190,64 @@ def _parse_json_loose(text: str) -> dict:
     return json.loads(text[start:end + 1])
 
 
+def _qa_context(task_id: str) -> str:
+    #已答问题 -> 提示词片段，保证 Q&A 对后续节点全局可见且不重复提问
+    from ..questions import list_questions
+    qas = list_questions(task_id=task_id, status="answered")
+    if not qas:
+        return ""
+    lines = ["【研究员已提供的补充信息】"]
+    for q in qas:
+        lines.append(f"- 问：{q['question']}")
+        lines.append(f"  答：{q['answer']}")
+    return "\n".join(lines)
+
+
+def _ask_capable_json(state: ResearchState, config: RunnableConfig, prompt: str,
+                      actor: str, node: str, retries: int = 1) -> dict:
+    #主控 JSON 节点带 ask_user 的 LLM 调用：LLM 可先向研究员提问（阻塞等待答案），
+    #得到回答后再输出 JSON；最多 ASK_MAX_ROUNDS 轮，防失控
+    llm = _llm(config)
+    ask_tool = make_task_ask_tool(
+        state["task_id"], state["user_id"], actor, node,
+        stop_event=config["configurable"]["stop_event"],
+    )
+    messages: list = [HumanMessage(content=prompt)]
+    last_text = ""
+    last_err: Exception | None = None
+    for _ in range(retries + 1):
+        for _round in range(ASK_MAX_ROUNDS):
+            _check_stop(config)
+            response = llm.invoke(messages, tools=[ask_tool])
+            calls = getattr(response, "tool_calls", None) or []
+            text = content_to_text(response.content) if response.content else ""
+            if text:
+                last_text = text
+            if not calls:
+                try:
+                    return _parse_json_loose(last_text)
+                except Exception as e:  # noqa: BLE001
+                    last_err = e
+                    messages.append(HumanMessage(
+                        content="上次输出不是合法 JSON，请只输出一个 JSON 对象，不要输出任何其他文字。"))
+                    continue
+            messages.append(response)
+            for tc in calls:
+                _check_stop(config)
+                name, args = tc["name"], tc.get("args") or {}
+                if name != "ask_user":
+                    messages.append(ToolMessage(
+                        content=f"未知工具: {name}", tool_call_id=tc["id"], name=name))
+                    continue
+                try:
+                    result = str(ask_tool.invoke(args))
+                except QuestionCancelled as e:
+                    raise TaskStopped() from e
+                #工具轨迹已由 make_task_ask_tool 内部写入，这里不重复记录
+                messages.append(ToolMessage(content=result, tool_call_id=tc["id"], name=name))
+    raise RuntimeError(f"LLM JSON 解析失败: {last_err}")
+
+
 def _llm(config: RunnableConfig) -> ChatClient:
     from ..core.loop import get_llm_client  #延迟导入，避免循环依赖
     return get_llm_client(config["configurable"]["user_id"])
@@ -198,11 +259,12 @@ def plan_node(state: ResearchState, config: RunnableConfig) -> dict:
     #Supervisor 任务拆解：主题 -> 原子核查点 + 检索关键词
     _check_stop(config)
     guidance = state.get("guidance", []) + _consume_guidance(config, state["task_id"], 12)
-    data = _llm_json(_llm(config), prompts.PLAN_PROMPT.format(
+    data = _ask_capable_json(state, config, prompts.PLAN_PROMPT.format(
         topic=state["topic"], company=state["company"] or "未指定",
         research_type=state["research_type"],
         sources="、".join(state["preferred_sources"]) or "无偏好",
-    ))
+        qa_context=_qa_context(state["task_id"]),
+    ), actor="supervisor", node="plan")
     title = data.get("title") or state["topic"]
     keywords = [str(k) for k in data.get("keywords", [])][:MAX_KEYWORDS] or [state["topic"]]
     checkpoints = [str(c) for c in data.get("checkpoints", [])][:5]
@@ -235,7 +297,8 @@ def _ingest_material(task_id: str, seq: int, title: str, publisher: str, url: st
 COLLECTOR_MAX_ROUNDS = 10  #采集员单任务最大工具调用轮次（成本上限）
 
 
-def _make_collector_tools(task_id: str, user_id: int, new_count: dict) -> list:
+def _make_collector_tools(task_id: str, user_id: int, new_count: dict,
+                          stop_event, actor: str = "collector", node: str = "collect") -> list:
     #采集员工具集：全部以闭包绑定 task_id/user_id，避免 InjectedState 依赖
     from langchain_core.tools import tool as _mk_tool
 
@@ -294,7 +357,9 @@ def _make_collector_tools(task_id: str, user_id: int, new_count: dict) -> list:
         from ..tools.datasource import list_data_sources as _lds  #延迟导入，保持加载顺序
         return _lds.func(user_id=user_id)
 
-    return [archive_material, web_search, web_extract, query_financials, query_kline, list_data_sources]
+    return [archive_material, web_search, web_extract, query_financials,
+            query_kline, list_data_sources,
+            make_task_ask_tool(task_id, user_id, actor, node, stop_event=stop_event)]
 
 
 def _run_collector_agent(state: ResearchState, config: RunnableConfig, tools: list, prompt: str,
@@ -354,8 +419,11 @@ def collect_node(state: ResearchState, config: RunnableConfig) -> dict:
         keywords="、".join(state["keywords"]),
         material_count=len(materials),
         max_materials_total=MAX_MATERIALS_TOTAL, max_materials=MAX_MATERIALS,
+        qa_context=_qa_context(task_id),
     )
-    _run_collector_agent(state, config, _make_collector_tools(task_id, state["user_id"], new_count),
+    _run_collector_agent(state, config, _make_collector_tools(
+        task_id, state["user_id"], new_count,
+        config["configurable"]["stop_event"], actor="collector", node="collect"),
                          prompt, actor="collector", node="collect")
     materials = store.list_materials(task_id)  #重拉全量（采集员入库后，含首轮附件）
     store.bump_progress(task_id, 25)
@@ -484,9 +552,11 @@ def deepen_node(state: ResearchState, config: RunnableConfig) -> dict:
             material_count=len(store.list_materials(task_id)),
             max_total=MAX_MATERIALS_TOTAL,
             max_new=max(1, MAX_MATERIALS - new_count["n"]),
+            qa_context=_qa_context(task_id),
         )
-        _run_collector_agent(state, config,
-                             _make_collector_tools(task_id, state["user_id"], new_count),
+        _run_collector_agent(state, config, _make_collector_tools(
+            task_id, state["user_id"], new_count,
+            config["configurable"]["stop_event"], actor="deepener", node="deepen"),
                              prompt, actor="deepener", node="deepen")
         _match_evidence(task_id, claim, llm, num=3)  #新素材入库后立即重新匹配证据
     new_sources = new_count["n"]
@@ -584,7 +654,7 @@ def _processing_trace(state: ResearchState) -> str:
     return "\n".join(lines)[:4000]
 
 
-def _make_review_tools(task_id: str, user_id: int) -> list:
+def _make_review_tools(task_id: str, user_id: int, stop_event) -> list:
     #审查员只读工具：读素材原文 / 素材库内语义检索（均不落库、不执行外部动作）
     from langchain_core.tools import tool as _mk_tool
 
@@ -611,7 +681,9 @@ def _make_review_tools(task_id: str, user_id: int) -> list:
             blocks.append(f"【{gid} 第{h['chunk_index'] + 1}段】{h['content'][:600]}")
         return "\n\n".join(blocks)
 
-    return [read_material, search_materials]
+    return [read_material, search_materials,
+            make_task_ask_tool(task_id, user_id, "reviewer", "review",
+                               stop_event=stop_event)]
 
 
 def _run_review_agent(state: ResearchState, config: RunnableConfig, tools: list, prompt: str,
@@ -653,9 +725,11 @@ def verify_node(state: ResearchState, config: RunnableConfig) -> dict:
     task_id = state["task_id"]
     guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 80)
     guidance_text = ("研究员中途介入指令：\n" + "\n".join(f"- {g}" for g in guidance)) if guidance else ""
-    data = _llm_json(_llm(config), prompts.VERIFY_PROMPT.format(
+    data = _ask_capable_json(state, config, prompts.VERIFY_PROMPT.format(
         topic=state["topic"], guidance=guidance_text,
-        claims_with_evidence=json.dumps(_claims_snapshot(task_id), ensure_ascii=False)[:8000]))
+        claims_with_evidence=json.dumps(_claims_snapshot(task_id), ensure_ascii=False)[:8000],
+        qa_context=_qa_context(task_id),
+    ), actor="supervisor", node="verify")
     for v in data.get("verdicts", []):
         cid = str(v.get("claim_id", ""))
         if store.get_claim(task_id, cid) is None:
@@ -697,12 +771,14 @@ def review_node(state: ResearchState, config: RunnableConfig) -> dict:
     guidance = state.get("guidance", []) + _consume_guidance(config, task_id, 95)
     data = _run_review_agent(
         state, config,
-        _make_review_tools(task_id, state["user_id"]),
+        _make_review_tools(task_id, state["user_id"],
+                           config["configurable"]["stop_event"]),
         REVIEW_AGENT_PROMPT.format(
             topic=state["topic"], company=state["company"] or "未指定",
             trace=_processing_trace(state),
             claims_with_verdicts=json.dumps(_claims_snapshot(task_id), ensure_ascii=False)[:8000],
             material_count=len(store.list_materials(task_id)),
+            qa_context=_qa_context(task_id),
         ),
     )
     level_map = {"green": "verified", "yellow": "review", "red": "conflict"}

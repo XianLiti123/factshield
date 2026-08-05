@@ -50,6 +50,19 @@ class AgentInfo(BaseModel):
     restriction: str | None = None
 
 
+class QuestionDTO(BaseModel):
+    id: str
+    question: str
+    options: list[str] = []
+    allowCustom: bool = True
+    answer: str | None = None
+    actor: str | None = None
+    node: str | None = None
+    status: str | None = None
+    createdAt: str | None = None
+    answeredAt: str | None = None
+
+
 class ResearchRun(BaseModel):
     id: str
     title: str
@@ -60,6 +73,7 @@ class ResearchRun(BaseModel):
     claims: list[Claim]
     evidence: list[Evidence]
     agents: list[AgentInfo]
+    waitingQuestion: QuestionDTO | None = None  #提问工具正在等待回答的问题
 
 
 class TaskSummary(BaseModel):

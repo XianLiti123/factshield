@@ -209,6 +209,24 @@ CREATE TABLE IF NOT EXISTS agent_tool_traces (
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 CREATE INDEX IF NOT EXISTS idx_agent_tool_traces_task ON agent_tool_traces(task_id, actor);
+CREATE TABLE IF NOT EXISTS agent_questions (
+    id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL,               -- task（研究流水线）| session（对话小盾）
+    task_id TEXT,
+    session_id TEXT,
+    user_id INTEGER NOT NULL,
+    actor TEXT NOT NULL DEFAULT 'agent',
+    node TEXT NOT NULL DEFAULT '',
+    question TEXT NOT NULL,
+    options TEXT NOT NULL DEFAULT '[]',
+    allow_custom INTEGER NOT NULL DEFAULT 1,
+    answer TEXT,
+    answered_at TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending | answered | cancelled
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_agent_questions_task ON agent_questions(task_id, status);
+CREATE INDEX IF NOT EXISTS idx_agent_questions_session ON agent_questions(session_id, status);
 -- 流程执行错误登记（重试/自动修复/人工修复共用，供 /errors 接口查询）
 CREATE TABLE IF NOT EXISTS flow_errors (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

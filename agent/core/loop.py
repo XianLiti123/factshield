@@ -17,6 +17,7 @@ from ..tools.toolslist import full_tools,toolsets
 from ..tools.activate import activate_toolset
 from ..tools.skill import use_skill
 from ..tools.subagent import subagent
+from ..tools.ask_user import ask_user as ask_user_tool
 from langgraph.prebuilt import ToolNode
 
 
@@ -58,7 +59,8 @@ def if_LLM_call_tools(state:AgentState):
 #构建一个 agent 循环图；with_subagent 控制是否提供 subagent 工具（子代理的图不提供，防止嵌套调用）
 #with_checkpointer 控制是否挂 checkpointer（子代理图不挂——subagent 是一次性内部调用，不参与暂停）
 def build_graph(with_subagent:bool,with_checkpointer:bool=False):
-    resident = [activate_toolset,use_skill]+([subagent] if with_subagent else [])#常驻工具：工具集激活 + 技能自主调用（+子代理）
+    #常驻工具：工具集激活 + 技能自主调用（+子代理 + 提问工具，仅主图；子代理图不绑 ask_user）
+    resident = [activate_toolset,use_skill]+([subagent,ask_user_tool] if with_subagent else [])
 
     #创建调用LLM的函数
     def call_LLM(state:AgentState):

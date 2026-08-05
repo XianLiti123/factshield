@@ -1,17 +1,16 @@
-from typing import Iterator
-
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from agent import questions as question_store
 from agent.session import store as session_store
 
 from ..core.security import get_current_user
 from ..core.session import (
     delete_session, get_or_create_session, get_session, is_running,
-    list_sessions, mark_running, unmark_running,
+    list_sessions,
 )
-from ..utils.sse import sse_event
+from ..utils.agent_stream import agent_event_stream
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -93,6 +92,11 @@ class StatusResponse(BaseModel):
     running: bool
     paused: bool
     thread_id: str | None
+    pending_question: dict | None = None  #提问工具等待中的问题（供前端刷新后恢复卡片）
+
+
+class AnswerQuestionRequest(BaseModel):
+    answer: str
 
 
 @router.get("/{session_id}/status")
@@ -100,11 +104,13 @@ def status(session_id: str, user_id: int = Depends(get_current_user)) -> StatusR
     #查询会话运行/暂停状态（重启后也可查出哪些会话挂着暂停）
     _check_ownership(session_id, user_id)
     paused = session_store.get_paused(session_id)
+    pending = question_store.pending_question(session_id=session_id, user_id=user_id)
     return StatusResponse(
         session_id=session_id,
         running=is_running(session_id),
         paused=paused is not None,
         thread_id=paused[0] if paused else None,
+        pending_question=question_store.question_to_dto(pending) if pending else None,
     )
 
 
@@ -129,26 +135,12 @@ def resume(session_id: str, user_id: int = Depends(get_current_user)) -> Streami
         raise HTTPException(status_code=409, detail="没有暂停中的轮次")
     _, agent, lock = get_or_create_session(session_id, user_id)
 
-    def event_stream() -> Iterator[str]:
-        with lock:
-            mark_running(session_id)
-            try:
-                for kind, text in agent.resume_stream():
-                    yield sse_event(kind, text)
-                yield sse_event("done")
-            except Exception as e:
-                from agent.failures import format_traceback, record_error
-                record_error(user_id, "chat", session_id, error=str(e), node="resume",
-                             traceback=format_traceback(), auto_repair=False)
-                yield sse_event("error", str(e))
-            finally:
-                unmark_running(session_id)
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    return StreamingResponse(agent_event_stream(
+        lambda: agent.resume_stream(),
+        session_id=session_id, user_id=user_id, lock=lock,
+        error_node="resume", prompt="",
+    ), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.post("/{session_id}/abort")
@@ -160,3 +152,46 @@ def abort(session_id: str, user_id: int = Depends(get_current_user)) -> dict[str
     _, agent, _ = get_or_create_session(session_id, user_id)
     agent.abort()
     return {"status": "aborted", "session_id": session_id}
+
+
+# ---- 提问工具：问题查询与回答 ----
+
+@router.get("/{session_id}/questions")
+def list_session_questions(session_id: str, user_id: int = Depends(get_current_user)) -> dict:
+    #列出该会话的提问记录，供前端刷新后恢复提问卡片
+    _check_ownership(session_id, user_id)
+    rows = question_store.list_questions(session_id=session_id, user_id=user_id)
+    return {"session_id": session_id,
+            "questions": [question_store.question_to_dto(q) for q in rows]}
+
+
+@router.post("/{session_id}/questions/{question_id}/answer")
+def answer_session_question(session_id: str, question_id: str,
+                            request: AnswerQuestionRequest,
+                            user_id: int = Depends(get_current_user)) -> dict[str, str]:
+    #用户回答对话小盾的提问：写入答案 -> 发布 answer 事件 -> 唤醒等待线程
+    _check_ownership(session_id, user_id)
+    q = question_store.get_question(question_id, user_id)
+    if q is None or q.get("session_id") != session_id:
+        raise HTTPException(status_code=404, detail="问题不存在")
+    if q["status"] != "pending":
+        raise HTTPException(status_code=409, detail="该问题已作答或已取消")
+    if not question_store.is_waiting(question_id):
+        raise HTTPException(status_code=409, detail="会话已不在等待中，无法作答")
+    answer = request.answer.strip()
+    if not answer:
+        raise HTTPException(status_code=400, detail="答案不能为空")
+    question_store.answer_question(question_id, user_id, answer)
+    from agent.session import events as session_events
+    session_events.publish(session_id, {
+        "kind": "answer",
+        "type": "answer",
+        "content": answer,
+        "payload": {
+            "question_id": question_id,
+            "question": q["question"],
+            "answer": answer,
+        },
+    })
+    question_store.wake(question_id)
+    return {"status": "answered", "question_id": question_id, "answer": answer}
