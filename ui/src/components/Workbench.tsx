@@ -1,7 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import {
   BookOutlined,
-  BulbOutlined,
   CheckOutlined,
   ClockCircleOutlined,
   CloudDownloadOutlined,
@@ -22,20 +21,21 @@ import {
 } from '@ant-design/icons'
 import { Button, Drawer, Empty, Input, Modal, Progress, Segmented, Steps, message } from 'antd'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type { Claim, Evidence, ResearchRun } from '../types'
+import type { AgentQuestion, Claim, Evidence, ResearchRun } from '../types'
 import { getActiveTask, getResearchRunPhase, useWorkspaceStore } from '../store'
 import {
   assertResearchReady,
+  answerTaskQuestion,
   createTask as createPersistedTask,
   getAgentExecution,
   guideTask,
   resolveClaim as resolvePersistedClaim,
-  replyTaskSuggestion,
   retryClaim as retryPersistedClaim,
   streamTaskEvents,
   uploadDocument,
   type ResearchEvent,
 } from '../services/api'
+import { AgentQuestionCard } from './AgentQuestionCard'
 import { ATTACHMENT_ACCEPT, mergeAttachmentFiles } from '../utils/attachments'
 import { StatusBadge } from './StatusBadge'
 import { getClaimDisplayStatement, getRewrittenClaimStatement, isClaimRemoved } from '../utils/claims'
@@ -73,66 +73,6 @@ type ClaimRetryProgress = {
   detail: string
   afterSeq: number
   evidenceCountBefore: number
-}
-
-function AgentClarificationCard({ event, resolved, onResolved }: {
-  event: ResearchEvent
-  resolved: boolean
-  onResolved: (suggestionId: string) => void
-}) {
-  const suggestionId = event.payload.suggestion_id?.trim() ?? ''
-  const options = event.payload.options ?? []
-  const [selectedOptionId, setSelectedOptionId] = useState('')
-  const [customReply, setCustomReply] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-
-  const submitReply = async (continueWithoutChange = false) => {
-    if (!suggestionId) {
-      message.error('后端没有返回 suggestion_id，暂时无法提交这条建议')
-      return
-    }
-    if (!continueWithoutChange && !selectedOptionId && !customReply.trim()) {
-      message.warning('请选择一个建议，或写下你的具体要求')
-      return
-    }
-    setSubmitting(true)
-    try {
-      await replyTaskSuggestion(event.task_id, suggestionId, {
-        option_id: selectedOptionId || null,
-        content: customReply.trim(),
-        continue_without_change: continueWithoutChange,
-      })
-      onResolved(suggestionId)
-      message.success(continueWithoutChange ? '已按当前信息继续研究' : '小盾已收到你的选择，会据此继续研究')
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '建议回复提交失败')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <div className={`agent-clarification-card${resolved ? ' resolved' : ''}`}>
-      <div className="agent-clarification-heading">
-        <span><BulbOutlined /></span>
-        <div><strong>{event.payload.question || event.payload.title || '小盾需要你明确一个方向'}</strong><p>{event.payload.reason || event.payload.speech || '补充这一点后，我能把研究范围收得更准。'}</p></div>
-      </div>
-      {resolved ? (
-        <div className="agent-clarification-resolved"><CheckOutlined /> 已回复，小盾正在按你的选择继续</div>
-      ) : (
-        <>
-          {options.length > 0 && <div className="agent-clarification-options">{options.map((option) => (
-            <button type="button" className={selectedOptionId === option.id ? 'selected' : ''} key={option.id} onClick={() => setSelectedOptionId(option.id)}>{option.label}</button>
-          ))}</div>}
-          {event.payload.allow_custom !== false && <Input.TextArea value={customReply} onChange={(changeEvent) => setCustomReply(changeEvent.target.value)} autoSize={{ minRows: 2, maxRows: 4 }} placeholder="也可以直接写下你更关心的对象、范围或判断标准" />}
-          <div className="agent-clarification-actions">
-            <Button size="small" disabled={submitting} onClick={() => void submitReply(true)}>按当前信息继续</Button>
-            <Button size="small" type="primary" loading={submitting} onClick={() => void submitReply(false)}>提交选择并继续</Button>
-          </div>
-        </>
-      )}
-    </div>
-  )
 }
 
 function backendActorIcon(actor: string) {
@@ -923,7 +863,8 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
   const [realGuidanceOpen, setRealGuidanceOpen] = useState(false)
   const [realGuidanceSubmitting, setRealGuidanceSubmitting] = useState(false)
   const [selectedBackendEventSeqs, setSelectedBackendEventSeqs] = useState<number[]>([])
-  const [resolvedSuggestionIds, setResolvedSuggestionIds] = useState<string[]>([])
+  const [pendingTaskQuestion, setPendingTaskQuestion] = useState<AgentQuestion | null>(run.waitingQuestion ?? null)
+  const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({})
   const [restartingResearch, setRestartingResearch] = useState(false)
   const processListRef = useRef<HTMLDivElement>(null)
   const guidanceAttachmentInputRef = useRef<HTMLInputElement>(null)
@@ -957,8 +898,14 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
     setReviewWorkspaceState(preview ? { inspectionOpen: false, visibility: 'issues' } : readReviewWorkspaceState(run.id))
     setCompleteResearchOpen(false)
     setCompletingResearch(false)
-    setResolvedSuggestionIds([])
+    setPendingTaskQuestion(run.waitingQuestion ?? null)
+    setQuestionAnswers({})
   }, [preview, run.id])
+
+  useEffect(() => {
+    if (run.waitingQuestion?.status === 'pending') setPendingTaskQuestion(run.waitingQuestion)
+    else if (pendingTaskQuestion?.id === run.waitingQuestion?.id || !run.waitingQuestion) setPendingTaskQuestion(null)
+  }, [run.waitingQuestion])
   // 持久化任务在详情页以 ResearchRun 完整快照为准，避免任务列表摘要先一步
   // 切到 review，和上一轮仍在 running 的空主张明细拼成短暂空页。
   const persistedRunPhase = getResearchRunPhase(run)
@@ -1053,6 +1000,22 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
         if (current.some((item) => item.seq === event.seq)) return current
         return [...current, event].sort((left, right) => left.seq - right.seq)
       })
+
+      if (event.kind === 'question' && event.payload.question_id && event.payload.question) {
+        setPendingTaskQuestion({
+          id: event.payload.question_id,
+          question: event.payload.question,
+          options: event.payload.options ?? [],
+          allowCustom: event.payload.allow_custom !== false,
+          actor: event.actor,
+          status: 'pending',
+        })
+      }
+      if (event.kind === 'answer' && event.payload.question_id) {
+        const answer = event.payload.answer || event.payload.speech || ''
+        setQuestionAnswers((current) => ({ ...current, [event.payload.question_id!]: answer }))
+        setPendingTaskQuestion((current) => current?.id === event.payload.question_id ? null : current)
+      }
 
       setRetryProgress((current) => {
         if (!current || event.seq <= current.afterSeq || current.status === 'success' || current.status === 'error') return current
@@ -1274,6 +1237,19 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
       : [...current, seq])
   }
 
+  const submitTaskQuestionAnswer = async (question: AgentQuestion, answer: string) => {
+    try {
+      await answerTaskQuestion(run.id, question.id, answer)
+      setQuestionAnswers((current) => ({ ...current, [question.id]: answer }))
+      setPendingTaskQuestion((current) => current?.id === question.id ? null : current)
+      await queryClient.invalidateQueries({ queryKey: ['research-run', run.id] })
+      message.success('小盾收到补充信息了，研究会从这里继续')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '回答提交失败')
+      throw error
+    }
+  }
+
   const submitRealGuidance = async () => {
     const content = guidance.trim()
     const selectedEvents = backendEvents.filter((event) => selectedBackendEventSeqs.includes(event.seq))
@@ -1338,7 +1314,9 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
     const activeRetryEvent = latestRetryEvent && !retryFinished ? latestRetryEvent : undefined
     const retryRound = activeRetryEvent?.payload.metrics?.find((metric) => metric.label.includes('重试'))?.value
     const latestStageTitle = backendEvents.at(-1)?.payload.title
-    const progressStatus = activeRetryEvent
+    const progressStatus = pendingTaskQuestion
+      ? '小盾在等你补充一个关键信息'
+      : activeRetryEvent
       ? `${retryRound ? `第 ${retryRound} 轮` : ''}补充取证 · ${latestStageTitle || '正在补充材料'}`
       : currentAgent
         ? '小盾正在继续查证'
@@ -1385,13 +1363,24 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
               </div>
             </div>
             <div className="research-process-list" ref={processListRef}>
-              {backendEvents.length === 0 ? (
+              {backendEvents.length === 0 && !pendingTaskQuestion ? (
                 <div className={`process-stream-empty ${eventStreamStatus === 'error' ? 'error' : ''}`}>
                   <span><FileSearchOutlined /></span>
                   <strong>{eventStreamStatus === 'error' ? '暂时没有接到研究动态' : '小盾正在理解这项研究'}</strong>
                   <p>{eventStreamStatus === 'error' ? '任务仍由后端继续执行，刷新页面后会回放已经写入的全部记录。' : '正在等待后端写入第一条执行播报，收到后会在这里逐字显示。'}</p>
                 </div>
-              ) : backendEvents.map((event) => {
+              ) : <>
+                {pendingTaskQuestion && !backendEvents.some((event) => event.kind === 'question' && event.payload.question_id === pendingTaskQuestion.id) && (
+                  <div className="research-process-item backend-event current question-event" data-current="true">
+                    <span className="process-item-icon">{backendActorIcon(pendingTaskQuestion.actor ?? 'supervisor')}</span>
+                    <div className="process-item-content">
+                      <div className="process-item-title"><strong>需要你补充信息</strong><span>小盾 · 刚刚</span></div>
+                      <AgentQuestionCard question={pendingTaskQuestion} context="research" onAnswer={(answer) => submitTaskQuestionAnswer(pendingTaskQuestion, answer)} />
+                    </div>
+                    <div className="process-item-controls"><small>等待回答</small></div>
+                  </div>
+                )}
+                {backendEvents.map((event) => {
                 const isCurrent = event.seq === latestEventSeq && !['done', 'stopped', 'error'].includes(event.kind)
                 const details = event.payload.details ?? []
                 const metrics = event.payload.metrics ?? []
@@ -1401,7 +1390,9 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
                   : event.payload.tone === 'warning' || event.kind === 'warning'
                     ? 'warning'
                     : ''
-                const status = event.kind === 'error'
+                const status = event.kind === 'question'
+                  ? questionAnswers[event.payload.question_id ?? ''] ? '已回答' : '等待回答'
+                  : event.kind === 'error'
                   ? '执行失败'
                   : event.kind === 'warning'
                     ? '需要留意'
@@ -1422,7 +1413,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
                         <strong>{event.payload.title || '研究进度更新'}</strong>
                         <span>小盾 · {eventTime(event.ts)}</span>
                       </div>
-                      {conversationalSpeech && (
+                      {conversationalSpeech && event.kind !== 'question' && (
                         <TypewriterBroadcast
                           text={conversationalSpeech}
                           active={isCurrent && eventStreamStatus === 'live'}
@@ -1440,22 +1431,32 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
                           {metrics.map((metric, index) => <span key={`${metric.label}-${index}`}>{metric.label} {metric.value}</span>)}
                         </div>
                       )}
-                      {event.kind === 'clarification_required' && (
-                        <AgentClarificationCard
-                          event={event}
-                          resolved={Boolean(event.payload.suggestion_id && (
-                            resolvedSuggestionIds.includes(event.payload.suggestion_id)
-                            || backendEvents.some((candidate) => candidate.kind === 'clarification_resolved'
-                              && candidate.payload.suggestion_id === event.payload.suggestion_id)
-                          ))}
-                          onResolved={(suggestionId) => setResolvedSuggestionIds((current) => current.includes(suggestionId) ? current : [...current, suggestionId])}
+                      {event.kind === 'question' && event.payload.question_id && event.payload.question && (
+                        <AgentQuestionCard
+                          question={{
+                            id: event.payload.question_id,
+                            question: event.payload.question,
+                            options: event.payload.options ?? [],
+                            allowCustom: event.payload.allow_custom !== false,
+                            actor: event.actor,
+                            status: questionAnswers[event.payload.question_id] ? 'answered' : 'pending',
+                          }}
+                          context="research"
+                          answer={questionAnswers[event.payload.question_id]}
+                          onAnswer={(answer) => submitTaskQuestionAnswer({
+                            id: event.payload.question_id!,
+                            question: event.payload.question!,
+                            options: event.payload.options ?? [],
+                            allowCustom: event.payload.allow_custom !== false,
+                          }, answer)}
                         />
                       )}
                     </div>
                     <div className="process-item-controls"><small>{status}</small></div>
                   </div>
                 )
-              })}
+                })}
+              </>}
             </div>
           </section>
         </div>

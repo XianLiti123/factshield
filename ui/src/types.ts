@@ -42,6 +42,19 @@ export interface AgentInfo {
   restriction?: string
 }
 
+export interface AgentQuestion {
+  id: string
+  question: string
+  options: string[]
+  allowCustom: boolean
+  answer?: string | null
+  actor?: string | null
+  node?: string | null
+  status?: 'pending' | 'answered' | 'cancelled' | string | null
+  createdAt?: string | null
+  answeredAt?: string | null
+}
+
 export interface ResearchRun {
   id: string
   title: string
@@ -52,4 +65,5 @@ export interface ResearchRun {
   claims: Claim[]
   evidence: Evidence[]
   agents: AgentInfo[]
+  waitingQuestion?: AgentQuestion | null
 }

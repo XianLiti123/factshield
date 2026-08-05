@@ -17,10 +17,11 @@ import {
 import { Button, Drawer, Input, Tag, message } from 'antd'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { ResearchRun } from '../types'
+import type { AgentQuestion, ResearchRun } from '../types'
 import { getActiveTask, useWorkspaceStore } from '../store'
-import { abortSession, getSessionStatus, getTaskChatHistory, pauseSession, streamResumeSession, streamTaskChat, uploadDocumentForAgent } from '../services/api'
+import { abortSession, answerSessionQuestion, getSessionStatus, getTaskChatHistory, pauseSession, streamResumeSession, streamTaskChat, uploadDocumentForAgent, type StreamEvent } from '../services/api'
 import { ASSISTANT_ATTACHMENT_ACCEPT, isImageAttachment, mergeAssistantAttachmentFiles } from '../utils/attachments'
+import { AgentQuestionCard } from './AgentQuestionCard'
 
 type AssistantMessage = {
   id: number
@@ -37,6 +38,8 @@ type AssistantMessage = {
   status?: string
   streaming?: boolean
   restoredFromBackend?: boolean
+  question?: AgentQuestion
+  questionAnswer?: string
 }
 
 type AttachmentInfo = {
@@ -181,8 +184,10 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
   const [replyTarget, setReplyTarget] = useState<{ id: number; content: string } | null>(null)
   const [sending, setSending] = useState(false)
   const [sessionPaused, setSessionPaused] = useState(false)
+  const [pendingQuestion, setPendingQuestion] = useState<AgentQuestion | null>(null)
   const [collapsedSections, setCollapsedSections] = useState<Record<number, { thinking: boolean; tools: boolean }>>({})
   const attachmentInputRef = useRef<HTMLInputElement>(null)
+  const liveQuestionIdsRef = useRef(new Set<string>())
   const [messages, setMessagesState] = useState<AssistantMessage[]>(() => loadAssistantMessages(userId, run.id))
   const messagesRef = useRef(messages)
   const setMessages = (update: (current: AssistantMessage[]) => AssistantMessage[]) => {
@@ -201,6 +206,9 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
   )
   const hasClaimContext = activeView === 'workbench' && selectedClaim
   const sessionId = `task-${run.id}`
+  const questionIsInMessages = pendingQuestion
+    ? messages.some((item) => item.question?.id === pendingQuestion.id)
+    : false
   const toggleSection = (messageId: number, section: 'thinking' | 'tools') => {
     setCollapsedSections((current) => {
       const previous = current[messageId] ?? { thinking: false, tools: false }
@@ -232,12 +240,100 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
     if (!open) return
     let cancelled = false
     getSessionStatus(sessionId)
-      .then((status) => { if (!cancelled) setSessionPaused(status.paused) })
+      .then((status) => {
+        if (cancelled) return
+        setSessionPaused(status.paused)
+        setPendingQuestion(status.pending_question)
+      })
       .catch(() => {
         // 尚未发起过任务专属对话时，会话接口返回 404；此时保持普通可发送状态。
       })
     return () => { cancelled = true }
   }, [open, sessionId])
+
+  const questionFromEvent = (event: StreamEvent): AgentQuestion | null => {
+    const questionId = event.payload?.question_id?.trim()
+    const question = event.payload?.question?.trim() || event.content.trim()
+    if (!questionId || !question) return null
+    return {
+      id: questionId,
+      question,
+      options: event.payload?.options ?? [],
+      allowCustom: event.payload?.allow_custom !== false,
+      actor: event.payload?.actor ?? 'agent',
+      status: 'pending',
+    }
+  }
+
+  const syncRecoveredAnswer = (messageId: number) => {
+    const startedAt = Date.now()
+    const poll = async () => {
+      try {
+        const status = await getSessionStatus(sessionId)
+        if (status.running && Date.now() - startedAt < 90_000) {
+          window.setTimeout(() => void poll(), 1200)
+          return
+        }
+        const history = await getTaskChatHistory(run.id, userId)
+        const latestAnswer = history.slice().reverse().find((item) => item.role === 'assistant')?.content.trim() ?? ''
+        setMessages((current) => current.map((item) => item.id === messageId
+          ? {
+              ...item,
+              content: latestAnswer || item.content,
+              status: latestAnswer ? undefined : '补充信息已收到，处理结果会在下次打开时从历史记录同步',
+              streaming: false,
+              restoredFromBackend: Boolean(latestAnswer),
+            }
+          : item))
+        setSending(false)
+      } catch {
+        if (Date.now() - startedAt < 90_000) {
+          window.setTimeout(() => void poll(), 1600)
+        } else {
+          setMessages((current) => current.map((item) => item.id === messageId
+            ? { ...item, status: '补充信息已收到，处理结果会在下次打开时从历史记录同步', streaming: false }
+            : item))
+          setSending(false)
+        }
+      }
+    }
+    window.setTimeout(() => void poll(), 800)
+  }
+
+  const answerQuestion = async (question: AgentQuestion, answer: string) => {
+    try {
+      await answerSessionQuestion(sessionId, question.id, answer)
+      const hasLiveStream = liveQuestionIdsRef.current.has(question.id)
+      const restoredMessageId = messagesRef.current.find((item) => item.question?.id === question.id)?.id ?? Date.now()
+      setMessages((current) => {
+        const hasQuestionMessage = current.some((item) => item.question?.id === question.id)
+        const updated = current.map((item) => item.question?.id === question.id
+          ? { ...item, questionAnswer: answer, status: '已收到补充信息，正在继续思考…', streaming: true }
+          : item)
+        return hasQuestionMessage || hasLiveStream ? updated : [
+          ...updated,
+          {
+            id: restoredMessageId,
+            role: 'assistant',
+            content: '',
+            question,
+            questionAnswer: answer,
+            status: '已收到补充信息，正在继续思考…',
+            streaming: true,
+          },
+        ]
+      })
+      setPendingQuestion((current) => current?.id === question.id ? null : current)
+      if (!hasLiveStream) {
+        setSending(true)
+        syncRecoveredAnswer(restoredMessageId)
+      }
+      message.success('小盾收到你的回答了，会接着刚才的思路继续')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '回答提交失败')
+      throw error
+    }
+  }
 
   const sendRequest = async (request: string) => {
     const content = request.trim()
@@ -274,8 +370,23 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
       ].filter(Boolean).join('\n\n')
       await streamTaskChat(taskMessage, run.id, userId, hasClaimContext ? selectedClaimId : undefined, (event) => {
         if (event.type === 'error') throw new Error(event.content || '对话失败')
+        const eventQuestion = event.type === 'question' ? questionFromEvent(event) : null
+        if (eventQuestion) {
+          liveQuestionIdsRef.current.add(eventQuestion.id)
+          setPendingQuestion(eventQuestion)
+        }
+        if (event.type === 'answer' && event.payload?.question_id) {
+          setPendingQuestion((current) => current?.id === event.payload?.question_id ? null : current)
+        }
         setMessages((current) => current.map((item) => {
           if (item.id !== timestamp + 1) return item
+          if (eventQuestion) return { ...item, question: eventQuestion, status: '小盾需要你补充一个细节…', streaming: true }
+          if (event.type === 'answer') return {
+            ...item,
+            questionAnswer: event.payload?.answer || event.content,
+            status: '已收到补充信息，正在继续思考…',
+            streaming: true,
+          }
           if (event.type === 'token') {
             return { ...item, content: item.content + event.content, status: undefined }
           }
@@ -307,6 +418,7 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
             streaming: false,
           }
         : item))
+      liveQuestionIdsRef.current.clear()
     } catch (error) {
       const errorText = error instanceof Error ? error.message : '对话失败'
       setMessages((current) => current.map((item) => item.id === timestamp + 1
@@ -335,8 +447,23 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
     try {
       await streamResumeSession(sessionId, (event) => {
         if (event.type === 'error') throw new Error(event.content || '恢复失败')
+        const eventQuestion = event.type === 'question' ? questionFromEvent(event) : null
+        if (eventQuestion) {
+          liveQuestionIdsRef.current.add(eventQuestion.id)
+          setPendingQuestion(eventQuestion)
+        }
+        if (event.type === 'answer' && event.payload?.question_id) {
+          setPendingQuestion((current) => current?.id === event.payload?.question_id ? null : current)
+        }
         setMessages((current) => current.map((item) => {
           if (!item.streaming && !item.status?.includes('已暂停')) return item
+          if (eventQuestion) return { ...item, question: eventQuestion, status: '小盾需要你补充一个细节…', streaming: true }
+          if (event.type === 'answer') return {
+            ...item,
+            questionAnswer: event.payload?.answer || event.content,
+            status: '已收到补充信息，正在继续思考…',
+            streaming: true,
+          }
           if (event.type === 'token') return { ...item, content: item.content + event.content, status: undefined, streaming: true }
           if (event.type === 'think') return { ...item, thinking: `${item.thinking ?? ''}${event.content}`, status: undefined, streaming: true }
           if (event.type === 'tool') return { ...item, tools: [...(item.tools ?? []), event.content], status: undefined, streaming: true }
@@ -353,6 +480,7 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
         }))
       })
       setSessionPaused(pausedAgain)
+      liveQuestionIdsRef.current.clear()
     } catch (error) {
       message.error(error instanceof Error ? error.message : '恢复失败')
     } finally {
@@ -467,6 +595,14 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
                         {message.contexts.map((notice, index) => <span key={`${notice}-${index}`}>{notice}</span>)}
                       </div>
                     )}
+                    {message.question && (
+                      <AgentQuestionCard
+                        question={message.question}
+                        context="assistant"
+                        answer={message.questionAnswer}
+                        onAnswer={(answer) => answerQuestion(message.question!, answer)}
+                      />
+                    )}
                     {message.thinking && (
                       <section className="assistant-response-section assistant-thinking-section">
                         <button type="button" className="assistant-response-heading assistant-section-toggle" onClick={() => toggleSection(message.id, 'thinking')} aria-expanded={!collapsedSections[message.id]?.thinking}>
@@ -519,6 +655,12 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
           ))}
         </div>
 
+        {pendingQuestion && !questionIsInMessages && (
+          <div className="assistant-pending-question">
+            <AgentQuestionCard question={pendingQuestion} context="assistant" onAnswer={(answer) => answerQuestion(pendingQuestion, answer)} />
+          </div>
+        )}
+
         <div className="assistant-composer">
           <div
             className={`assistant-composer-box${attachmentDragging ? ' is-dragging' : ''}`}
@@ -539,6 +681,7 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
             )}
             <Input.TextArea
               value={input}
+              disabled={Boolean(pendingQuestion)}
               onChange={(event) => setInput(event.target.value)}
               onPaste={(event) => {
                 if (addPastedAttachments(event.clipboardData)) event.preventDefault()
@@ -550,7 +693,7 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
                 }
               }}
               autoSize={{ minRows: 2, maxRows: 5 }}
-              placeholder="有疑问或想补充什么，直接告诉小盾…"
+              placeholder={pendingQuestion ? '先回答上方的问题，小盾才能继续…' : '有疑问或想补充什么，直接告诉小盾…'}
             />
             {attachments.length > 0 && (
               <div className="assistant-pending-attachments">
@@ -574,11 +717,11 @@ export function SupervisorAssistant({ run, userId }: { run: ResearchRun; userId:
                 accept={ASSISTANT_ATTACHMENT_ACCEPT}
                 onChange={(event) => addAttachments(event.target.files)}
               />
-              <Button type="text" icon={<PaperClipOutlined />} aria-label="添加附件" onClick={() => attachmentInputRef.current?.click()}>添加附件</Button>
+              <Button type="text" disabled={Boolean(pendingQuestion)} icon={<PaperClipOutlined />} aria-label="添加附件" onClick={() => attachmentInputRef.current?.click()}>添加附件</Button>
               {sending && !sessionPaused && <Button type="text" danger onClick={() => void interruptConversation()}>打断</Button>}
               {sessionPaused && <Button type="text" onClick={() => void resumeConversation()}>继续思考</Button>}
               {sessionPaused && <Button type="text" danger onClick={() => void abortConversation()}>丢弃</Button>}
-              <Button type="primary" loading={sending} icon={<ArrowUpOutlined />} aria-label="发送给小盾" onClick={() => sendRequest(input)} />
+              <Button type="primary" disabled={Boolean(pendingQuestion)} loading={sending && !pendingQuestion} icon={<ArrowUpOutlined />} aria-label="发送给小盾" onClick={() => sendRequest(input)} />
             </div>
           </div>
           <span>Enter 发送 · Shift + Enter 换行 · Ctrl+V 粘贴文件或截图</span>

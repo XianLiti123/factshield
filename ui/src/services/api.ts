@@ -1,5 +1,5 @@
 import { getResearchRunPhase, type ResearchTaskSession, type TaskPhase } from '../store'
-import type { ResearchRun } from '../types'
+import type { AgentQuestion, ResearchRun } from '../types'
 import { readReopenedReviewIds } from '../utils/reviewDrafts'
 
 const TOKEN_KEY = 'factshield.auth.token'
@@ -71,7 +71,18 @@ export type DataSourceConfig = {
   updated_at?: string
 }
 export type DocumentConversion = { filename: string; mode: string; content: string }
-export type StreamEvent = { type: 'token' | 'think' | 'tool' | 'context' | 'paused' | 'done' | 'error'; content: string }
+export type StreamEvent = {
+  type: 'token' | 'think' | 'tool' | 'context' | 'paused' | 'question' | 'answer' | 'done' | 'error'
+  content: string
+  payload?: {
+    question_id?: string
+    question?: string
+    options?: string[]
+    allow_custom?: boolean
+    actor?: string
+    answer?: string
+  }
+}
 export type ChatHistoryMessage = { role: 'assistant' | 'user'; content: string }
 export type ResearchEvent = {
   id: number
@@ -86,11 +97,11 @@ export type ResearchEvent = {
     metrics?: Array<{ label: string; value: string }>
     tone?: 'warning' | 'danger' | string | null
     progress?: number | null
-    suggestion_id?: string
+    question_id?: string
     question?: string
-    reason?: string
-    options?: Array<{ id: string; label: string }>
+    options?: string[]
     allow_custom?: boolean
+    answer?: string
   }
   ts: string
 }
@@ -381,6 +392,7 @@ export type SessionStatus = {
   running: boolean
   paused: boolean
   thread_id: string | null
+  pending_question: AgentQuestion | null
 }
 
 export type SessionCompactResult = {
@@ -623,15 +635,30 @@ export const guideTask = (taskId: string, instruction: string) => request<{ stat
     body: JSON.stringify({ instruction }),
   },
 )
-export const replyTaskSuggestion = (
-  taskId: string,
-  suggestionId: string,
-  reply: { option_id?: string | null; content?: string; continue_without_change: boolean },
-) => request<{ status: string; task_id: string; suggestion_id: string }>(
-  `/api/tasks/${encodeURIComponent(taskId)}/suggestions/${encodeURIComponent(suggestionId)}/reply`, {
-    method: 'POST',
-    body: JSON.stringify(reply),
-  },
+export const getTaskQuestions = (taskId: string) => request<{ task_id: string; questions: AgentQuestion[] }>(
+  `/api/tasks/${encodeURIComponent(taskId)}/questions`,
+)
+
+export const answerTaskQuestion = (taskId: string, questionId: string, answer: string) => (
+  request<{ status: string; question_id: string; answer: string }>(
+    `/api/tasks/${encodeURIComponent(taskId)}/questions/${encodeURIComponent(questionId)}/answer`, {
+      method: 'POST',
+      body: JSON.stringify({ answer }),
+    },
+  )
+)
+
+export const getSessionQuestions = (sessionId: string) => request<{ session_id: string; questions: AgentQuestion[] }>(
+  `/api/sessions/${encodeURIComponent(sessionId)}/questions`,
+)
+
+export const answerSessionQuestion = (sessionId: string, questionId: string, answer: string) => (
+  request<{ status: string; question_id: string; answer: string }>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/questions/${encodeURIComponent(questionId)}/answer`, {
+      method: 'POST',
+      body: JSON.stringify({ answer }),
+    },
+  )
 )
 export const resolveClaim = (taskId: string, claimId: string, action: 'reject' | 'keep' | 'remove' | 'rewrite', comment?: string) => (
   request<{ status: string; claim_id: string; new_status: string }>(`/api/tasks/${taskId}/claims/${claimId}/resolve`, {
