@@ -65,6 +65,10 @@ export type HistoryAnalysisConfig = {
   frequency: HistoryAnalysisFrequency
 }
 
+export function getTaskIdentityKey(taskId: string, createdAt: string) {
+  return `${taskId}::${createdAt}`
+}
+
 export const EMPTY_HISTORY_ANALYSIS_CONFIG: HistoryAnalysisConfig = {
   metric: '',
   scenarios: '',
@@ -99,6 +103,13 @@ function persistHistoryAnalysisConfigs(configs: Record<string, HistoryAnalysisCo
   } catch {
     // Storage may be unavailable; the in-memory configuration still survives page navigation.
   }
+}
+
+function omitTaskScopedEntries<T>(entries: Record<string, T>, taskId: string): Record<string, T> {
+  const identityPrefix = `${taskId}::`
+  return Object.fromEntries(
+    Object.entries(entries).filter(([key]) => key !== taskId && !key.startsWith(identityPrefix)),
+  )
 }
 
 interface CreateTaskInput {
@@ -353,8 +364,8 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   })),
   deleteTask: (taskId) => set((state) => {
     const tasks = state.tasks.filter((task) => task.id !== taskId)
-    const { [taskId]: _removedAnalysisJob, ...historyAnalysisJobs } = state.historyAnalysisJobs
-    const { [taskId]: _removedAnalysisConfig, ...historyAnalysisConfigs } = state.historyAnalysisConfigs
+    const historyAnalysisJobs = omitTaskScopedEntries(state.historyAnalysisJobs, taskId)
+    const historyAnalysisConfigs = omitTaskScopedEntries(state.historyAnalysisConfigs, taskId)
     persistHistoryAnalysisConfigs(historyAnalysisConfigs)
     return {
       tasks,

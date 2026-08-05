@@ -25,6 +25,7 @@ import type { ResearchRun } from '../types'
 import {
   EMPTY_HISTORY_ANALYSIS_CONFIG,
   getActiveTask,
+  getTaskIdentityKey,
   useWorkspaceStore,
   type HistoryAnalysisConfig,
 } from '../store'
@@ -276,9 +277,10 @@ const frequencyLabels = {
 
 export function AnalyticsView({ run }: { run: ResearchRun }) {
   const activeTask = useWorkspaceStore(getActiveTask)
-  const historyAnalysisJob = useWorkspaceStore((state) => state.historyAnalysisJobs[run.id])
+  const taskIdentityKey = getTaskIdentityKey(run.id, run.createdAt)
+  const historyAnalysisJob = useWorkspaceStore((state) => state.historyAnalysisJobs[taskIdentityKey])
   const historyAnalysisConfig = useWorkspaceStore((state) => (
-    state.historyAnalysisConfigs[run.id] ?? EMPTY_HISTORY_ANALYSIS_CONFIG
+    state.historyAnalysisConfigs[taskIdentityKey] ?? EMPTY_HISTORY_ANALYSIS_CONFIG
   ))
   const setHistoryAnalysisConfig = useWorkspaceStore((state) => state.setHistoryAnalysisConfig)
   const resetHistoryAnalysisConfig = useWorkspaceStore((state) => state.resetHistoryAnalysisConfig)
@@ -294,11 +296,12 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
   const customMode = isCustomHistoryAnalysis(normalizedConfig)
 
   const updateConfig = <K extends keyof HistoryAnalysisConfig>(key: K, value: HistoryAnalysisConfig[K]) => {
-    setHistoryAnalysisConfig(run.id, { ...historyAnalysisConfig, [key]: value })
+    setHistoryAnalysisConfig(taskIdentityKey, { ...historyAnalysisConfig, [key]: value })
   }
 
   useEffect(() => {
     let cancelled = false
+    setAnalysis(null)
     setDisplayMode('relative')
     if (!persisted) {
       setAnalysis(null)
@@ -311,7 +314,7 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
       .catch((error) => { if (!cancelled) message.error(error instanceof Error ? error.message : '历史情景结果读取失败') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [persisted, run.id])
+  }, [persisted, run.createdAt, run.id])
 
   useEffect(() => {
     if (!running || !persisted) return
@@ -325,17 +328,17 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
         if (result && result.id !== historyAnalysisJob.baselineAnalysisId) {
           setAnalysis(result)
           setDisplayMode('relative')
-          finishHistoryAnalysisJob(run.id)
+          finishHistoryAnalysisJob(taskIdentityKey)
           message.success('历史情景复盘已生成')
           return
         }
         if (attempts >= POLL_LIMIT) {
-          finishHistoryAnalysisJob(run.id)
+          finishHistoryAnalysisJob(taskIdentityKey)
           message.warning('暂未取得新结果，可稍后重新进入本页查看')
         }
       } catch (error) {
         if (!cancelled) {
-          finishHistoryAnalysisJob(run.id)
+          finishHistoryAnalysisJob(taskIdentityKey)
           message.error(error instanceof Error ? error.message : '历史情景结果读取失败')
         }
       }
@@ -346,7 +349,7 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [finishHistoryAnalysisJob, historyAnalysisJob, persisted, run.id, running])
+  }, [finishHistoryAnalysisJob, historyAnalysisJob, persisted, run.id, running, taskIdentityKey])
 
   const startAnalysis = async () => {
     if (!persisted) {
@@ -358,7 +361,7 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
       return
     }
     const baselineAnalysisId = analysis?.id ?? null
-    startHistoryAnalysisJob(run.id, baselineAnalysisId, normalizedConfig)
+    startHistoryAnalysisJob(taskIdentityKey, baselineAnalysisId, normalizedConfig)
     try {
       await startHistoryAnalysis(run.id, customMode ? toHistoryAnalysisRequest(normalizedConfig) : undefined)
       message.success(customMode ? '已按你填写的比较要求提交，结果生成后会自动显示在本页' : '已按系统推荐提交，结果生成后会自动显示在本页')
@@ -368,7 +371,7 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
         message.info('已重新接入正在运行的历史情景复盘')
         return
       }
-      finishHistoryAnalysisJob(run.id)
+      finishHistoryAnalysisJob(taskIdentityKey)
       message.error(errorMessage)
     }
   }
@@ -513,7 +516,7 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
       <section className="page-card history-config-card history-analysis-config-card">
         <div className="history-config-intro">
           <div><SettingOutlined /><span><strong>你想比较什么</strong><small>只填你关心的部分，其余仍由系统补全；全部留空则完全由系统推荐。</small></span></div>
-          {customMode && <Button type="text" disabled={running} onClick={() => resetHistoryAnalysisConfig(run.id)}>恢复系统推荐</Button>}
+          {customMode && <Button type="text" disabled={running} onClick={() => resetHistoryAnalysisConfig(taskIdentityKey)}>恢复系统推荐</Button>}
         </div>
         <label className="history-config-field history-metric-field">
           <span>比较指标</span>
