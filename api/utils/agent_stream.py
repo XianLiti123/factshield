@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 
 from agent.failures import format_traceback, record_error
 from agent.session import events as session_events
+from agent.session import store as session_store
 
 from ..core.session import mark_running, unmark_running
 from .sse import sse_event, sse_event_payload
@@ -24,6 +25,7 @@ async def agent_event_stream(
     lock: threading.Lock,
     error_node: str = "chat",
     prompt: str = "",
+    ask_user_enabled: bool = True,
 ) -> AsyncIterator[str]:
     """启动后台线程消费 agent 事件流，并把事件桥接为 SSE 文本。
 
@@ -41,6 +43,7 @@ async def agent_event_stream(
     def worker() -> None:
         with lock:
             mark_running(session_id)
+            ask_token = session_store.current_ask_user_enabled.set(ask_user_enabled)
             try:
                 for kind, text in generator_factory():
                     put({"kind": "sse", "type": kind, "content": text})
@@ -52,6 +55,7 @@ async def agent_event_stream(
                 put({"kind": "sse", "type": "error", "content": str(e)})
                 put({"kind": "sse", "type": "done", "content": ""})
             finally:
+                session_store.current_ask_user_enabled.reset(ask_token)
                 unmark_running(session_id)
 
     threading.Thread(target=worker, daemon=True,

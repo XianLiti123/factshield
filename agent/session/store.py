@@ -14,6 +14,8 @@ init_db()  #确保各表存在
 current_user_id: ContextVar[int] = ContextVar("current_user_id", default=ensure_admin())
 #当前请求/会话的会话上下文：ask_user 工具在图内执行时靠它定位对话会话与事件总线
 current_session_id: ContextVar[str | None] = ContextVar("current_session_id", default=None)
+#当前请求/会话是否允许绑定 ask_user 提问工具：数据库检索等不需要提问的场景置 False
+current_ask_user_enabled: ContextVar[bool] = ContextVar("current_ask_user_enabled", default=True)
 
 
 def create_session(session_id: str | None = None, user_id: int | None = None) -> str:

@@ -65,7 +65,11 @@ def build_graph(with_subagent:bool,with_checkpointer:bool=False):
     #创建调用LLM的函数
     def call_LLM(state:AgentState):
         names = state.get("active_toolsets") or ["terminal"]#type:ignore #当前激活的工具集，默认终端
-        tools = resident+[t for n in names for t in toolsets.get(n,[])]#元工具常驻，其余按激活状态动态绑定
+        from ..session import store as session_store  #延迟导入，避免加载顺序问题
+        #元工具常驻，其余按激活状态动态绑定；数据检索等场景按会话开关剔除 ask_user
+        tools = [t for t in resident
+                 if t is not ask_user_tool or session_store.current_ask_user_enabled.get()]
+        tools += [t for n in names for t in toolsets.get(n,[])]
         client = get_llm_client(state["user_id"])#按当前用户装配（user_id 随图输入传入，线程安全）
         response = client.invoke(state["messages"], tools=tools)
         return {"messages":[response]}

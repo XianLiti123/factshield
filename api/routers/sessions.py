@@ -135,10 +135,13 @@ def resume(session_id: str, user_id: int = Depends(get_current_user)) -> Streami
         raise HTTPException(status_code=409, detail="没有暂停中的轮次")
     _, agent, lock = get_or_create_session(session_id, user_id)
 
+    #数据检索会话不绑定 ask_user 提问工具
+    ask_user_enabled = not session_id.startswith("database-")
     return StreamingResponse(agent_event_stream(
         lambda: agent.resume_stream(),
         session_id=session_id, user_id=user_id, lock=lock,
         error_node="resume", prompt="",
+        ask_user_enabled=ask_user_enabled,
     ), media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 

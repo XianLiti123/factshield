@@ -28,11 +28,14 @@ def chat_stream(request: ChatRequest, user_id: int = Depends(get_current_user)) 
         raise HTTPException(status_code=404, detail="会话不存在")  #他人会话不暴露存在性
     session_id, agent, lock = get_or_create_session(request.session_id, user_id)
 
+    #数据检索（三路检索）会话不绑定 ask_user 提问工具，避免出现提问卡片
+    ask_user_enabled = not (request.session_id or "").startswith("database-")
     return StreamingResponse(
         agent_event_stream(
             lambda: agent.run_stream(request.message),
             session_id=session_id, user_id=user_id, lock=lock,
             error_node="chat", prompt=request.message,
+            ask_user_enabled=ask_user_enabled,
         ),
         media_type="text/event-stream",
         headers={
