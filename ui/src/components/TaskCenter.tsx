@@ -244,7 +244,14 @@ export function TaskCenter() {
                 width: 330,
                 render: (_, { task }) => (
                   <div className="task-title-cell">
-                    <strong>{task.title}</strong>
+                    <div className="task-title-line">
+                      <strong>{task.title}</strong>
+                      {task.waitingQuestion?.status === 'pending' && (
+                        <Tooltip title="小盾正在等你补充信息">
+                          <span className="task-question-alert" role="status" aria-label="有问题等待回答"><i /></span>
+                        </Tooltip>
+                      )}
+                    </div>
                     <span>{task.id} · {task.category}</span>
                   </div>
                 ),

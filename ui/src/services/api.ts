@@ -574,9 +574,26 @@ export async function listTasks() {
   // 列表摘要只有 task.status，没有每条主张的 humanAction。对于已经跑完但仍被
   // 后端摘要标成 review 的任务，必须补读详情才能区分“仍待复核”和“实际已完成”。
   return Promise.all(tasks.map(async (task) => {
+    let taskWithQuestion: ResearchTaskSession = task.phase === 'running'
+      ? task
+      : { ...task, waitingQuestion: null }
+    if (task.phase === 'running') {
+      try {
+        const response = await request<{ task_id: string; questions: AgentQuestion[] }>(
+          `/api/tasks/${encodeURIComponent(task.id)}/questions`,
+        )
+        taskWithQuestion = {
+          ...task,
+          waitingQuestion: response.questions.find((question) => question.status === 'pending') ?? null,
+        }
+      } catch {
+        // 任务摘要仍可正常刷新；store 会保留上一次已确认的待回答提醒。
+      }
+    }
+
     const reopenedReviewIds = readReopenedReviewIds(task.id)
     const shouldReadReviewDetail = task.phase === 'review' || (task.phase === 'ready' && reopenedReviewIds.length > 0)
-    if (!shouldReadReviewDetail || (task.progress ?? 0) < 100 || (task.claimCount ?? 0) === 0) return task
+    if (!shouldReadReviewDetail || (task.progress ?? 0) < 100 || (task.claimCount ?? 0) === 0) return taskWithQuestion
     try {
       const run = await getTask(task.id)
       const reviewClaimIds = run.claims
@@ -588,7 +605,7 @@ export async function listTasks() {
       const reviewedClaimIds = getEffectiveReviewedClaimIds(task.id, reviewClaimIds, backendReviewedClaimIds)
       const phase = reopenedReviewIds.length > 0 ? 'review' : getResearchRunPhase(run)
       return {
-        ...task,
+        ...taskWithQuestion,
         phase,
         phaseConfirmed: true,
         reviewClaimIds,
@@ -604,7 +621,7 @@ export async function listTasks() {
       }
     } catch {
       // 单条详情暂时不可用时仍展示任务列表；store 会保护已由详情确认的完成态。
-      return task
+      return taskWithQuestion
     }
   }))
 }

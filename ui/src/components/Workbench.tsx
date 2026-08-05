@@ -7,6 +7,7 @@ import {
   DatabaseOutlined,
   FilePdfOutlined,
   FileSearchOutlined,
+  FullscreenOutlined,
   LinkOutlined,
   PaperClipOutlined,
   PauseCircleOutlined,
@@ -361,9 +362,42 @@ function openEvidenceSource(sourceUrl: string) {
   if (!sourceWindow) message.warning('浏览器阻止了新窗口，请允许本站打开新标签页后重试')
 }
 
+function EvidenceDocumentPage({
+  evidence,
+  name,
+  disclosureDate,
+  locator,
+  expanded = false,
+}: {
+  evidence: Evidence
+  name: string
+  disclosureDate: string
+  locator: string
+  expanded?: boolean
+}) {
+  return (
+    <div className={`document-page${expanded ? ' evidence-preview-page' : ''}`}>
+      <div className="document-brand">{evidence.publisher}</div>
+      <h3>{name}</h3>
+      <div className="document-meta">
+        <span>披露日期：{disclosureDate}</span>
+        <span>证据定位：{locator}</span>
+      </div>
+      <p>公司坚持以技术创新推动经营质量提升，在复杂多变的全球市场环境中持续加强供应链管理，并根据客户需求动态优化产品和产能结构。</p>
+      <div className={`highlight-quote ${evidence.relation}`}>
+        <span className="quote-marker">核验引用</span>
+        “{evidence.quote}”
+      </div>
+      <p>相关经营数据均按企业会计准则编制，本段所涉及业务口径与公司年度报告保持一致。部分前瞻性表述可能受到市场环境、原材料价格及项目进度影响。</p>
+      <div className="page-number">— {locator.split('·')[0]} —</div>
+    </div>
+  )
+}
+
 function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: Evidence[]; preferredEvidenceId?: string }) {
   const [selectedEvidenceId, setSelectedEvidenceId] = useState(evidenceList[0]?.id ?? '')
   const [view, setView] = useState<EvidenceView>('text')
+  const [documentPreviewOpen, setDocumentPreviewOpen] = useState(false)
   const [evidenceDragging, setEvidenceDragging] = useState(false)
   const evidenceListRef = useRef<HTMLDivElement>(null)
   const evidenceDragRef = useRef({ pointerId: -1, startX: 0, startScrollLeft: 0, moved: false })
@@ -456,28 +490,19 @@ function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: E
             <FilePdfOutlined />
             <div><strong>{selectedEvidenceName}</strong><span>原始文件 · 已完成哈希校验</span></div>
           </div>
-          <button
-            className="source-link-button"
-            disabled={!selectedSourceUrl}
-            title={selectedSourceUrl ? `打开 ${selectedSourceUrl}` : selectedEvidence.url ? '后端返回的来源地址无效' : '后端未返回来源地址'}
-            onClick={() => selectedSourceUrl && openEvidenceSource(selectedSourceUrl)}
-          ><LinkOutlined /> {selectedSourceUrl ? '打开来源' : '暂无来源地址'}</button>
-        </div>
-        <div className="document-page">
-          <div className="document-brand">{selectedEvidence.publisher}</div>
-          <h3>{selectedEvidenceName}</h3>
-          <div className="document-meta">
-            <span>披露日期：{selectedDisclosureDate}</span>
-            <span>证据定位：{selectedLocator}</span>
+          <div className="document-toolbar-actions">
+            <button className="document-expand-button" title="放大预览当前文档" onClick={() => setDocumentPreviewOpen(true)}>
+              <FullscreenOutlined /> 放大文档
+            </button>
+            <button
+              className="source-link-button"
+              disabled={!selectedSourceUrl}
+              title={selectedSourceUrl ? `打开 ${selectedSourceUrl}` : selectedEvidence.url ? '后端返回的来源地址无效' : '后端未返回来源地址'}
+              onClick={() => selectedSourceUrl && openEvidenceSource(selectedSourceUrl)}
+            ><LinkOutlined /> {selectedSourceUrl ? '打开来源' : '暂无来源地址'}</button>
           </div>
-          <p>公司坚持以技术创新推动经营质量提升，在复杂多变的全球市场环境中持续加强供应链管理，并根据客户需求动态优化产品和产能结构。</p>
-          <div className={`highlight-quote ${selectedEvidence.relation}`}>
-            <span className="quote-marker">核验引用</span>
-            “{selectedEvidence.quote}”
-          </div>
-          <p>相关经营数据均按企业会计准则编制，本段所涉及业务口径与公司年度报告保持一致。部分前瞻性表述可能受到市场环境、原材料价格及项目进度影响。</p>
-          <div className="page-number">— {selectedLocator.split('·')[0]} —</div>
         </div>
+        <EvidenceDocumentPage evidence={selectedEvidence} name={selectedEvidenceName} disclosureDate={selectedDisclosureDate} locator={selectedLocator} />
       </article> : <article className="source-info-view">
         <div className="document-toolbar">
           <div className="document-file">
@@ -532,6 +557,22 @@ function EvidenceViewer({ evidenceList, preferredEvidenceId }: { evidenceList: E
         <div><strong>证据完整性已验证</strong><span>来源可访问 · 原文未篡改 · 引用定位准确</span></div>
         <span className="hash-code">SHA-256 · 9f2c…a817</span>
       </div>
+      <Modal
+        className="evidence-preview-modal"
+        open={documentPreviewOpen}
+        onCancel={() => setDocumentPreviewOpen(false)}
+        width={960}
+        centered
+        title={<div className="evidence-preview-title"><FilePdfOutlined /><div><strong>放大查看文档</strong><span>{selectedEvidenceName}</span></div></div>}
+        footer={[
+          <Button key="source" icon={<LinkOutlined />} disabled={!selectedSourceUrl} onClick={() => selectedSourceUrl && openEvidenceSource(selectedSourceUrl)}>打开来源</Button>,
+          <Button key="close" type="primary" onClick={() => setDocumentPreviewOpen(false)}>关闭</Button>,
+        ]}
+      >
+        <div className="evidence-preview-canvas">
+          <EvidenceDocumentPage evidence={selectedEvidence} name={selectedEvidenceName} disclosureDate={selectedDisclosureDate} locator={selectedLocator} expanded />
+        </div>
+      </Modal>
     </section>
   )
 }
@@ -1282,6 +1323,7 @@ export function Workbench({ run, preview = false }: { run: ResearchRun; preview?
       setQuestionAnswers((current) => ({ ...current, [question.id]: answer }))
       setPendingTaskQuestion((current) => current?.id === question.id ? null : current)
       await queryClient.invalidateQueries({ queryKey: ['research-run', run.id] })
+      await queryClient.invalidateQueries({ queryKey: ['workspace-tasks'] })
       message.success('小盾收到补充信息了，研究会从这里继续')
     } catch (error) {
       message.error(error instanceof Error ? error.message : '回答提交失败')

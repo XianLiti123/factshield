@@ -534,8 +534,11 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
             placeholder="如：版号恢复发放、监管政策调整；多个场景用逗号隔开"
           />
         </label>
-          <div className="history-config-field history-date-field">
-            <span>观察时间范围</span>
+        <div
+          className="history-config-field history-date-field"
+          title="当前后端按年月筛选数据，日期中的日会随请求提交，但暂不参与后端过滤。"
+        >
+          <span>观察时间范围</span>
           <div className="history-date-range">
             <DatePicker
               aria-label="开始日期"
@@ -558,9 +561,8 @@ export function AnalyticsView({ run }: { run: ResearchRun }) {
               placeholder="选择结束日期"
               onChange={(value) => updateConfig('end', value?.format('YYYY-MM-DD') ?? '')}
             />
-            </div>
-            <small className="history-date-capability-note">当前后端按年月筛选数据，日期中的“日”会随请求提交，但暂不会参与后端过滤。</small>
           </div>
+        </div>
         <label className="history-config-field history-frequency-field">
           <span>统计频率</span>
           <Select

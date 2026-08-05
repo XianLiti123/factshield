@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ResearchRun } from './types'
+import type { AgentQuestion, ResearchRun } from './types'
 import { getEffectiveReviewedClaimIds, readReopenedReviewIds } from './utils/reviewDrafts'
 
 export type ViewName = 'tasks' | 'workbench' | 'topology' | 'analytics' | 'reports' | 'database' | 'settings'
@@ -39,6 +39,7 @@ export interface ResearchTaskSession {
   phaseConfirmed?: boolean
   persisted?: boolean
   isDemo?: boolean
+  waitingQuestion?: AgentQuestion | null
 }
 
 export type SearchFocus = {
@@ -382,6 +383,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         selectedClaimId: current.selectedClaimId,
         reviewClaimIds: incomingHasClaimDetail ? task.reviewClaimIds : current.reviewClaimIds,
         reviewedClaimIds: incomingHasClaimDetail ? task.reviewedClaimIds : current.reviewedClaimIds,
+        waitingQuestion: task.waitingQuestion === undefined ? current.waitingQuestion : task.waitingQuestion,
       }
 
       // GET /tasks 只有任务摘要，无法判断 review 中的疑点是否已经全部人工处理。
@@ -445,6 +447,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         claimCount: run.claims.length,
         reviewClaimIds,
         reviewedClaimIds,
+        waitingQuestion: run.waitingQuestion ?? null,
         selectedClaimId: reopenedReviewIds.find((claimId) => reviewClaimIds.includes(claimId))
           ?? (run.claims.some((claim) => claim.id === task.selectedClaimId)
           ? task.selectedClaimId
