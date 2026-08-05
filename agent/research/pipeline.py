@@ -338,7 +338,10 @@ def _ingest_material(task_id: str, seq: int, title: str, publisher: str, url: st
 #不给 terminal、subagent 等系统执行能力，保障后台无人监督下的安全与成本边界；
 #轮次/素材数量均有硬上限，控制流仍由固定骨架保证（stop/进度/审计不受影响）
 
-COLLECTOR_MAX_ROUNDS = 10  #采集员单任务最大工具调用轮次（成本上限）
+COLLECTOR_MAX_ROUNDS = 8   #采集员单任务最大工具调用轮次（成本上限）
+DEEPEN_MAX_ROUNDS = 4      #深挖员单条主张最大工具调用轮次
+COLLECTOR_MAX_SEARCHES = 12  #采集员单任务服务端联网搜索次数预算
+DEEPEN_MAX_SEARCHES = 4      #深挖员单条主张服务端联网搜索次数预算
 
 
 def _make_collector_tools(task_id: str, user_id: int, new_count: dict,
@@ -408,21 +411,33 @@ def _make_collector_tools(task_id: str, user_id: int, new_count: dict,
 
 
 def _run_collector_agent(state: ResearchState, config: RunnableConfig, tools: list, prompt: str,
-                         *, actor: str = "collector", node: str = "collect") -> str:
+                         *, actor: str = "collector", node: str = "collect",
+                         max_rounds: int = COLLECTOR_MAX_ROUNDS,
+                         max_searches: int = COLLECTOR_MAX_SEARCHES) -> str:
     #受限工具集 agent 循环：LLM 自主选工具取数并入库；无工具调用视为完成；
     #每轮检查 stop_event，轮次硬上限 COLLECTOR_MAX_ROUNDS 防失控；
+    #服务端联网搜索按 max_searches 做预算：用尽后强制不带工具总结，避免反复检索拖长时间；
     #每次工具调用写入 agent_tool_traces，供 /tasks/{id}/agents/{agent} 还原完整执行过程
     llm = _llm(config)
     by_name = {t.name: t for t in tools}
     messages: list = [SystemMessage(content=prompt)]
     summary = ""
     task_id = state["task_id"]
-    for _round in range(COLLECTOR_MAX_ROUNDS):
+    searches = 0
+    budget_exhausted = False
+    for _round in range(max_rounds):
         _check_stop(config)
+        if budget_exhausted:
+            #搜索预算用尽：不带工具再问一次，强制输出总结并结束
+            response = llm.invoke(messages, tools=None)
+            summary = content_to_text(response.content) if response.content else summary
+            break
         response = llm.invoke(messages, tools=tools)
         calls = getattr(response, "tool_calls", None) or []
         #Responses API 原生服务端搜索：web_search_call 输出块 -> 研究动态里的搜索卡片
-        for card in extract_web_search_calls(response.content):
+        cards = extract_web_search_calls(response.content)
+        searches += len(cards)
+        for card in cards:
             query = card["query"] or "服务端联网检索"
             urls = card["urls"]
             _emit(config, "collector", "progress",
@@ -444,6 +459,11 @@ def _run_collector_agent(state: ResearchState, config: RunnableConfig, tools: li
                 result = f"工具执行失败: {e}"
             store.append_tool_trace(task_id, actor, node, name, args, result)
             messages.append(ToolMessage(content=result, tool_call_id=tc["id"], name=name))
+        if searches >= max_searches:
+            messages.append(HumanMessage(
+                content=f"本次联网搜索预算已用完（已执行 {searches} 次服务端检索）。"
+                        "请基于已采集到的材料直接输出一段简短的采集总结，不要再调用任何工具。"))
+            budget_exhausted = True
     else:
         summary = summary or content_to_text(messages[-1].content or "")
     return summary
@@ -701,7 +721,9 @@ def deepen_node(state: ResearchState, config: RunnableConfig) -> dict:
         _run_collector_agent(state, config, _make_collector_tools(
             task_id, state["user_id"], new_count,
             config["configurable"]["stop_event"], actor="deepener", node="deepen"),
-                             prompt, actor="deepener", node="deepen")
+                             prompt, actor="deepener", node="deepen",
+                             max_rounds=DEEPEN_MAX_ROUNDS,
+                             max_searches=DEEPEN_MAX_SEARCHES)
         _match_evidence(task_id, claim, llm, num=3)  #新素材入库后立即重新匹配证据
     new_sources = new_count["n"]
     store.bump_progress(task_id, 62)
