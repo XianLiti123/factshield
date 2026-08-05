@@ -320,16 +320,18 @@ def plan_node(state: ResearchState, config: RunnableConfig) -> dict:
     return {"title": title, "keywords": keywords, "checkpoints": checkpoints, "guidance": guidance}
 
 
-def _ingest_material(task_id: str, seq: int, title: str, publisher: str, url: str, content: str) -> dict:
+def _ingest_material(task_id: str, seq: int, title: str, publisher: str, url: str,
+                     content: str, published_at: str = "") -> dict:
     #一份素材入库：正文切块进知识库（group_id 标任务归属）+ 登记元数据 + 落 task_materials
     group_id = f"task:{task_id}:{seq}"
     _, chunk_count = add_document(content, group_id=group_id)
     with memory_conn() as conn:  #登记知识库元数据，/knowledge/documents 可按任务回溯
         conn.execute("INSERT INTO documents (group_id, chunk_count) VALUES (?,?)",
                      (group_id, chunk_count))
-    store.add_material(task_id, group_id, title, publisher, url, content=content)
+    store.add_material(task_id, group_id, title, publisher, url,
+                       content=content, published_at=published_at)
     return {"group_id": group_id, "title": title, "publisher": publisher,
-            "url": url, "content": content}
+            "url": url, "content": content, "published_at": published_at}
 
 
 # ---------------- 采集员子智能体（受限工具集自主采集） ----------------
@@ -350,9 +352,11 @@ def _make_collector_tools(task_id: str, user_id: int, new_count: dict,
     from langchain_core.tools import tool as _mk_tool
 
     @_mk_tool
-    def archive_material(title: str, publisher: str, url: str, content: str) -> str:
+    def archive_material(title: str, publisher: str, url: str, content: str,
+                         published_at: str = "") -> str:
         """把一份采集到的材料（网页文章/财报数据/行情序列等）存入任务素材库，
-        供后续主张提取与证据检索引用。采集到有价值内容时必须调用本工具入库。"""
+        供后续主张提取与证据检索引用。published_at 为材料的披露/发布日期（格式 YYYY-MM-DD），
+        无法确定时填空串。采集到有价值内容时必须调用本工具入库。"""
         if len(store.list_materials(task_id)) >= MAX_MATERIALS_TOTAL:
             return f"素材已达总量上限 {MAX_MATERIALS_TOTAL} 份，无法继续入库"
         if new_count["n"] >= MAX_MATERIALS:
@@ -361,7 +365,8 @@ def _make_collector_tools(task_id: str, user_id: int, new_count: dict,
             return f"该链接已入库（{url}），跳过重复"
         seq = len(store.list_materials(task_id)) + 1
         _ingest_material(task_id, seq, (title or url or "未命名材料")[:200],
-                         publisher or "", url or "", (content or "")[:5000])
+                         publisher or "", url or "", (content or "")[:5000],
+                         (published_at or "")[:20])
         new_count["n"] += 1
         return f"已入库，材料编号 {seq}（素材库现有 {len(store.list_materials(task_id))} 份）"
 
@@ -659,6 +664,7 @@ def _match_evidence(task_id: str, claim: dict, llm: ChatClient, num: int = 2) ->
             continue
         items.append({
             "title": src.get("title", ""), "publisher": src.get("publisher", ""),
+            "published_at": src.get("published_at", ""),
             "url": src.get("url", ""),
             "locator": f"{src.get('title') or cand['group_id']} 第{cand['chunk_index'] + 1}段",
             "quote": quote, "source_type": src.get("source_type", ""),
@@ -1248,6 +1254,7 @@ def retry_single_claim(task_id: str, claim_id: str, emit: Callable, llm: ChatCli
             if not quote:
                 continue
             items.append({"title": src.get("title", ""), "publisher": src.get("publisher", ""),
+                          "published_at": src.get("published_at", ""),
                           "url": src.get("url", ""),
                           "locator": f"{src.get('title') or cand['group_id']} 第{cand['chunk_index'] + 1}段",
                           "quote": quote, "source_type": src.get("source_type", ""),

@@ -163,12 +163,14 @@ def list_node_runs(task_id: str) -> list[dict]:
 # ---------------- 素材（采集到的原始资料，group_id 对应知识库向量块） ----------------
 
 def add_material(task_id: str, group_id: str, title: str, publisher: str, url: str,
-                 source_type: str = "", credibility: float = 0.0, content: str = "") -> int:
+                 source_type: str = "", credibility: float = 0.0, content: str = "",
+                 published_at: str = "") -> int:
     with get_connection() as conn:
         cur = conn.execute(
-            "INSERT INTO task_materials (task_id, group_id, title, publisher, url, source_type, credibility, content)"
-            " VALUES (?,?,?,?,?,?,?,?)",
-            (task_id, group_id, title, publisher, url, source_type, credibility, content)
+            "INSERT INTO task_materials (task_id, group_id, title, publisher, published_at, url,"
+            " source_type, credibility, content) VALUES (?,?,?,?,?,?,?,?,?)",
+            (task_id, group_id, title, publisher, published_at, url,
+             source_type, credibility, content)
         )
         return cur.lastrowid  # type: ignore[return-value]
 

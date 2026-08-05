@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS task_materials (
     group_id TEXT NOT NULL,
     title TEXT NOT NULL DEFAULT '',
     publisher TEXT NOT NULL DEFAULT '',
+    published_at TEXT NOT NULL DEFAULT '',
     url TEXT NOT NULL DEFAULT '',
     source_type TEXT NOT NULL DEFAULT '',
     credibility REAL NOT NULL DEFAULT 0,
@@ -312,6 +313,7 @@ def init_db() -> None:
         _add_column_if_missing(conn, "research_tasks", "summary_md", "summary_md TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "task_materials", "credibility_level", "credibility_level TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "task_materials", "content", "content TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "task_materials", "published_at", "published_at TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "evidence", "credibility_level", "credibility_level TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "user_search_settings", "api_key_enc", "api_key_enc TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "evidence", "relevance", "relevance REAL NOT NULL DEFAULT 0")
