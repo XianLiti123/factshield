@@ -1,0 +1,311 @@
+import { BarChartOutlined, CheckCircleFilled, DownloadOutlined, EyeOutlined, FilePdfOutlined, FileWordOutlined, HistoryOutlined, PaperClipOutlined } from '@ant-design/icons'
+import { Button, Modal, Tag, message } from 'antd'
+import { useEffect, useState } from 'react'
+import ReactMarkdown, { type Components } from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import type { Claim, ResearchRun } from '../types'
+import { getActiveTask, useWorkspaceStore } from '../store'
+import { StatusBadge } from './StatusBadge'
+import { exportReport, getAuditLog, getHistoryAnalysis, getReport, type HistoryAnalysis, type ReportExportFormat } from '../services/api'
+import { getClaimDisplayStatement, getRewrittenClaimStatement, isClaimRemoved } from '../utils/claims'
+import { getConfidenceLevel, getConfidenceLevelClass } from '../utils/confidence'
+
+const reportMarkdownComponents: Components = {
+  a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
+  table: ({ children }) => <div className="report-markdown-table"><table>{children}</table></div>,
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function applyClaimResolutionsToReportMarkdown(content: string, claims: Claim[]) {
+  return claims.reduce((markdown, claim) => {
+    const rewrittenStatement = getRewrittenClaimStatement(claim)
+    const removed = isClaimRemoved(claim)
+    if (!rewrittenStatement && !removed) return markdown
+
+    const headingPattern = new RegExp(`^### \\[${escapeRegExp(claim.id)}\\].*$`, 'm')
+    if (!headingPattern.test(markdown)) return markdown
+
+    if (removed) {
+      return markdown.replace(
+        headingPattern,
+        `### [${claim.id}] 已排除表述（不进入最终结论）\n\n> 原表述：${claim.statement}`,
+      )
+    }
+
+    return markdown.replace(
+      headingPattern,
+      `### [${claim.id}] ${rewrittenStatement}\n\n> 原表述：${claim.statement}\n>\n> 人工处理：已按现有证据调整表述`,
+    )
+  }, content)
+}
+
+function ReportClaimRow({ claim, reviewed }: { claim: Claim; reviewed: boolean }) {
+  const rewrittenStatement = getRewrittenClaimStatement(claim)
+  const removed = isClaimRemoved(claim)
+  return (
+    <div className={`report-claim${rewrittenStatement ? ' adjusted' : ''}${removed ? ' removed' : ''}`}>
+      <span>C{String(claim.index).padStart(2, '0')}</span>
+      <div className="report-claim-copy">
+        <p>{getClaimDisplayStatement(claim)}</p>
+        {rewrittenStatement && <small>原表述：{claim.statement}</small>}
+        {removed && <small>原句仅保留供审计回查，不进入最终结论</small>}
+      </div>
+      <div className="report-claim-status">
+        {claim.humanAction === 'rewrite'
+          ? <span className="manual-review-status adjusted"><CheckCircleFilled /> 已调整</span>
+          : removed
+            ? <span className="manual-review-status removed">已排除</span>
+            : reviewed
+              ? <span className="manual-review-status"><CheckCircleFilled /> 已人工复核</span>
+              : <StatusBadge status={claim.status} compact />}
+      </div>
+      <strong className={`claim-confidence-level ${getConfidenceLevelClass(claim.confidence)}`}>{getConfidenceLevel(claim.confidence)}</strong>
+    </div>
+  )
+}
+
+type WritableExportFile = {
+  write: (data: Blob) => Promise<void>
+  close: () => Promise<void>
+}
+
+type ExportFileHandle = {
+  name: string
+  createWritable: () => Promise<WritableExportFile>
+}
+
+type PreparedReportExport = {
+  format: ReportExportFormat
+  blob: Blob
+  filename: string
+}
+
+type SaveFilePicker = (options: {
+  suggestedName: string
+  excludeAcceptAllOption: boolean
+  types: Array<{ description: string; accept: Record<string, string[]> }>
+}) => Promise<ExportFileHandle>
+
+const exportFileTypes: Record<ReportExportFormat, { description: string; accept: Record<string, string[]> }> = {
+  pdf: { description: 'PDF 文档', accept: { 'application/pdf': ['.pdf'] } },
+  docx: {
+    description: 'Word 文档',
+    accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] },
+  },
+}
+
+function getSaveFilePicker() {
+  return (window as Window & { showSaveFilePicker?: SaveFilePicker }).showSaveFilePicker?.bind(window)
+}
+
+function downloadWithBrowser(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+export function ReportsView({ run }: { run: ResearchRun }) {
+  const setActiveView = useWorkspaceStore((state) => state.setActiveView)
+  const activeTask = useWorkspaceStore(getActiveTask)
+  const reviewedClaimIds = activeTask.reviewedClaimIds
+  const [reportContent, setReportContent] = useState('')
+  const [reportOpen, setReportOpen] = useState(false)
+  const [exportingFormat, setExportingFormat] = useState<ReportExportFormat | null>(null)
+  const [preparedExport, setPreparedExport] = useState<PreparedReportExport | null>(null)
+  const [savingExport, setSavingExport] = useState(false)
+  const [historyAnalysis, setHistoryAnalysis] = useState<HistoryAnalysis | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!activeTask.persisted || activeTask.isDemo) {
+      setHistoryAnalysis(null)
+      return () => { cancelled = true }
+    }
+    getHistoryAnalysis(run.id)
+      .then((result) => { if (!cancelled) setHistoryAnalysis(result?.attached ? result : null) })
+      .catch(() => { if (!cancelled) setHistoryAnalysis(null) })
+    return () => { cancelled = true }
+  }, [activeTask.isDemo, activeTask.persisted, run.id])
+
+  const historyPointCount = historyAnalysis?.events.reduce((sum, event) => sum + event.points.length, 0) ?? 0
+  const historyCompleteness = historyAnalysis
+    ? Math.max(0, Math.min(100, historyAnalysis.completeness <= 1 ? historyAnalysis.completeness * 100 : historyAnalysis.completeness))
+    : 0
+  const deliveryParts = [
+    `${run.claims.length} 条事实主张`,
+    `${run.evidence.length} 份原始证据`,
+    `${reviewedClaimIds.length} 条人工复核记录`,
+    ...(historyAnalysis ? ['1 份历史情景复盘附件'] : []),
+  ]
+  const previewReport = async () => {
+    if (!activeTask.persisted) {
+      message.info('当前是 UI 演示底稿')
+      return
+    }
+    try {
+      const report = await getReport(run.id)
+      setReportContent(applyClaimResolutionsToReportMarkdown(report.content, run.claims))
+      setReportOpen(true)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '底稿加载失败')
+    }
+  }
+  const downloadReport = async (format: ReportExportFormat) => {
+    if (!activeTask.persisted) {
+      message.info('演示任务暂无真实底稿可导出')
+      return
+    }
+    setExportingFormat(format)
+    try {
+      const { blob, filename } = await exportReport(run.id, format)
+      setPreparedExport({ format, blob, filename })
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '底稿导出失败')
+    } finally {
+      setExportingFormat(null)
+    }
+  }
+  const savePreparedReport = async () => {
+    if (!preparedExport) return
+    setSavingExport(true)
+    try {
+      const picker = getSaveFilePicker()
+      if (picker) {
+        const fileHandle = await picker({
+          suggestedName: preparedExport.filename,
+          excludeAcceptAllOption: true,
+          types: [exportFileTypes[preparedExport.format]],
+        })
+        const writable = await fileHandle.createWritable()
+        await writable.write(preparedExport.blob)
+        await writable.close()
+        message.success(`${preparedExport.format === 'pdf' ? 'PDF' : 'Word'} 底稿已保存为 ${fileHandle.name}`)
+      } else {
+        downloadWithBrowser(preparedExport.blob, preparedExport.filename)
+        message.success('文件已下载到浏览器默认下载目录')
+      }
+      setPreparedExport(null)
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return
+      message.error(error instanceof Error ? error.message : '文件保存失败')
+    } finally {
+      setSavingExport(false)
+    }
+  }
+  const downloadAudit = async () => {
+    if (!activeTask.persisted) {
+      message.success('审计日志已生成（UI 演示）')
+      return
+    }
+    try {
+      const audit = await getAuditLog(run.id)
+      const blob = new Blob([JSON.stringify(audit, null, 2)], { type: 'application/json;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `${run.id}-audit-log.json`
+      link.click()
+      URL.revokeObjectURL(url)
+      message.success('真实审计日志已下载')
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '审计日志下载失败')
+    }
+  }
+
+  return (
+    <div className="reports-layout">
+      <section className="page-card report-list-card">
+        <div className="page-card-header"><div><span className="eyebrow">可审计交付物</span><h2>当前交付版本</h2><p>每条结论均附原始证据链和双层核验记录。</p></div></div>
+        <div className="report-summary">
+          <div className="report-cover">
+            <span>FACTSHIELD</span>
+            <SafetyLogo />
+            <strong>金融研究事实核验底稿</strong>
+            <p>{run.title}</p>
+            <small className="report-cover-meta"><span>{run.id}</span><time>{run.createdAt}</time></small>
+          </div>
+          <div className="report-details">
+            <h3>{run.title}</h3>
+            <p>当前交付内容包含 {deliveryParts.join('、')}。页面只展示该任务实际取得的内容，不补写固定样本或附件数量。</p>
+            <div className="report-checks"><span><CheckCircleFilled /> 证据链接完整</span><span><CheckCircleFilled /> 引用定位有效</span><span><CheckCircleFilled /> 审计日志已封存</span></div>
+            <div className="report-actions"><Button type="primary" icon={<EyeOutlined />} onClick={previewReport}>预览底稿</Button><Button icon={<FilePdfOutlined />} loading={exportingFormat === 'pdf'} disabled={exportingFormat !== null && exportingFormat !== 'pdf'} onClick={() => downloadReport('pdf')}>导出 PDF</Button><Button icon={<FileWordOutlined />} loading={exportingFormat === 'docx'} disabled={exportingFormat !== null && exportingFormat !== 'docx'} onClick={() => downloadReport('docx')}>导出 Word</Button></div>
+            <div className="report-disclaimer">本底稿仅为金融研究辅助材料，不构成任何投资建议；高度存疑内容必须由研究员人工复核。</div>
+          </div>
+        </div>
+        {historyAnalysis && (
+          <div className="report-history-appendix">
+            <div className="appendix-icon"><BarChartOutlined /></div>
+            <div className="appendix-copy"><span>附件 · 历史情景复盘</span><strong>{historyAnalysis.metric} · 同类事件前后路径</strong><p>包含 {historyAnalysis.events.length} 个真实历史事件与 {historyPointCount} 个公开数据点，按各事件 T0 对齐查看变化；不用于未来判断。</p></div>
+            <div className="appendix-meta"><Tag color="blue">{historyAnalysis.events.length} 个事件</Tag><Tag color="green">完整度 {Math.round(historyCompleteness)}%</Tag></div>
+            <Button icon={<PaperClipOutlined />} onClick={() => setActiveView('analytics')}>查看附件</Button>
+          </div>
+        )}
+        <div className="report-claims">
+          <div className="report-claims-title"><strong>最终结论</strong><span>已排除表述不计入本目录</span></div>
+          {run.claims.filter((claim) => !isClaimRemoved(claim)).map((claim) => (
+            <ReportClaimRow key={claim.id} claim={claim} reviewed={reviewedClaimIds.includes(claim.id)} />
+          ))}
+          {run.claims.some(isClaimRemoved) && (
+            <div className="report-excluded-claims">
+              <div className="report-claims-title"><strong>已排除表述</strong><span>仅保留供审计回查</span></div>
+              {run.claims.filter(isClaimRemoved).map((claim) => (
+                <ReportClaimRow key={claim.id} claim={claim} reviewed />
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+      <aside className="page-card report-side-card">
+        <h3><HistoryOutlined /> 版本记录</h3>
+        {historyAnalysis && <div className="version-item current"><i /><strong>历史情景复盘已附入</strong><span>{historyAnalysis.created_at}</span><p>{historyAnalysis.events.length} 个事件 · {historyPointCount} 个真实数据点</p></div>}
+        <div className="version-item"><i /><strong>v0.3 · 双层核验版</strong><span>14:42</span><p>加入独立审查结论与疑点说明</p></div>
+        <div className="version-item"><i /><strong>v0.2 · 一级汇总版</strong><span>14:40</span><p>小盾完成证据汇总</p></div>
+        <Button block icon={<DownloadOutlined />} onClick={downloadAudit}>下载审计日志</Button>
+      </aside>
+      <Modal className="report-preview-modal" title={`${run.id} · 底稿预览`} open={reportOpen} onCancel={() => setReportOpen(false)} footer={null} width={900}>
+        <article className="report-markdown-preview">
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={reportMarkdownComponents}>{reportContent}</ReactMarkdown>
+        </article>
+      </Modal>
+      <Modal
+        title="底稿文件已生成"
+        open={preparedExport !== null}
+        closable={!savingExport}
+        maskClosable={!savingExport}
+        onCancel={() => setPreparedExport(null)}
+        footer={[
+          <Button key="cancel" disabled={savingExport} onClick={() => setPreparedExport(null)}>取消</Button>,
+          <Button key="save" type="primary" icon={<DownloadOutlined />} loading={savingExport} onClick={savePreparedReport}>
+            {getSaveFilePicker() ? '选择保存位置' : '下载文件'}
+          </Button>,
+        ]}
+      >
+        {preparedExport && (
+          <div className="report-export-ready">
+            <strong>{preparedExport.filename}</strong>
+            <span>{preparedExport.format === 'pdf' ? 'PDF 文档' : 'Word 文档'} · {formatFileSize(preparedExport.blob.size)}</span>
+            <p>文件内容已完整生成并通过格式校验，现在可以选择保存位置。</p>
+          </div>
+        )}
+      </Modal>
+    </div>
+  )
+}
+
+function SafetyLogo() {
+  return <div className="report-logo">FS</div>
+}

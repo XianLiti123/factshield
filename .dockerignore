@@ -1,0 +1,26 @@
+.git
+.gitee
+.idea
+.jbeval
+__pycache__
+**/__pycache__
+*.pyc
+
+# 密钥与本地环境，绝不入镜像
+.env
+agent/session/.master_key
+
+# 本地运行数据，容器内由挂卷提供
+agent/session/*.db
+agent/session/*.db-*
+agent/session/chroma_db
+agent/memory/SQLite/*.db
+agent/memory/vector_store/chroma_db
+agent/workspace
+
+# 前端依赖与构建产物（ui 源码需要进构建上下文，供多阶段构建编译）
+ui/node_modules
+ui/dist
+downloads
+notes
+*.bat
